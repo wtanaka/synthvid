@@ -1,0 +1,134 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/synthvid-scene",
+    "crates/synthvid-encode",
+    "crates/synthvid-catalog",
+    "crates/synthvid-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/wtanaka/synthvid"
+readme = "README.md"
+keywords = ["video", "deterministic", "synthetic", "generator"]
+categories = ["multimedia::video", "command-line-utilities"]
+
+# Every member inherits this with `[lints] workspace = true`. The table is
+# digest-guarded, so weakening it is a visible, reviewable change rather than a
+# quiet one.
+#
+# `#[allow]` is itself denied below. Use `#[expect(lint, reason = "...")]`
+# instead: it carries a written justification and fails the build once the
+# underlying lint stops firing, so a suppression cannot outlive its cause.
+# The total number of suppressions is capped by ci/suppression-budget.txt.
+
+[workspace.lints.rust]
+# Cannot be overridden by any attribute, anywhere.
+unsafe_code = "forbid"
+
+future_incompatible = { level = "deny", priority = -1 }
+nonstandard_style = { level = "deny", priority = -1 }
+rust_2018_idioms = { level = "deny", priority = -1 }
+unused = { level = "deny", priority = -1 }
+let_underscore = { level = "deny", priority = -1 }
+
+absolute_paths_not_starting_with_crate = "deny"
+deprecated_in_future = "deny"
+elided_lifetimes_in_paths = "deny"
+explicit_outlives_requirements = "deny"
+ffi_unwind_calls = "deny"
+keyword_idents = { level = "deny", priority = -1 }
+macro_use_extern_crate = "deny"
+meta_variable_misuse = "deny"
+missing_abi = "deny"
+missing_copy_implementations = "deny"
+missing_debug_implementations = "deny"
+missing_docs = "deny"
+non_ascii_idents = "deny"
+noop_method_call = "deny"
+trivial_casts = "deny"
+trivial_numeric_casts = "deny"
+unit_bindings = "deny"
+unreachable_pub = "deny"
+unused_import_braces = "deny"
+unused_lifetimes = "deny"
+unused_macro_rules = "deny"
+unused_qualifications = "deny"
+
+[workspace.lints.clippy]
+# Whole groups. `restriction` is deliberately NOT enabled: its own
+# documentation says it is not meant to be turned on as a group, because its
+# lints contradict one another. The individually useful members are listed
+# below instead.
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+nursery = { level = "deny", priority = -1 }
+cargo = { level = "deny", priority = -1 }
+
+# Suppression discipline. The first is the rule that bans `#[allow]`.
+allow_attributes = "deny"
+allow_attributes_without_reason = "deny"
+
+# No hidden panics. A library that renders a frame must return an error, not
+# abort the caller's process.
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+unreachable = "deny"
+exit = "deny"
+indexing_slicing = "deny"
+missing_panics_doc = "deny"
+unwrap_in_result = "deny"
+panic_in_result_fn = "deny"
+
+# Arithmetic that can silently change a value. These are strict on purpose:
+# every one of them is a way for output to differ from what was intended, and
+# output that differs from what was intended is the one defect this project
+# cannot absorb.
+arithmetic_side_effects = "deny"
+as_conversions = "deny"
+cast_lossless = "deny"
+cast_possible_truncation = "deny"
+cast_possible_wrap = "deny"
+cast_precision_loss = "deny"
+cast_sign_loss = "deny"
+checked_conversions = "deny"
+float_cmp = "deny"
+float_cmp_const = "deny"
+integer_division = "deny"
+lossy_float_literal = "deny"
+modulo_arithmetic = "deny"
+
+# Purity and ambient input.
+print_stdout = "deny"
+print_stderr = "deny"
+verbose_file_reads = "deny"
+mem_forget = "deny"
+
+# General strictness.
+clone_on_ref_ptr = "deny"
+empty_structs_with_brackets = "deny"
+format_push_string = "deny"
+if_then_some_else_none = "deny"
+missing_assert_message = "deny"
+missing_docs_in_private_items = "deny"
+mixed_read_write_in_expression = "deny"
+multiple_inherent_impl = "deny"
+mutex_atomic = "deny"
+partial_pub_fields = "deny"
+rc_buffer = "deny"
+rc_mutex = "deny"
+rest_pat_in_fully_bound_structs = "deny"
+same_name_method = "deny"
+semicolon_inside_block = "deny"
+shadow_unrelated = "deny"
+std_instead_of_core = "deny"
+str_to_string = "deny"
+try_err = "deny"
+unnecessary_self_imports = "deny"
+unneeded_field_pattern = "deny"

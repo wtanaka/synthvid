@@ -1,0 +1,84 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  # Both architectures run the identical job. Cross-architecture reproducibility
+  # is proved transitively: each one regenerates the whole corpus from scratch
+  # and verifies it against the committed catalog.lock, so if both pass they
+  # necessarily produced identical bytes. No artifact passing is needed.
+  check:
+    name: check (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-latest
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+
+    steps:
+      # Consider pinning these to a commit SHA once the repository is settled.
+      - uses: actions/checkout@v4
+
+      - name: Install the toolchain
+        run: |
+          rustup toolchain install stable --profile minimal \
+            --component rustfmt --component clippy
+          rustup default stable
+          rustc -Vv
+
+      - name: Formatting
+        run: cargo fmt --all -- --check
+
+      - name: Lints
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Repository guards
+        run: sh ci/check-all.sh
+
+      - name: Tests
+        run: cargo test --all
+
+      - name: Documentation
+        run: cargo doc --no-deps --all
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+      # Everything above this line tests the code. Everything below tests the
+      # claim the project exists to make.
+      #
+      # These steps are dormant until catalog.lock exists, because until the
+      # catalogue is declared there is no corpus to generate and "generate"
+      # would pass vacuously on a tool that does nothing. The moment that file
+      # lands they activate, and from then on they cannot be satisfied by a
+      # program that produces no output.
+      - name: Generate the corpus
+        if: hashFiles('catalog.lock') != ''
+        run: cargo run --release -p synthvid-cli -- generate --out ./corpus
+
+      - name: Verify the corpus against the committed digests
+        if: hashFiles('catalog.lock') != ''
+        run: cargo run --release -p synthvid-cli -- verify --corpus ./corpus
+
+      # An external decoder is permitted for verification only; it is never
+      # used to produce a file. This is what confirms the containers are
+      # readable by software that did not write them.
+      - name: Install an external decoder
+        if: hashFiles('catalog.lock') != ''
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Confirm the corpus is externally decodable
+        if: hashFiles('catalog.lock') != ''
+        run: sh ci/check-externally-decodable.sh ./corpus
