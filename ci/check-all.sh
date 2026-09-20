@@ -8,7 +8,8 @@ for check in \
     check-no-external-deps.sh \
     check-forbidden-tokens.sh \
     check-suppressions.sh \
-    check-catalog-generated.sh
+    check-catalog-generated.sh \
+    check-rustdoc.sh
 do
     if ! sh "ci/$check"; then
         status=1
