@@ -1,5 +1,13 @@
 #!/bin/sh
 # Run every guard. Reports all failures rather than stopping at the first.
+#
+# A guard that invokes cargo must not share the main target directory. Cargo
+# decides whether to re-run a tool from recorded fingerprints, so a guard that
+# reuses `target/` can report success on source it never read -- a green run
+# that proves nothing, which is the one result this repository cannot absorb.
+# `check-rustdoc.sh` is the only guard that runs cargo today; it builds in a
+# directory of its own that it deletes first. A new guard that runs cargo does
+# the same.
 set -u
 
 status=0
@@ -9,7 +17,8 @@ for check in \
     check-forbidden-tokens.sh \
     check-suppressions.sh \
     check-catalog-generated.sh \
-    check-rustdoc.sh
+    check-rustdoc.sh \
+    check-module-size.sh
 do
     if ! sh "ci/$check"; then
         status=1
