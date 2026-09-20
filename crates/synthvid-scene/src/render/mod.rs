@@ -261,30 +261,26 @@ mod tests {
     use crate::units::{FrameCount, FrameIndex, FrameRate, Height, ObjectIndex, Seed, Width};
 
     /// Builds a camera that follows `origin` with no rotation and unit magnification.
-    fn still_camera_at(origin: Point) -> Option<Camera> {
-        let angle = Turns::new(make_ratio(0, 1)?);
-        let unit = Zoom::Fixed(Magnification::new(make_ratio(1, 1)?)?);
-        Some(Camera::new(
-            Motion::Fixed(origin),
-            Rotation::Fixed(angle),
-            unit,
-        ))
+    fn still_camera_at(origin: Point) -> Camera {
+        let angle = Turns::new(make_ratio(0, 1).unwrap());
+        let unit = Zoom::Fixed(Magnification::new(make_ratio(1, 1).unwrap()).unwrap());
+        Camera::new(Motion::Fixed(origin), Rotation::Fixed(angle), unit)
     }
 
     /// Builds a camera fixed at the scene origin with unit magnification, which is the identity placement.
-    fn identity_camera() -> Option<Camera> {
-        let zero = make_ratio(0, 1)?;
+    fn identity_camera() -> Camera {
+        let zero = make_ratio(0, 1).unwrap();
         still_camera_at(Point::new(zero, zero))
     }
 
     /// Builds a scene with the given backdrop and objects on an 8x8 frame.
-    fn small_scene(background: Background, objects: Vec<Object>) -> Option<Scene> {
-        let width = Width::new(8)?;
-        let height = Height::new(8)?;
-        let rate = FrameRate::from_fps(30)?;
-        let count = FrameCount::new(4)?;
-        let camera = identity_camera()?;
-        Some(Scene::new(
+    fn small_scene(background: Background, objects: Vec<Object>) -> Scene {
+        let width = Width::new(8).unwrap();
+        let height = Height::new(8).unwrap();
+        let rate = FrameRate::from_fps(30).unwrap();
+        let count = FrameCount::new(4).unwrap();
+        let camera = identity_camera();
+        Scene::new(
             Dimensions::new(width, height),
             rate,
             count,
@@ -292,57 +288,47 @@ mod tests {
             background,
             camera,
             objects,
-        ))
+        )
     }
 
     /// Builds a visibility span from `start` (inclusive) to `end` (exclusive).
-    fn make_span(start: u32, end: u32) -> Option<FrameSpan> {
-        FrameSpan::new(FrameIndex::new(start), FrameIndex::new(end))
+    fn make_span(start: u32, end: u32) -> FrameSpan {
+        FrameSpan::new(FrameIndex::new(start), FrameIndex::new(end)).unwrap()
     }
 
     /// Builds a disc object fixed at integer `(x, y)` with the given radius.
-    fn fixed_disc(x: i64, y: i64, radius: i64, fill: Rgb8, span: FrameSpan) -> Option<Object> {
-        let px = Ratio::from_integer(x)?;
-        let py = Ratio::from_integer(y)?;
-        let radius_ratio = Ratio::from_integer(radius)?;
-        Some(Object::new(
+    fn fixed_disc(x: i64, y: i64, radius: i64, fill: Rgb8, span: FrameSpan) -> Object {
+        let px = Ratio::from_integer(x).unwrap();
+        let py = Ratio::from_integer(y).unwrap();
+        let radius_ratio = Ratio::from_integer(radius).unwrap();
+        Object::new(
             Shape::Disc {
                 radius: radius_ratio,
             },
             fill,
             Motion::Fixed(Point::new(px, py)),
             span,
-        ))
+        )
     }
 
     #[test]
     fn test_render_frame_twice_byte_identical() {
         let red = Rgb8::new(200, 40, 40);
         let green = Rgb8::new(20, 180, 60);
-        let Some(span) = make_span(0, 4) else { return };
-        let Some(first) = fixed_disc(3, 3, 2, red, span) else {
-            return;
-        };
-        let Some(second) = fixed_disc(6, 6, 3, green, span) else {
-            return;
-        };
+        let span = make_span(0, 4);
+        let first = fixed_disc(3, 3, 2, red, span);
+        let second = fixed_disc(6, 6, 3, green, span);
         let seed_bg = Background::Blobs {
             seed: Seed::new(9),
             count: 6,
             min_radius: 1,
             max_radius: 3,
         };
-        let Some(scene) = small_scene(seed_bg, vec![first, second]) else {
-            return;
-        };
+        let scene = small_scene(seed_bg, vec![first, second]);
         for n in 0..4_u32 {
             let frame = FrameIndex::new(n);
-            let Ok(once) = render_frame(&scene, frame) else {
-                return;
-            };
-            let Ok(twice) = render_frame(&scene, frame) else {
-                return;
-            };
+            let once = render_frame(&scene, frame).unwrap();
+            let twice = render_frame(&scene, frame).unwrap();
             assert_eq!(
                 once.data(),
                 twice.data(),
@@ -355,20 +341,12 @@ mod tests {
     fn test_render_into_dirty_buffer_equals_fresh() {
         let blue = Rgb8::new(30, 60, 220);
         let yellow = Rgb8::new(230, 210, 40);
-        let Some(span) = make_span(0, 4) else { return };
-        let Some(object) = fixed_disc(4, 4, 3, yellow, span) else {
-            return;
-        };
-        let Some(scene) = small_scene(Background::Solid(blue), vec![object]) else {
-            return;
-        };
+        let span = make_span(0, 4);
+        let object = fixed_disc(4, 4, 3, yellow, span);
+        let scene = small_scene(Background::Solid(blue), vec![object]);
         let frame = FrameIndex::new(1);
-        let Ok(fresh) = render_frame(&scene, frame) else {
-            return;
-        };
-        let Some(mut dirty) = Frame::zeroed(scene.dimensions) else {
-            return;
-        };
+        let fresh = render_frame(&scene, frame).unwrap();
+        let mut dirty = Frame::zeroed(scene.dimensions).unwrap();
         dirty.fill(Rgb8::new(255, 0, 255));
         assert!(
             render_into(&scene, frame, &mut dirty).is_ok(),
@@ -383,15 +361,11 @@ mod tests {
 
     #[test]
     fn test_render_into_rejects_mismatched_dimensions() {
-        let Some(scene) = small_scene(Background::Solid(Rgb8::new(1, 2, 3)), Vec::new()) else {
-            return;
-        };
-        let Some(wide) = Width::new(16) else { return };
+        let scene = small_scene(Background::Solid(Rgb8::new(1, 2, 3)), Vec::new());
+        let wide = Width::new(16).unwrap();
         let tall = scene.dimensions.height;
         let wrong = Dimensions::new(wide, tall);
-        let Some(mut out) = Frame::zeroed(wrong) else {
-            return;
-        };
+        let mut out = Frame::zeroed(wrong).unwrap();
         assert_eq!(
             render_into(&scene, FrameIndex::new(0), &mut out),
             Err(RenderError::MismatchedDimensions {
@@ -405,32 +379,18 @@ mod tests {
     #[test]
     fn test_empty_scene_equals_hidden_objects() {
         let ground = Background::Solid(Rgb8::new(12, 34, 56));
-        let Some(empty) = small_scene(ground, Vec::new()) else {
-            return;
-        };
-        let Some(hidden_span) = make_span(2, 3) else {
-            return;
-        };
-        let Some(object) = fixed_disc(4, 4, 3, Rgb8::new(9, 9, 9), hidden_span) else {
-            return;
-        };
-        let Some(with_hidden) = small_scene(ground, vec![object]) else {
-            return;
-        };
-        let Ok(background_only) = render_frame(&empty, FrameIndex::new(0)) else {
-            return;
-        };
-        let Ok(with_objects) = render_frame(&with_hidden, FrameIndex::new(0)) else {
-            return;
-        };
+        let empty = small_scene(ground, Vec::new());
+        let hidden_span = make_span(2, 3);
+        let object = fixed_disc(4, 4, 3, Rgb8::new(9, 9, 9), hidden_span);
+        let with_hidden = small_scene(ground, vec![object]);
+        let background_only = render_frame(&empty, FrameIndex::new(0)).unwrap();
+        let with_objects = render_frame(&with_hidden, FrameIndex::new(0)).unwrap();
         assert_eq!(
             background_only.data(),
             with_objects.data(),
             "an object outside its span must draw nothing"
         );
-        let Ok(shown) = render_frame(&with_hidden, FrameIndex::new(2)) else {
-            return;
-        };
+        let shown = render_frame(&with_hidden, FrameIndex::new(2)).unwrap();
         assert!(
             shown.data() != background_only.data(),
             "an object inside its span must change the frame"
@@ -442,27 +402,13 @@ mod tests {
         let black = Rgb8::new(0, 0, 0);
         let red = Rgb8::new(255, 0, 0);
         let blue = Rgb8::new(0, 0, 255);
-        let Some(span) = make_span(0, 4) else { return };
-        let Some(under) = fixed_disc(4, 4, 3, red, span) else {
-            return;
-        };
-        let Some(over) = fixed_disc(4, 4, 3, blue, span) else {
-            return;
-        };
-        let Some(first_wins) =
-            small_scene(Background::Solid(black), vec![over.clone(), under.clone()])
-        else {
-            return;
-        };
-        let Some(second_wins) = small_scene(Background::Solid(black), vec![under, over]) else {
-            return;
-        };
-        let Ok(first) = render_frame(&first_wins, FrameIndex::new(0)) else {
-            return;
-        };
-        let Ok(second) = render_frame(&second_wins, FrameIndex::new(0)) else {
-            return;
-        };
+        let span = make_span(0, 4);
+        let under = fixed_disc(4, 4, 3, red, span);
+        let over = fixed_disc(4, 4, 3, blue, span);
+        let first_wins = small_scene(Background::Solid(black), vec![over.clone(), under.clone()]);
+        let second_wins = small_scene(Background::Solid(black), vec![under, over]);
+        let first = render_frame(&first_wins, FrameIndex::new(0)).unwrap();
+        let second = render_frame(&second_wins, FrameIndex::new(0)).unwrap();
         assert_eq!(
             first.pixel(4, 4),
             Some(red),
@@ -477,21 +423,11 @@ mod tests {
 
     #[test]
     fn test_camera_overflow_names_frame() {
-        let Some(scene) = small_scene(Background::Solid(Rgb8::new(0, 0, 0)), Vec::new()) else {
-            return;
-        };
-        let Some(max) = make_ratio(i64::MAX, 1) else {
-            return;
-        };
-        let Some(one) = make_ratio(1, 1) else {
-            return;
-        };
-        let Some(zero) = make_ratio(0, 1) else {
-            return;
-        };
-        let Some(unit) = Magnification::new(one) else {
-            return;
-        };
+        let scene = small_scene(Background::Solid(Rgb8::new(0, 0, 0)), Vec::new());
+        let max = make_ratio(i64::MAX, 1).unwrap();
+        let one = make_ratio(1, 1).unwrap();
+        let zero = make_ratio(0, 1).unwrap();
+        let unit = Magnification::new(one).unwrap();
         let camera = Camera::new(
             Motion::Fixed(Point::new(one, zero)),
             Rotation::Linear {
@@ -514,21 +450,11 @@ mod tests {
 
     #[test]
     fn test_object_overflow_names_object_index() {
-        let Some(span) = make_span(0, 4) else {
-            return;
-        };
-        let Some(valid) = fixed_disc(1, 1, 1, Rgb8::new(200, 40, 40), span) else {
-            return;
-        };
-        let Some(max) = make_ratio(i64::MAX, 1) else {
-            return;
-        };
-        let Some(zero) = make_ratio(0, 1) else {
-            return;
-        };
-        let Some(one) = make_ratio(1, 1) else {
-            return;
-        };
+        let span = make_span(0, 4);
+        let valid = fixed_disc(1, 1, 1, Rgb8::new(200, 40, 40), span);
+        let max = make_ratio(i64::MAX, 1).unwrap();
+        let zero = make_ratio(0, 1).unwrap();
+        let one = make_ratio(1, 1).unwrap();
         let overflow = Object::new(
             Shape::Rect {
                 half_width: one,
@@ -538,11 +464,7 @@ mod tests {
             Motion::Fixed(Point::new(max, zero)),
             span,
         );
-        let Some(overflowing) =
-            small_scene(Background::Solid(Rgb8::new(0, 0, 0)), vec![valid, overflow])
-        else {
-            return;
-        };
+        let overflowing = small_scene(Background::Solid(Rgb8::new(0, 0, 0)), vec![valid, overflow]);
         let result = render_frame(&overflowing, FrameIndex::new(0));
         assert!(
             matches!(
@@ -559,21 +481,11 @@ mod tests {
 
     #[test]
     fn test_off_screen_shape_renders_successfully() {
-        let Some(span) = make_span(0, 4) else {
-            return;
-        };
-        let Some(off) = fixed_disc(100, 100, 1, Rgb8::new(255, 0, 0), span) else {
-            return;
-        };
-        let Some(scene) = small_scene(Background::Solid(Rgb8::new(0, 0, 0)), vec![off]) else {
-            return;
-        };
-        let Ok(frame) = render_frame(&scene, FrameIndex::new(0)) else {
-            return;
-        };
-        let Some(expected) = Frame::from_color(scene.dimensions, Rgb8::new(0, 0, 0)) else {
-            return;
-        };
+        let span = make_span(0, 4);
+        let off = fixed_disc(100, 100, 1, Rgb8::new(255, 0, 0), span);
+        let scene = small_scene(Background::Solid(Rgb8::new(0, 0, 0)), vec![off]);
+        let frame = render_frame(&scene, FrameIndex::new(0)).unwrap();
+        let expected = Frame::from_color(scene.dimensions, Rgb8::new(0, 0, 0)).unwrap();
         assert_eq!(
             frame.data(),
             expected.data(),
@@ -583,15 +495,9 @@ mod tests {
 
     #[test]
     fn test_no_objects_equals_background() {
-        let Some(scene) = small_scene(Background::Solid(Rgb8::new(12, 34, 56)), Vec::new()) else {
-            return;
-        };
-        let Ok(frame) = render_frame(&scene, FrameIndex::new(0)) else {
-            return;
-        };
-        let Some(expected) = Frame::from_color(scene.dimensions, Rgb8::new(12, 34, 56)) else {
-            return;
-        };
+        let scene = small_scene(Background::Solid(Rgb8::new(12, 34, 56)), Vec::new());
+        let frame = render_frame(&scene, FrameIndex::new(0)).unwrap();
+        let expected = Frame::from_color(scene.dimensions, Rgb8::new(12, 34, 56)).unwrap();
         assert_eq!(
             frame.data(),
             expected.data(),
@@ -603,23 +509,18 @@ mod tests {
     fn test_identity_camera_maps_scene_to_pixels() {
         let black = Rgb8::new(0, 0, 0);
         let red = Rgb8::new(255, 0, 0);
-        let Some(span) = make_span(0, 4) else { return };
-        let (Some(cx), Some(cy), Some(rr)) = (make_ratio(5, 2), make_ratio(5, 2), make_ratio(1, 1))
-        else {
-            return;
-        };
+        let span = make_span(0, 4);
+        let cx = make_ratio(5, 2).unwrap();
+        let cy = make_ratio(5, 2).unwrap();
+        let rr = make_ratio(1, 1).unwrap();
         let object = Object::new(
             Shape::Disc { radius: rr },
             red,
             Motion::Fixed(Point::new(cx, cy)),
             span,
         );
-        let Some(scene) = small_scene(Background::Solid(black), vec![object]) else {
-            return;
-        };
-        let Ok(frame) = render_frame(&scene, FrameIndex::new(0)) else {
-            return;
-        };
+        let scene = small_scene(Background::Solid(black), vec![object]);
+        let frame = render_frame(&scene, FrameIndex::new(0)).unwrap();
         assert_eq!(
             frame.pixel(2, 2),
             Some(red),
@@ -636,37 +537,28 @@ mod tests {
     fn test_camera_translation_shifts_objects() {
         let black = Rgb8::new(0, 0, 0);
         let red = Rgb8::new(255, 0, 0);
-        let Some(span) = make_span(0, 4) else { return };
-        let Some(half) = make_ratio(5, 2) else { return };
-        let Some(radius) = make_ratio(1, 1) else {
-            return;
-        };
+        let span = make_span(0, 4);
+        let half = make_ratio(5, 2).unwrap();
+        let radius = make_ratio(1, 1).unwrap();
         let object = Object::new(
             Shape::Disc { radius },
             red,
             Motion::Fixed(Point::new(half, half)),
             span,
         );
-        let Some(two) = make_ratio(2, 1) else { return };
-        let Some(zero) = make_ratio(0, 1) else { return };
-        let Some(one) = make_ratio(1, 1) else { return };
-        let Some(unit) = Magnification::new(one) else {
-            return;
-        };
+        let two = make_ratio(2, 1).unwrap();
+        let zero = make_ratio(0, 1).unwrap();
+        let one = make_ratio(1, 1).unwrap();
+        let unit = Magnification::new(one).unwrap();
         let shifted_camera = Camera::new(
             Motion::Fixed(Point::new(two, zero)),
             Rotation::Fixed(Turns::new(zero)),
             Zoom::Fixed(unit),
         );
-        let (Some(w), Some(h)) = (Width::new(8), Height::new(8)) else {
-            return;
-        };
-        let Some(rate) = FrameRate::from_fps(30) else {
-            return;
-        };
-        let Some(count) = FrameCount::new(4) else {
-            return;
-        };
+        let w = Width::new(8).unwrap();
+        let h = Height::new(8).unwrap();
+        let rate = FrameRate::from_fps(30).unwrap();
+        let count = FrameCount::new(4).unwrap();
         let scene = Scene::new(
             Dimensions::new(w, h),
             rate,
@@ -676,9 +568,7 @@ mod tests {
             shifted_camera,
             vec![object],
         );
-        let Ok(frame) = render_frame(&scene, FrameIndex::new(0)) else {
-            return;
-        };
+        let frame = render_frame(&scene, FrameIndex::new(0)).unwrap();
         assert_eq!(
             frame.pixel(0, 2),
             Some(red),

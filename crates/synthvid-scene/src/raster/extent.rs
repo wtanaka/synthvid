@@ -222,10 +222,10 @@ mod tests {
     use crate::units::{Dimensions, Height, Width};
 
     /// Builds a frame large enough to hold every test shape whole.
-    fn large_frame() -> Option<Frame> {
-        let width = Width::new(32)?;
-        let height = Height::new(32)?;
-        Frame::zeroed(Dimensions::new(width, height))
+    fn large_frame() -> Frame {
+        let width = Width::new(32).unwrap();
+        let height = Height::new(32).unwrap();
+        Frame::zeroed(Dimensions::new(width, height)).unwrap()
     }
 
     /// Collects the centres of all non-background pixels in a frame.
@@ -269,63 +269,31 @@ mod tests {
 
     #[test]
     fn test_bounds_intersect_area() {
-        let Some(a_min_x) = make_ratio(0, 1) else {
-            return;
-        };
-        let Some(a_min_y) = make_ratio(0, 1) else {
-            return;
-        };
-        let Some(a_max_x) = make_ratio(4, 1) else {
-            return;
-        };
-        let Some(a_max_y) = make_ratio(4, 1) else {
-            return;
-        };
-        let Some(first) = Bounds::new(a_min_x, a_min_y, a_max_x, a_max_y) else {
-            return;
-        };
-        let Some(b_min_x) = make_ratio(2, 1) else {
-            return;
-        };
-        let Some(b_min_y) = make_ratio(2, 1) else {
-            return;
-        };
-        let Some(b_max_x) = make_ratio(6, 1) else {
-            return;
-        };
-        let Some(b_max_y) = make_ratio(6, 1) else {
-            return;
-        };
-        let Some(second) = Bounds::new(b_min_x, b_min_y, b_max_x, b_max_y) else {
-            return;
-        };
-        let Some(overlap) = first.intersect(second) else {
-            return;
-        };
+        let a_min_x = make_ratio(0, 1).unwrap();
+        let a_min_y = make_ratio(0, 1).unwrap();
+        let a_max_x = make_ratio(4, 1).unwrap();
+        let a_max_y = make_ratio(4, 1).unwrap();
+        let first = Bounds::new(a_min_x, a_min_y, a_max_x, a_max_y).unwrap();
+        let b_min_x = make_ratio(2, 1).unwrap();
+        let b_min_y = make_ratio(2, 1).unwrap();
+        let b_max_x = make_ratio(6, 1).unwrap();
+        let b_max_y = make_ratio(6, 1).unwrap();
+        let second = Bounds::new(b_min_x, b_min_y, b_max_x, b_max_y).unwrap();
+        let overlap = first.intersect(second).unwrap();
         assert_eq!(overlap.min_x, b_min_x, "overlap must start at 2");
         assert_eq!(overlap.max_x, a_max_x, "overlap must end at 4");
-        let Some(two) = make_ratio(2, 1) else { return };
-        let Some(expected) = two.checked_mul(two) else {
-            return;
-        };
+        let two = make_ratio(2, 1).unwrap();
+        let expected = two.checked_mul(two).unwrap();
         assert_eq!(
             overlap.area(),
             Some(expected),
             "2x2 overlap must have area 4"
         );
-        let Some(sixteen) = make_ratio(16, 1) else {
-            return;
-        };
+        let sixteen = make_ratio(16, 1).unwrap();
         assert_eq!(first.area(), Some(sixteen), "4x4 box must have area 16");
-        let Some(far_min) = make_ratio(10, 1) else {
-            return;
-        };
-        let Some(far_max) = make_ratio(12, 1) else {
-            return;
-        };
-        let Some(far) = Bounds::new(far_min, far_min, far_max, far_max) else {
-            return;
-        };
+        let far_min = make_ratio(10, 1).unwrap();
+        let far_max = make_ratio(12, 1).unwrap();
+        let far = Bounds::new(far_min, far_min, far_max, far_max).unwrap();
         assert!(
             first.intersect(far).is_none(),
             "disjoint boxes must not intersect"
@@ -338,28 +306,22 @@ mod tests {
 
     #[test]
     fn test_disc_extent_contains_pixels() {
-        let Some(mut frame) = large_frame() else {
-            return;
-        };
+        let mut frame = large_frame();
         let ground = Rgb8::new(0, 0, 0);
         frame.fill(ground);
         let paint = Rgb8::new(255, 0, 0);
-        let Some(cx) = make_ratio(16, 1) else { return };
-        let Some(cy) = make_ratio(16, 1) else { return };
-        let Some(radius) = make_ratio(5, 1) else {
-            return;
-        };
+        let cx = make_ratio(16, 1).unwrap();
+        let cy = make_ratio(16, 1).unwrap();
+        let radius = make_ratio(5, 1).unwrap();
         let centre = Point::new(cx, cy);
         fill_disc(&mut frame, centre, radius, paint);
-        let Some(bounds) = disc_extent(centre, radius) else {
-            return;
-        };
+        let bounds = disc_extent(centre, radius).unwrap();
         assert_inside(bounds, &frame, ground, "disc");
         assert!(
             !painted_centres(&frame, ground).is_empty(),
             "the test disc must paint at least one pixel"
         );
-        let Some(zero) = make_ratio(0, 1) else { return };
+        let zero = make_ratio(0, 1).unwrap();
         assert!(
             disc_extent(centre, zero).is_none(),
             "a zero radius must have no extent"
@@ -368,41 +330,27 @@ mod tests {
 
     #[test]
     fn test_polygon_extent_contains_pixels() {
-        let Some(mut frame) = large_frame() else {
-            return;
-        };
+        let mut frame = large_frame();
         let ground = Rgb8::new(0, 0, 0);
         frame.fill(ground);
         let paint = Rgb8::new(0, 255, 0);
-        let Some(twelve) = make_ratio(12, 1) else {
-            return;
-        };
-        let Some(twenty) = make_ratio(20, 1) else {
-            return;
-        };
-        let Some(sixteen) = make_ratio(16, 1) else {
-            return;
-        };
+        let twelve = make_ratio(12, 1).unwrap();
+        let twenty = make_ratio(20, 1).unwrap();
+        let sixteen = make_ratio(16, 1).unwrap();
         let vertices = [
             Point::new(twelve, twelve),
             Point::new(twenty, twelve),
             Point::new(sixteen, twenty),
         ];
-        let Some(slice) = vertices.get(0..3) else {
-            return;
-        };
+        let slice = &vertices[0..3];
         fill_polygon(&mut frame, slice, paint);
-        let Some(bounds) = polygon_extent(slice) else {
-            return;
-        };
+        let bounds = polygon_extent(slice).unwrap();
         assert_inside(bounds, &frame, ground, "polygon");
         assert!(
             !painted_centres(&frame, ground).is_empty(),
             "the test triangle must paint at least one pixel"
         );
-        let Some(pair) = vertices.get(0..2) else {
-            return;
-        };
+        let pair = &vertices[0..2];
         assert!(
             polygon_extent(pair).is_none(),
             "two vertices must have no extent"
@@ -411,22 +359,16 @@ mod tests {
 
     #[test]
     fn test_rect_extent_contains_pixels() {
-        let Some(mut frame) = large_frame() else {
-            return;
-        };
+        let mut frame = large_frame();
         let ground = Rgb8::new(0, 0, 0);
         frame.fill(ground);
         let paint = Rgb8::new(0, 0, 255);
-        let Some(ten) = make_ratio(10, 1) else { return };
-        let Some(twenty) = make_ratio(20, 1) else {
-            return;
-        };
+        let ten = make_ratio(10, 1).unwrap();
+        let twenty = make_ratio(20, 1).unwrap();
         let lower = Point::new(ten, ten);
         let upper = Point::new(twenty, twenty);
         fill_rect(&mut frame, lower, upper, paint);
-        let Some(bounds) = rect_extent(lower, upper) else {
-            return;
-        };
+        let bounds = rect_extent(lower, upper).unwrap();
         assert_inside(bounds, &frame, ground, "rect");
         assert!(
             rect_extent(upper, lower).is_none(),
@@ -436,25 +378,17 @@ mod tests {
 
     #[test]
     fn test_line_extent_contains_pixels() {
-        let Some(mut frame) = large_frame() else {
-            return;
-        };
+        let mut frame = large_frame();
         let ground = Rgb8::new(0, 0, 0);
         frame.fill(ground);
         let paint = Rgb8::new(255, 255, 0);
-        let Some(ten) = make_ratio(10, 1) else { return };
-        let Some(twenty_two) = make_ratio(22, 1) else {
-            return;
-        };
-        let Some(sixteen) = make_ratio(16, 1) else {
-            return;
-        };
+        let ten = make_ratio(10, 1).unwrap();
+        let twenty_two = make_ratio(22, 1).unwrap();
+        let sixteen = make_ratio(16, 1).unwrap();
         let start = Point::new(ten, sixteen);
         let end = Point::new(twenty_two, sixteen);
         draw_line(&mut frame, start, end, paint);
-        let Some(bounds) = line_extent(start, end) else {
-            return;
-        };
+        let bounds = line_extent(start, end).unwrap();
         assert_inside(bounds, &frame, ground, "line");
         assert!(
             !painted_centres(&frame, ground).is_empty(),
@@ -464,30 +398,22 @@ mod tests {
 
     #[test]
     fn test_cross_extent_contains_pixels() {
-        let Some(mut frame) = large_frame() else {
-            return;
-        };
+        let mut frame = large_frame();
         let ground = Rgb8::new(0, 0, 0);
         frame.fill(ground);
         let paint = Rgb8::new(255, 0, 255);
-        let Some(sixteen) = make_ratio(16, 1) else {
-            return;
-        };
-        let Some(arm) = make_ratio(6, 1) else { return };
-        let Some(thick) = make_ratio(2, 1) else {
-            return;
-        };
+        let sixteen = make_ratio(16, 1).unwrap();
+        let arm = make_ratio(6, 1).unwrap();
+        let thick = make_ratio(2, 1).unwrap();
         let centre = Point::new(sixteen, sixteen);
         draw_cross(&mut frame, centre, arm, thick, paint);
-        let Some(bounds) = cross_extent(centre, arm, thick) else {
-            return;
-        };
+        let bounds = cross_extent(centre, arm, thick).unwrap();
         assert_inside(bounds, &frame, ground, "cross");
         assert!(
             !painted_centres(&frame, ground).is_empty(),
             "the test cross must paint at least one pixel"
         );
-        let Some(neg) = make_ratio(-1, 1) else { return };
+        let neg = make_ratio(-1, 1).unwrap();
         assert!(
             cross_extent(centre, neg, thick).is_none(),
             "a negative arm must have no extent"
@@ -496,16 +422,12 @@ mod tests {
 
     #[test]
     fn test_straddling_shapes_clip_correctly() {
-        let Some(mut frame) = black_8x8() else { return };
+        let mut frame = black_8x8().unwrap();
         let paint = Rgb8::new(200, 40, 40);
-        let Some(neg_two) = make_ratio(-2, 1) else {
-            return;
-        };
-        let Some(ten) = make_ratio(10, 1) else { return };
-        let Some(four) = make_ratio(4, 1) else { return };
-        let Some(three) = make_ratio(3, 1) else {
-            return;
-        };
+        let neg_two = make_ratio(-2, 1).unwrap();
+        let ten = make_ratio(10, 1).unwrap();
+        let four = make_ratio(4, 1).unwrap();
+        let three = make_ratio(3, 1).unwrap();
         fill_disc(&mut frame, Point::new(four, four), ten, paint);
         assert_eq!(
             frame.pixel(0, 0),
@@ -523,9 +445,7 @@ mod tests {
             Point::new(ten, ten),
             Point::new(neg_two, ten),
         ];
-        let Some(huge) = corners.get(0..4) else {
-            return;
-        };
+        let huge = &corners[0..4];
         fill_polygon(&mut frame, huge, paint);
         assert_eq!(
             frame.pixel(7, 7),

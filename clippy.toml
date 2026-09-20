@@ -1,0 +1,9 @@
+# Implements the project's existing rule that tests may use unwrap, expect, and
+# panic. Without this file, the workspace-wide denials in Cargo.toml reach test
+# code and make every .unwrap() a hard build error, forcing workarounds like
+# `let Some(x) = expr else { return };` that silently turn a failed fixture into
+# a passing test.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+allow-indexing-slicing-in-tests = true

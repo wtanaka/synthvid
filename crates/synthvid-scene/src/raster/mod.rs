@@ -315,33 +315,19 @@ mod tests {
 
     #[test]
     fn test_raster_outside_draws_nothing() {
-        let Some(mut frame) = black_8x8() else { return };
-        let Some(before) = Frame::zeroed(frame.dimensions()) else {
-            return;
-        };
+        let mut frame = black_8x8().unwrap();
+        let before = Frame::zeroed(frame.dimensions()).unwrap();
         let red = Rgb8::new(255, 0, 0);
-        let Some(far_x) = make_ratio(100, 1) else {
-            return;
-        };
-        let Some(far_y) = make_ratio(100, 1) else {
-            return;
-        };
-        let Some(small) = make_ratio(2, 1) else {
-            return;
-        };
-        let Some(unit) = make_ratio(1, 1) else { return };
+        let far_x = make_ratio(100, 1).unwrap();
+        let far_y = make_ratio(100, 1).unwrap();
+        let small = make_ratio(2, 1).unwrap();
+        let unit = make_ratio(1, 1).unwrap();
         let far = Point::new(far_x, far_y);
         fill_disc(&mut frame, far, small, red);
-        let Some(near_x) = make_ratio(102, 1) else {
-            return;
-        };
-        let Some(near_y) = make_ratio(102, 1) else {
-            return;
-        };
+        let near_x = make_ratio(102, 1).unwrap();
+        let near_y = make_ratio(102, 1).unwrap();
         let far_poly = [far, Point::new(near_x, far_y), Point::new(near_x, near_y)];
-        let Some(slice) = far_poly.get(0..3) else {
-            return;
-        };
+        let slice = &far_poly[0..3];
         fill_polygon(&mut frame, slice, red);
         fill_rect(&mut frame, far, Point::new(near_x, near_y), red);
         draw_line(&mut frame, far, Point::new(near_x, near_y), red);
@@ -355,13 +341,11 @@ mod tests {
 
     #[test]
     fn test_raster_straddling_edges_partial() {
-        let Some(mut frame) = black_8x8() else { return };
+        let mut frame = black_8x8().unwrap();
         let red = Rgb8::new(255, 0, 0);
         let black = Rgb8::new(0, 0, 0);
-        let Some(neg_two) = make_ratio(-2, 1) else {
-            return;
-        };
-        let Some(ten) = make_ratio(10, 1) else { return };
+        let neg_two = make_ratio(-2, 1).unwrap();
+        let ten = make_ratio(10, 1).unwrap();
         fill_rect(
             &mut frame,
             Point::new(neg_two, neg_two),
@@ -377,12 +361,8 @@ mod tests {
                 );
             }
         }
-        let Some(mut partial) = black_8x8() else {
-            return;
-        };
-        let Some(three) = make_ratio(3, 1) else {
-            return;
-        };
+        let mut partial = black_8x8().unwrap();
+        let three = make_ratio(3, 1).unwrap();
         fill_rect(
             &mut partial,
             Point::new(neg_two, neg_two),
@@ -413,26 +393,20 @@ mod tests {
 
     #[test]
     fn test_polygon_rect_identical() {
-        let Some(dims_w) = Width::new(8) else { return };
-        let Some(dims_h) = Height::new(8) else { return };
+        let dims_w = Width::new(8).unwrap();
+        let dims_h = Height::new(8).unwrap();
         let dims = Dimensions::new(dims_w, dims_h);
-        let Some(mut via_rect) = Frame::zeroed(dims) else {
-            return;
-        };
-        let Some(mut via_poly) = Frame::zeroed(dims) else {
-            return;
-        };
+        let mut via_rect = Frame::zeroed(dims).unwrap();
+        let mut via_poly = Frame::zeroed(dims).unwrap();
         let red = Rgb8::new(10, 200, 30);
-        let Some(two) = make_ratio(2, 1) else { return };
-        let Some(six) = make_ratio(6, 1) else { return };
-        let Some(four) = make_ratio(4, 1) else { return };
+        let two = make_ratio(2, 1).unwrap();
+        let six = make_ratio(6, 1).unwrap();
+        let four = make_ratio(4, 1).unwrap();
         let lower = Point::new(two, two);
         let upper = Point::new(six, four);
         fill_rect(&mut via_rect, lower, upper, red);
         let corners = [lower, Point::new(six, two), upper, Point::new(two, four)];
-        let Some(slice) = corners.get(0..4) else {
-            return;
-        };
+        let slice = &corners[0..4];
         fill_polygon(&mut via_poly, slice, red);
         assert_eq!(
             via_rect.data(),
@@ -443,58 +417,38 @@ mod tests {
 
     #[test]
     fn test_quarter_turn_square_identical() {
-        let Some(dims_w) = Width::new(10) else { return };
-        let Some(dims_h) = Height::new(10) else {
-            return;
-        };
+        let dims_w = Width::new(10).unwrap();
+        let dims_h = Height::new(10).unwrap();
         let dims = Dimensions::new(dims_w, dims_h);
-        let Some(mut original) = Frame::zeroed(dims) else {
-            return;
-        };
-        let Some(mut rotated) = Frame::zeroed(dims) else {
-            return;
-        };
+        let mut original = Frame::zeroed(dims).unwrap();
+        let mut rotated = Frame::zeroed(dims).unwrap();
         let white = Rgb8::new(255, 255, 255);
-        let Some(two) = make_ratio(2, 1) else { return };
-        let Some(six) = make_ratio(6, 1) else { return };
-        let Some(four) = make_ratio(4, 1) else { return };
-        let Some(neg_four) = make_ratio(-4, 1) else {
-            return;
-        };
+        let two = make_ratio(2, 1).unwrap();
+        let six = make_ratio(6, 1).unwrap();
+        let four = make_ratio(4, 1).unwrap();
+        let neg_four = make_ratio(-4, 1).unwrap();
         let square = [
             Point::new(two, two),
             Point::new(six, two),
             Point::new(six, six),
             Point::new(two, six),
         ];
-        let Some(square_slice) = square.get(0..4) else {
-            return;
-        };
+        let square_slice = &square[0..4];
         fill_polygon(&mut original, square_slice, white);
         let to_origin = Affine::translation(Vector::new(neg_four, neg_four));
         let spin = Affine::quarter_turns(1);
         let back_home = Affine::translation(Vector::new(four, four));
-        let Some(first_leg) = to_origin.then(spin) else {
-            return;
-        };
-        let Some(about_centre) = first_leg.then(back_home) else {
-            return;
-        };
+        let first_leg = to_origin.then(spin).unwrap();
+        let about_centre = first_leg.then(back_home).unwrap();
         let mut turned = [Point::new(two, two); 4];
         let mut idx: usize = 0;
         for corner in square_slice {
-            let Some(mapped) = about_centre.apply(*corner) else {
-                return;
-            };
-            let Some(slot) = turned.get_mut(idx) else {
-                return;
-            };
+            let mapped = about_centre.apply(*corner).unwrap();
+            let slot = turned.get_mut(idx).unwrap();
             *slot = mapped;
             idx = idx.wrapping_add(1);
         }
-        let Some(turned_slice) = turned.get(0..4) else {
-            return;
-        };
+        let turned_slice = &turned[0..4];
         fill_polygon(&mut rotated, turned_slice, white);
         assert_eq!(
             original.data(),
@@ -505,16 +459,14 @@ mod tests {
 
     #[test]
     fn test_line_and_cross_basic() {
-        let Some(mut frame) = black_8x8() else { return };
+        let mut frame = black_8x8().unwrap();
         let red = Rgb8::new(255, 0, 0);
         let black = Rgb8::new(0, 0, 0);
-        let Some(zero) = make_ratio(0, 1) else { return };
-        let Some(seven) = make_ratio(7, 1) else {
-            return;
-        };
-        let Some(four) = make_ratio(4, 1) else { return };
-        let Some(two) = make_ratio(2, 1) else { return };
-        let Some(one) = make_ratio(1, 1) else { return };
+        let zero = make_ratio(0, 1).unwrap();
+        let seven = make_ratio(7, 1).unwrap();
+        let four = make_ratio(4, 1).unwrap();
+        let two = make_ratio(2, 1).unwrap();
+        let one = make_ratio(1, 1).unwrap();
         draw_line(
             &mut frame,
             Point::new(zero, zero),
@@ -531,9 +483,7 @@ mod tests {
             Some(red),
             "diagonal line must cover an interior pixel"
         );
-        let Some(mut cross_frame) = black_8x8() else {
-            return;
-        };
+        let mut cross_frame = black_8x8().unwrap();
         draw_cross(&mut cross_frame, Point::new(four, four), two, one, red);
         assert_eq!(
             cross_frame.pixel(4, 4),

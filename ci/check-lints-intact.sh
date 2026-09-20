@@ -6,6 +6,9 @@
 # Its digest is recorded, so relaxing a lint is a two-file change that states
 # plainly what it is doing.
 #
+# The digest guards both Cargo.toml and clippy.toml, which together form the
+# complete lint configuration for the workspace.
+#
 # Also checks that no member crate has opted out: a crate whose manifest lacks
 # `[lints] workspace = true` inherits nothing, and would be silently unlinted.
 set -eu
@@ -30,10 +33,31 @@ if [ ! -f "$digest_file" ]; then
 fi
 
 expected=$(tr -dc '0-9a-f' < "$digest_file")
-actual=$(sha_of Cargo.toml)
+
+# Compute a combined digest of both lint configuration files.
+# We concatenate the two files so that changing either one invalidates the digest.
+# clippy.toml is not optional. Deleting it re-enables `unwrap_used` and the
+# other denials inside test code, which is itself a weakening of the lint
+# configuration, so its absence is reported as that rather than left to surface
+# as a confusing digest mismatch.
+if [ ! -f clippy.toml ]; then
+    echo "check-lints-intact: clippy.toml is missing" >&2
+    echo "  It carries the in-test lint exemptions. Without it the" >&2
+    echo "  workspace denials reach test code and tests cannot use unwrap." >&2
+    exit 1
+fi
+
+cargo_sha=$(sha_of Cargo.toml)
+clippy_sha=$(sha_of clippy.toml)
+actual=$(printf '%s%s' "$cargo_sha" "$clippy_sha" | \
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum | cut -d' ' -f1
+    else
+        shasum -a 256 | cut -d' ' -f1
+    fi)
 
 if [ "$expected" != "$actual" ]; then
-    echo "check-lints-intact: the workspace manifest has changed" >&2
+    echo "check-lints-intact: the lint configuration has changed" >&2
     echo "  expected $expected" >&2
     echo "  actual   $actual" >&2
     echo "  If the change is intended, update $digest_file in the same commit" >&2

@@ -339,16 +339,14 @@ mod tests {
 
         // FrameCount
         assert!(FrameCount::new(0).is_none(), "frame count 0 rejected");
-        let fc = FrameCount::new(100);
-        assert!(fc.is_some(), "frame count 100 accepted");
-        let Some(fc_val) = fc else { return };
-        assert_eq!(fc_val.get().get(), 100, "frame count get");
+        let fc = FrameCount::new(100).expect("frame count 100 accepted");
+        assert_eq!(fc.get().get(), 100, "frame count get");
 
         // Width & Height & Dimensions
         assert!(Width::new(0).is_none(), "width 0 rejected");
         assert!(Height::new(0).is_none(), "height 0 rejected");
-        let Some(w) = Width::new(1920) else { return };
-        let Some(h) = Height::new(1080) else { return };
+        let w = Width::new(1920).expect("width 1920 accepted");
+        let h = Height::new(1080).expect("height 1080 accepted");
         let dims = Dimensions::new(w, h);
         assert_eq!(dims.width.get().get(), 1920, "dims width");
         assert_eq!(dims.height.get().get(), 1080, "dims height");
@@ -364,13 +362,9 @@ mod tests {
         assert_eq!(col.b, 64, "blue channel");
 
         // FrameRate
-        let Some(d1) = NonZeroI64::new(1) else { return };
-        let Some(zero_ratio) = Ratio::new(0, d1) else {
-            return;
-        };
-        let Some(neg_ratio) = Ratio::new(-24, d1) else {
-            return;
-        };
+        let d1 = NonZeroI64::new(1).unwrap();
+        let zero_ratio = Ratio::new(0, d1).unwrap();
+        let neg_ratio = Ratio::new(-24, d1).unwrap();
 
         assert!(FrameRate::new(zero_ratio).is_none(), "rate 0 rejected");
         assert!(
@@ -380,27 +374,19 @@ mod tests {
         assert!(FrameRate::from_fps(0).is_none(), "fps 0 rejected");
 
         // Integer rate 24 fps
-        let fps24 = FrameRate::from_fps(24);
-        assert!(fps24.is_some(), "fps 24 accepted");
-        let Some(r24) = fps24 else { return };
-        assert_eq!(r24.get().numer(), 24, "fps 24 numerator");
-        assert_eq!(r24.get().denom().get(), 1, "fps 24 denominator");
+        let fps24 = FrameRate::from_fps(24).expect("fps 24 accepted");
+        assert_eq!(fps24.get().numer(), 24, "fps 24 numerator");
+        assert_eq!(fps24.get().denom().get(), 1, "fps 24 denominator");
 
         // Fractional rate 30000/1001 (NTSC)
-        let Some(nz1001) = NonZeroU32::new(1001) else {
-            return;
-        };
-        let ntsc = FrameRate::from_fraction(30000, nz1001);
-        assert!(ntsc.is_some(), "30000/1001 accepted");
-        let Some(r_ntsc) = ntsc else { return };
-        assert_eq!(r_ntsc.ratio().numer(), 30000, "NTSC numerator");
-        assert_eq!(r_ntsc.ratio().denom().get(), 1001, "NTSC denominator");
+        let nz1001 = NonZeroU32::new(1001).unwrap();
+        let ntsc = FrameRate::from_fraction(30000, nz1001).expect("30000/1001 accepted");
+        assert_eq!(ntsc.ratio().numer(), 30000, "NTSC numerator");
+        assert_eq!(ntsc.ratio().denom().get(), 1001, "NTSC denominator");
 
         // Check TryFrom
-        let Some(d2) = NonZeroI64::new(2) else { return };
-        let Some(pos_ratio) = Ratio::new(60, d2) else {
-            return;
-        };
+        let d2 = NonZeroI64::new(2).unwrap();
+        let pos_ratio = Ratio::new(60, d2).unwrap();
         let try_res = FrameRate::try_from(pos_ratio);
         assert!(try_res.is_ok(), "TryFrom positive ratio succeeds");
         let err_res = FrameRate::try_from(neg_ratio);

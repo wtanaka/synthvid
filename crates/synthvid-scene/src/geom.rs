@@ -524,67 +524,47 @@ mod tests {
 
     #[test]
     fn test_affine_apply_compose_inverse() {
-        let Some(x) = make_ratio(3, 2) else { return };
-        let Some(y) = make_ratio(-5, 4) else { return };
+        let x = make_ratio(3, 2).unwrap();
+        let y = make_ratio(-5, 4).unwrap();
         let probe = Point::new(x, y);
         let same = Affine::identity().apply(probe);
         assert_eq!(same, Some(probe), "identity must map a point to itself");
-        let Some(dx) = make_ratio(2, 1) else { return };
-        let Some(dy) = make_ratio(3, 1) else { return };
+        let dx = make_ratio(2, 1).unwrap();
+        let dy = make_ratio(3, 1).unwrap();
         let shift = Affine::translation(Vector::new(dx, dy));
-        let Some(moved) = shift.apply(probe) else {
-            return;
-        };
-        let Some(expect_x) = x.checked_add(dx) else {
-            return;
-        };
-        let Some(expect_y) = y.checked_add(dy) else {
-            return;
-        };
+        let moved = shift.apply(probe).unwrap();
+        let expect_x = x.checked_add(dx).unwrap();
+        let expect_y = y.checked_add(dy).unwrap();
         assert_eq!(
             moved,
             Point::new(expect_x, expect_y),
             "translation must add the displacement"
         );
-        let Some(back) = shift.inverse() else { return };
-        let Some(there) = shift.apply(probe) else {
-            return;
-        };
-        let Some(roundtrip) = back.apply(there) else {
-            return;
-        };
+        let back = shift.inverse().unwrap();
+        let there = shift.apply(probe).unwrap();
+        let roundtrip = back.apply(there).unwrap();
         assert_eq!(
             roundtrip, probe,
             "inverse must undo the translation exactly"
         );
-        let Some(there_and_back) = shift.then(back) else {
-            return;
-        };
+        let there_and_back = shift.then(back).unwrap();
         assert_eq!(
             there_and_back,
             Affine::identity(),
             "a transform followed by its inverse must be identity"
         );
-        let Some(sx) = make_ratio(2, 1) else { return };
-        let Some(sy) = make_ratio(3, 1) else { return };
+        let sx = make_ratio(2, 1).unwrap();
+        let sy = make_ratio(3, 1).unwrap();
         let scale = Affine::scaling(sx, sy);
-        let Some(scaled_x) = x.checked_mul(sx) else {
-            return;
-        };
-        let Some(scaled_y) = y.checked_mul(sy) else {
-            return;
-        };
-        let Some(scaled) = scale.apply_vector(Vector::new(x, y)) else {
-            return;
-        };
+        let scaled_x = x.checked_mul(sx).unwrap();
+        let scaled_y = y.checked_mul(sy).unwrap();
+        let scaled = scale.apply_vector(Vector::new(x, y)).unwrap();
         assert_eq!(
             scaled,
             Vector::new(scaled_x, scaled_y),
             "scaling must multiply vector components"
         );
-        let Some(vec_moved) = shift.apply_vector(Vector::new(x, y)) else {
-            return;
-        };
+        let vec_moved = shift.apply_vector(Vector::new(x, y)).unwrap();
         assert_eq!(
             vec_moved,
             Vector::new(x, y),
@@ -594,43 +574,31 @@ mod tests {
 
     #[test]
     fn test_affine_quarter_turns() {
-        let Some(one) = make_ratio(1, 1) else { return };
-        let Some(zero) = make_ratio(0, 1) else { return };
-        let Some(neg_one) = make_ratio(-1, 1) else {
-            return;
-        };
+        let one = make_ratio(1, 1).unwrap();
+        let zero = make_ratio(0, 1).unwrap();
+        let neg_one = make_ratio(-1, 1).unwrap();
         let probe = Point::new(one, zero);
-        let Some(first) = Affine::quarter_turns(1).apply(probe) else {
-            return;
-        };
+        let first = Affine::quarter_turns(1).apply(probe).unwrap();
         assert_eq!(
             first,
             Point::new(zero, one),
             "one quarter turn must map (1, 0) to (0, 1)"
         );
-        let Some(second) = Affine::quarter_turns(2).apply(probe) else {
-            return;
-        };
+        let second = Affine::quarter_turns(2).apply(probe).unwrap();
         assert_eq!(
             second,
             Point::new(neg_one, zero),
             "two quarter turns must map (1, 0) to (-1, 0)"
         );
-        let Some(third) = Affine::quarter_turns(3).apply(probe) else {
-            return;
-        };
+        let third = Affine::quarter_turns(3).apply(probe).unwrap();
         assert_eq!(
             third,
             Point::new(zero, neg_one),
             "three quarter turns must map (1, 0) to (0, -1)"
         );
-        let Some(full) = Affine::quarter_turns(4).apply(probe) else {
-            return;
-        };
+        let full = Affine::quarter_turns(4).apply(probe).unwrap();
         assert_eq!(full, probe, "four quarter turns must be identity");
-        let Some(backward) = Affine::quarter_turns(-1).apply(probe) else {
-            return;
-        };
+        let backward = Affine::quarter_turns(-1).apply(probe).unwrap();
         assert_eq!(
             backward, third,
             "minus one quarter turn must equal three forward turns"
@@ -639,42 +607,32 @@ mod tests {
 
     #[test]
     fn test_similarity_roundtrip_and_affine() {
-        let Some(one) = make_ratio(1, 1) else { return };
-        let Some(zero) = make_ratio(0, 1) else { return };
-        let Some(two) = make_ratio(2, 1) else { return };
-        let Some(three) = make_ratio(3, 1) else {
-            return;
-        };
+        let one = make_ratio(1, 1).unwrap();
+        let zero = make_ratio(0, 1).unwrap();
+        let two = make_ratio(2, 1).unwrap();
+        let three = make_ratio(3, 1).unwrap();
         let probe = Point::new(two, three);
         let shift = Similarity::translation(Vector::new(two, three));
-        let Some(moved) = shift.apply(probe) else {
-            return;
-        };
-        let Some(back) = shift.inverse() else { return };
-        let Some(home) = back.apply(moved) else {
-            return;
-        };
+        let moved = shift.apply(probe).unwrap();
+        let back = shift.inverse().unwrap();
+        let home = back.apply(moved).unwrap();
         assert_eq!(home, probe, "inverse must undo a translation exactly");
-        let Some(spun) = Similarity::quarter_turns(1).apply(Point::new(one, zero)) else {
-            return;
-        };
+        let spun = Similarity::quarter_turns(1)
+            .apply(Point::new(one, zero))
+            .unwrap();
         assert_eq!(
             spun,
             Point::new(zero, one),
             "a similarity quarter turn must match the affine one"
         );
         let scaled = Similarity::uniform_scale(two);
-        let Some(wide) = scaled.apply_vector(Vector::new(one, zero)) else {
-            return;
-        };
+        let wide = scaled.apply_vector(Vector::new(one, zero)).unwrap();
         assert_eq!(
             wide,
             Vector::new(two, zero),
             "uniform scale must multiply both axes equally"
         );
-        let Some(as_affine) = scaled.to_affine() else {
-            return;
-        };
+        let as_affine = scaled.to_affine().unwrap();
         assert_eq!(
             as_affine.d, as_affine.a,
             "a similarity affine must scale uniformly"

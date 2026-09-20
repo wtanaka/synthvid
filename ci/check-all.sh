@@ -16,6 +16,7 @@ for check in \
     check-no-external-deps.sh \
     check-forbidden-tokens.sh \
     check-suppressions.sh \
+    check-test-hygiene.sh \
     check-catalog-generated.sh \
     check-clippy.sh \
     check-rustdoc.sh \
