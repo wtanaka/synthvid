@@ -50,6 +50,7 @@ pure_crates=""
 for d in crates/*/; do
     case "$d" in
         */synthvid-cli/) ;;
+        */synthvid-validate/) ;;
         *) pure_crates="$pure_crates $d" ;;
     esac
 done

@@ -5,6 +5,9 @@ version = 4
 [[package]]
 name = "synthvid-catalog"
 version = "0.1.0"
+dependencies = [
+ "synthvid-scene",
+]
 
 [[package]]
 name = "synthvid-cli"
@@ -17,3 +20,10 @@ version = "0.1.0"
 [[package]]
 name = "synthvid-scene"
 version = "0.1.0"
+
+[[package]]
+name = "synthvid-validate"
+version = "0.1.0"
+dependencies = [
+ "synthvid-catalog",
+]
