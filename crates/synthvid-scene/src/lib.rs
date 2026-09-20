@@ -67,5 +67,5 @@ pub use crate::scene::{
 };
 pub use crate::trig::{cos_turns, sin_turns};
 pub use crate::units::{
-    Dimensions, FrameCount, FrameIndex, FrameRate, FrameRateError, Height, Seed, Width,
+    Dimensions, FrameCount, FrameIndex, FrameRate, FrameRateError, Height, ObjectIndex, Seed, Width,
 };

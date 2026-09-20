@@ -27,10 +27,10 @@ use crate::camera::{rotation_at, zoom_at, Camera};
 use crate::frame::Frame;
 use crate::geom::Similarity;
 use crate::motion::position_at;
-use crate::ratio::{int_ratio, Ratio};
+use crate::ratio::Ratio;
 use crate::scene::Scene;
 use crate::trig::{cos_turns, sin_turns};
-use crate::units::{Dimensions, FrameIndex};
+use crate::units::{Dimensions, FrameIndex, ObjectIndex};
 
 use background::paint_background;
 use shape::draw_object;
@@ -58,6 +58,18 @@ pub enum RenderError {
     /// bits. The variant exists so the failure stays explicit rather than
     /// hidden.
     BufferTooLarge,
+    /// The camera placement for that frame could not be evaluated exactly.
+    CameraOverflow {
+        /// Frame whose camera placement overflowed exact arithmetic.
+        frame: FrameIndex,
+    },
+    /// That object's placement for that frame could not be evaluated exactly.
+    ObjectOverflow {
+        /// Frame whose object placement overflowed exact arithmetic.
+        frame: FrameIndex,
+        /// Position of the failing object in `Scene::objects`.
+        object: ObjectIndex,
+    },
 }
 
 impl fmt::Display for RenderError {
@@ -68,6 +80,14 @@ impl fmt::Display for RenderError {
                 "frame buffer dimensions {actual:?} do not match scene dimensions {expected:?}"
             ),
             Self::BufferTooLarge => write!(f, "frame buffer length overflows usize"),
+            Self::CameraOverflow { frame } => write!(
+                f,
+                "camera placement for frame {frame:?} overflows exact arithmetic"
+            ),
+            Self::ObjectOverflow { frame, object } => write!(
+                f,
+                "object {object:?} placement for frame {frame:?} overflows exact arithmetic"
+            ),
         }
     }
 }
@@ -82,8 +102,7 @@ impl core::error::Error for RenderError {}
 /// the camera rotation angle about the camera centre. Negation is the camera
 /// convention: turning the camera one way moves the scene the other way.
 /// A similarity can only rotate and uniformly scale, so a disc mapped through
-/// it stays a disc; [`render_into`] falls back to the identity placement when
-/// any intermediate value overflows, so evaluation stays total.
+/// it stays a disc.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 struct CameraFrame {
     /// Scene-to-screen transform applied to every drawn shape.
@@ -96,83 +115,86 @@ struct CameraFrame {
 ///
 /// The rotation angle comes from [`rotation_at`] and the magnification from
 /// [`zoom_at`]. A [`crate::camera::Zoom`] cannot describe a non-positive
-/// magnification at any frame, so no clamp is needed here. Falls back to the
-/// identity placement when exact arithmetic overflows, so evaluation stays
-/// total.
-fn camera_frame(camera: &Camera, frame: FrameIndex) -> CameraFrame {
-    let fallback = CameraFrame {
-        transform: Similarity::identity(),
-        zoom: int_ratio(1),
-    };
+/// magnification at any frame, so no clamp is needed here.
+///
+/// # Errors
+///
+/// Returns [`RenderError::CameraOverflow`] when any intermediate value
+/// overflows exact arithmetic.
+fn camera_frame(camera: &Camera, frame: FrameIndex) -> Result<CameraFrame, RenderError> {
+    let overflow = || RenderError::CameraOverflow { frame };
     let centre = position_at(&camera.motion, frame);
     let Some(angle) = rotation_at(&camera.rotation, frame) else {
-        return fallback;
+        return Err(overflow());
     };
     let Some(magnification) = zoom_at(&camera.zoom, frame) else {
-        return fallback;
+        return Err(overflow());
     };
     let zoom = magnification.get();
     let angle_value = angle.get();
-    let turn = angle_value.checked_neg().unwrap_or(angle_value);
+    let Some(turn) = angle_value.checked_neg() else {
+        return Err(overflow());
+    };
     let cos = cos_turns(turn);
     let sin = sin_turns(turn);
     let Some(neg_sin) = sin.checked_neg() else {
-        return fallback;
+        return Err(overflow());
     };
     let Some(a) = zoom.checked_mul(cos) else {
-        return fallback;
+        return Err(overflow());
     };
     let Some(b) = zoom.checked_mul(neg_sin) else {
-        return fallback;
+        return Err(overflow());
     };
     let Some(c) = zoom.checked_mul(sin) else {
-        return fallback;
+        return Err(overflow());
     };
     let Some(ax) = a.checked_mul(centre.x) else {
-        return fallback;
+        return Err(overflow());
     };
     let Some(bx) = b.checked_mul(centre.y) else {
-        return fallback;
+        return Err(overflow());
     };
     let Some(sum_x) = ax.checked_add(bx) else {
-        return fallback;
+        return Err(overflow());
     };
     let Some(tx) = sum_x.checked_neg() else {
-        return fallback;
+        return Err(overflow());
     };
     let Some(cx) = c.checked_mul(centre.x) else {
-        return fallback;
+        return Err(overflow());
     };
     let Some(dx) = a.checked_mul(centre.y) else {
-        return fallback;
+        return Err(overflow());
     };
     let Some(sum_y) = cx.checked_add(dx) else {
-        return fallback;
+        return Err(overflow());
     };
     let Some(ty) = sum_y.checked_neg() else {
-        return fallback;
+        return Err(overflow());
     };
     let candidate = Similarity::new(a, b, tx, ty);
     if candidate.to_affine().is_none() {
-        return fallback;
+        return Err(overflow());
     }
-    CameraFrame {
+    Ok(CameraFrame {
         transform: candidate,
         zoom,
-    }
+    })
 }
 
 /// Renders one frame of a scene into a fresh [`Frame`].
 ///
 /// Draws the background, evaluates the camera at `frame`, then draws each
 /// object whose visibility span contains `frame` in declaration order.
-/// Rendering the same frame twice yields byte-identical buffers. Fails only
-/// when the fresh buffer cannot be allocated; see [`RenderError`].
+/// Rendering the same frame twice yields byte-identical buffers.
 ///
 /// # Errors
 ///
 /// Returns [`RenderError::BufferTooLarge`] when the frame buffer length
-/// overflows `usize` and the fresh buffer cannot be allocated.
+/// overflows `usize` and the fresh buffer cannot be allocated. Propagates
+/// [`RenderError::CameraOverflow`] and [`RenderError::ObjectOverflow`] from
+/// [`render_into`].
 pub fn render_frame(scene: &Scene, frame: FrameIndex) -> Result<Frame, RenderError> {
     let Some(mut fresh) = Frame::zeroed(scene.dimensions) else {
         return Err(RenderError::BufferTooLarge);
@@ -185,13 +207,16 @@ pub fn render_frame(scene: &Scene, frame: FrameIndex) -> Result<Frame, RenderErr
 ///
 /// Behaves exactly like [`render_frame`], except the destination is reused:
 /// the background overwrites every pixel first, so previous contents never
-/// leak through. Fails with [`RenderError::MismatchedDimensions`] when `out`
-/// does not match the scene dimensions.
+/// leak through. A shape that falls entirely outside the frame draws nothing;
+/// only a failure to evaluate a placement is an error.
 ///
 /// # Errors
 ///
 /// Returns [`RenderError::MismatchedDimensions`] when `out` carries different
-/// dimensions from the scene.
+/// dimensions from the scene. Returns [`RenderError::CameraOverflow`] when the
+/// camera placement overflows exact arithmetic. Returns
+/// [`RenderError::ObjectOverflow`] when an object placement overflows exact
+/// arithmetic.
 pub fn render_into(scene: &Scene, frame: FrameIndex, out: &mut Frame) -> Result<(), RenderError> {
     if out.dimensions() != scene.dimensions {
         return Err(RenderError::MismatchedDimensions {
@@ -200,11 +225,26 @@ pub fn render_into(scene: &Scene, frame: FrameIndex, out: &mut Frame) -> Result<
         });
     }
     paint_background(out, scene.background);
-    let camera = camera_frame(&scene.camera, frame);
-    for object in &scene.objects {
+    let camera = camera_frame(&scene.camera, frame)?;
+    for (index, object) in scene.objects.iter().enumerate() {
         if object.visible.contains(frame) {
+            let Some(index_u32) = u32::try_from(index).ok() else {
+                return Err(RenderError::ObjectOverflow {
+                    frame,
+                    object: ObjectIndex::new(u32::MAX),
+                });
+            };
+            let object_index = ObjectIndex::new(index_u32);
             let at = position_at(&object.motion, frame);
-            draw_object(out, &object.shape, at, &camera, object.fill);
+            draw_object(
+                out,
+                &object.shape,
+                at,
+                &camera,
+                object.fill,
+                frame,
+                object_index,
+            )?;
         }
     }
     Ok(())
@@ -218,7 +258,7 @@ mod tests {
     use crate::geom::Point;
     use crate::scene::{Background, FrameSpan, Motion, Object, Shape};
     use crate::testutil::make_ratio;
-    use crate::units::{FrameCount, FrameRate, Height, Seed, Width};
+    use crate::units::{FrameCount, FrameIndex, FrameRate, Height, ObjectIndex, Seed, Width};
 
     /// Builds a camera that follows `origin` with no rotation and unit magnification.
     fn still_camera_at(origin: Point) -> Option<Camera> {
@@ -432,6 +472,130 @@ mod tests {
             second.pixel(4, 4),
             Some(blue),
             "swapping the order must swap the winning colour"
+        );
+    }
+
+    #[test]
+    fn test_camera_overflow_names_frame() {
+        let Some(scene) = small_scene(Background::Solid(Rgb8::new(0, 0, 0)), Vec::new()) else {
+            return;
+        };
+        let Some(max) = make_ratio(i64::MAX, 1) else {
+            return;
+        };
+        let Some(one) = make_ratio(1, 1) else {
+            return;
+        };
+        let Some(zero) = make_ratio(0, 1) else {
+            return;
+        };
+        let Some(unit) = Magnification::new(one) else {
+            return;
+        };
+        let camera = Camera::new(
+            Motion::Fixed(Point::new(one, zero)),
+            Rotation::Linear {
+                start: Turns::new(max),
+                per_frame: Turns::new(max),
+            },
+            Zoom::Fixed(unit),
+        );
+        let mut overflowing = scene;
+        overflowing.camera = camera;
+        let result = render_frame(&overflowing, FrameIndex::new(1));
+        assert!(
+            matches!(
+                result,
+                Err(RenderError::CameraOverflow { frame: actual }) if actual == FrameIndex::new(1)
+            ),
+            "a camera placement overflow must name the frame"
+        );
+    }
+
+    #[test]
+    fn test_object_overflow_names_object_index() {
+        let Some(span) = make_span(0, 4) else {
+            return;
+        };
+        let Some(valid) = fixed_disc(1, 1, 1, Rgb8::new(200, 40, 40), span) else {
+            return;
+        };
+        let Some(max) = make_ratio(i64::MAX, 1) else {
+            return;
+        };
+        let Some(zero) = make_ratio(0, 1) else {
+            return;
+        };
+        let Some(one) = make_ratio(1, 1) else {
+            return;
+        };
+        let overflow = Object::new(
+            Shape::Rect {
+                half_width: one,
+                half_height: one,
+            },
+            Rgb8::new(20, 180, 60),
+            Motion::Fixed(Point::new(max, zero)),
+            span,
+        );
+        let Some(overflowing) =
+            small_scene(Background::Solid(Rgb8::new(0, 0, 0)), vec![valid, overflow])
+        else {
+            return;
+        };
+        let result = render_frame(&overflowing, FrameIndex::new(0));
+        assert!(
+            matches!(
+                result,
+                Err(RenderError::ObjectOverflow {
+                    frame: actual_frame,
+                    object: actual_object
+                }) if actual_frame == FrameIndex::new(0)
+                    && actual_object == ObjectIndex::new(1)
+            ),
+            "an object placement overflow must name the frame and object index"
+        );
+    }
+
+    #[test]
+    fn test_off_screen_shape_renders_successfully() {
+        let Some(span) = make_span(0, 4) else {
+            return;
+        };
+        let Some(off) = fixed_disc(100, 100, 1, Rgb8::new(255, 0, 0), span) else {
+            return;
+        };
+        let Some(scene) = small_scene(Background::Solid(Rgb8::new(0, 0, 0)), vec![off]) else {
+            return;
+        };
+        let Ok(frame) = render_frame(&scene, FrameIndex::new(0)) else {
+            return;
+        };
+        let Some(expected) = Frame::from_color(scene.dimensions, Rgb8::new(0, 0, 0)) else {
+            return;
+        };
+        assert_eq!(
+            frame.data(),
+            expected.data(),
+            "a shape entirely outside the frame must draw nothing"
+        );
+    }
+
+    #[test]
+    fn test_no_objects_equals_background() {
+        let Some(scene) = small_scene(Background::Solid(Rgb8::new(12, 34, 56)), Vec::new()) else {
+            return;
+        };
+        let Ok(frame) = render_frame(&scene, FrameIndex::new(0)) else {
+            return;
+        };
+        let Some(expected) = Frame::from_color(scene.dimensions, Rgb8::new(12, 34, 56)) else {
+            return;
+        };
+        assert_eq!(
+            frame.data(),
+            expected.data(),
+            "a scene with no objects must equal its background alone"
         );
     }
 
