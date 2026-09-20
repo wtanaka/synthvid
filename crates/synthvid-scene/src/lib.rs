@@ -22,6 +22,7 @@
 //! | [`trig`]   | platform-independent sine and cosine                    |
 //! | [`geom`]   | points, vectors, and exact affine transforms            |
 //! | [`raster`] | drawing geometry onto a frame                           |
+//! | [`scene`]  | declarative scene description                           |
 //!
 //! New work belongs in the module that owns its concern. A concern that fits
 //! none of them is a new module, declared here alongside the others.
@@ -36,6 +37,7 @@ pub mod geom;
 pub mod raster;
 pub mod ratio;
 pub mod rng;
+pub mod scene;
 pub mod trig;
 pub mod units;
 
@@ -48,6 +50,9 @@ pub use crate::geom::{Affine, Point, Vector};
 pub use crate::raster::{draw_cross, draw_line, fill_disc, fill_polygon, fill_rect};
 pub use crate::ratio::Ratio;
 pub use crate::rng::Rng;
+pub use crate::scene::{
+    Background, Camera, Direction, FrameSpan, Motion, Object, Scale, ScaleError, Scene, Shape,
+};
 pub use crate::trig::{cos_turns, sin_turns};
 pub use crate::units::{
     Dimensions, FrameCount, FrameIndex, FrameRate, FrameRateError, Height, Seed, Width,
