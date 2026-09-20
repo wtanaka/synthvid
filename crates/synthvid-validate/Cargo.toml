@@ -1,6 +1,6 @@
 [package]
-name = "synthvid-catalog"
-description = "Deterministic synthetic video generation: catalog."
+name = "synthvid-validate"
+description = "Deterministic synthetic video generation: validation and testing oracle."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -10,7 +10,7 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
-synthvid-scene = { path = "../synthvid-scene" }
+synthvid-catalog = { path = "../synthvid-catalog" }
 
 [lints]
 workspace = true

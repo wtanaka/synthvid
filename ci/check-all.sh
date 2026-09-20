@@ -21,6 +21,7 @@ for check in \
     check-forbidden-tokens.sh \
     check-suppressions.sh \
     check-test-hygiene.sh \
+    check-type-safety.sh \
     check-catalog-generated.sh \
     check-clippy.sh \
     check-rustdoc.sh \
