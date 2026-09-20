@@ -14,6 +14,7 @@
 //!
 //! | Module     | Owns                                                    |
 //! | ---------- | ------------------------------------------------------- |
+//! | [`camera`] | camera rotation and magnification over frames         |
 //! | [`ratio`]  | exact rational arithmetic                               |
 //! | [`render`] | closed-form frame rendering                             |
 //! | [`units`]  | frame indices and counts, dimensions, frame rate, seed  |
@@ -33,6 +34,7 @@
 //! declarations and re-exports below.
 #![forbid(unsafe_code)]
 
+pub mod camera;
 pub mod color;
 pub mod frame;
 pub mod geom;
@@ -48,6 +50,7 @@ pub mod units;
 #[cfg(test)]
 pub mod testutil;
 
+pub use crate::camera::{rotation_at, zoom_at, Camera, Magnification, Rotation, Turns, Zoom};
 pub use crate::color::{required_buffer_len, Rgb8};
 pub use crate::frame::Frame;
 pub use crate::geom::{Affine, Point, Similarity, Vector};
@@ -60,7 +63,7 @@ pub use crate::ratio::Ratio;
 pub use crate::render::{render_frame, render_into, RenderError};
 pub use crate::rng::Rng;
 pub use crate::scene::{
-    Background, Camera, Direction, FrameSpan, Motion, Object, Scale, ScaleError, Scene, Shape,
+    Background, Direction, FrameSpan, Motion, Object, Scale, ScaleError, Scene, Shape,
 };
 pub use crate::trig::{cos_turns, sin_turns};
 pub use crate::units::{

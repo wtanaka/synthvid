@@ -9,6 +9,7 @@
 use core::fmt;
 use core::num::NonZeroU16;
 
+use crate::camera::Camera;
 use crate::color::Rgb8;
 use crate::geom::{Point, Vector};
 use crate::ratio::Ratio;
@@ -299,29 +300,6 @@ impl Object {
     }
 }
 
-/// Camera transform of a scene.
-#[derive(Clone, Debug, Eq, PartialEq, Hash)]
-pub struct Camera {
-    /// Translation of the camera centre as a function of frame.
-    pub motion: Motion,
-    /// Rotation of the camera as a function of frame, in turns.
-    pub rotation: Motion,
-    /// Magnification of the camera as a function of frame.
-    pub zoom: Motion,
-}
-
-impl Camera {
-    /// Creates a camera from its translation, rotation, and magnification.
-    #[must_use]
-    pub const fn new(motion: Motion, rotation: Motion, zoom: Motion) -> Self {
-        Self {
-            motion,
-            rotation,
-            zoom,
-        }
-    }
-}
-
 /// Declarative description of a video sequence.
 ///
 /// Plain data: dimensions, rate, length, an optional physical [`Scale`], a
@@ -373,6 +351,7 @@ impl Scene {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::camera::{Magnification, Rotation, Turns, Zoom};
     use crate::testutil::make_ratio;
     use crate::units::{Height, Width};
 
@@ -382,11 +361,16 @@ mod tests {
         Some(Point::new(zero, zero))
     }
 
-    /// Builds a fixed camera pointing at the origin.
+    /// Builds the identity camera: still at the origin with unit magnification.
     fn fixed_camera() -> Option<Camera> {
         let origin = origin_point()?;
-        let still = Motion::Fixed(origin);
-        Some(Camera::new(still.clone(), still.clone(), still))
+        let angle = Turns::new(make_ratio(0, 1)?);
+        let unit = Zoom::Fixed(Magnification::new(make_ratio(1, 1)?)?);
+        Some(Camera::new(
+            Motion::Fixed(origin),
+            Rotation::Fixed(angle),
+            unit,
+        ))
     }
 
     /// Builds a one-frame-per-side span from `start` to `end`.
