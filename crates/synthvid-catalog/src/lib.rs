@@ -11,6 +11,7 @@
 pub mod keys;
 pub mod manifest;
 pub mod names;
+pub mod sha256;
 pub mod writer;
 
 pub use keys::ManifestKey;
@@ -19,4 +20,5 @@ pub use manifest::{
     ManifestObjectDecl, ManifestPoint, ManifestRatio, OnScreen,
 };
 pub use names::{BackgroundName, ShapeName};
+pub use sha256::{sha256, DIGEST_SIZE};
 pub use writer::{JsonArray, JsonEntryName, JsonKey, JsonObject};
