@@ -23,11 +23,12 @@ mod shape;
 
 use core::fmt;
 
+use crate::camera::{rotation_at, zoom_at, Camera};
 use crate::frame::Frame;
 use crate::geom::Similarity;
 use crate::motion::position_at;
 use crate::ratio::{int_ratio, Ratio};
-use crate::scene::{Camera, Scene};
+use crate::scene::Scene;
 use crate::trig::{cos_turns, sin_turns};
 use crate::units::{Dimensions, FrameIndex};
 
@@ -93,25 +94,26 @@ struct CameraFrame {
 
 /// Evaluates the [`Camera`] at a frame index.
 ///
-/// The rotation angle is the `x` coordinate of the rotation motion position,
-/// in turns; its `y` coordinate is ignored. The magnification is the `x`
-/// coordinate of the zoom motion position; its `y` coordinate is ignored, and
-/// a non-positive value falls back to one, so a camera built from fixed
-/// origin points is exactly the identity.
+/// The rotation angle comes from [`rotation_at`] and the magnification from
+/// [`zoom_at`]. A [`crate::camera::Zoom`] cannot describe a non-positive
+/// magnification at any frame, so no clamp is needed here. Falls back to the
+/// identity placement when exact arithmetic overflows, so evaluation stays
+/// total.
 fn camera_frame(camera: &Camera, frame: FrameIndex) -> CameraFrame {
     let fallback = CameraFrame {
         transform: Similarity::identity(),
         zoom: int_ratio(1),
     };
     let centre = position_at(&camera.motion, frame);
-    let angle = position_at(&camera.rotation, frame).x;
-    let raw_zoom = position_at(&camera.zoom, frame).x;
-    let zoom = if raw_zoom > int_ratio(0) {
-        raw_zoom
-    } else {
-        int_ratio(1)
+    let Some(angle) = rotation_at(&camera.rotation, frame) else {
+        return fallback;
     };
-    let turn = angle.checked_neg().unwrap_or(angle);
+    let Some(magnification) = zoom_at(&camera.zoom, frame) else {
+        return fallback;
+    };
+    let zoom = magnification.get();
+    let angle_value = angle.get();
+    let turn = angle_value.checked_neg().unwrap_or(angle_value);
     let cos = cos_turns(turn);
     let sin = sin_turns(turn);
     let Some(neg_sin) = sin.checked_neg() else {
@@ -211,22 +213,28 @@ pub fn render_into(scene: &Scene, frame: FrameIndex, out: &mut Frame) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::camera::{Magnification, Rotation, Turns, Zoom};
     use crate::color::Rgb8;
     use crate::geom::Point;
     use crate::scene::{Background, FrameSpan, Motion, Object, Shape};
     use crate::testutil::make_ratio;
     use crate::units::{FrameCount, FrameRate, Height, Seed, Width};
 
-    /// Builds a camera whose motion, rotation, and zoom all sit on `origin`.
-    fn still_camera_at(origin: Point) -> Camera {
-        let still = Motion::Fixed(origin);
-        Camera::new(still.clone(), still.clone(), still)
+    /// Builds a camera that follows `origin` with no rotation and unit magnification.
+    fn still_camera_at(origin: Point) -> Option<Camera> {
+        let angle = Turns::new(make_ratio(0, 1)?);
+        let unit = Zoom::Fixed(Magnification::new(make_ratio(1, 1)?)?);
+        Some(Camera::new(
+            Motion::Fixed(origin),
+            Rotation::Fixed(angle),
+            unit,
+        ))
     }
 
-    /// Builds a camera fixed at the scene origin, which is the identity placement.
+    /// Builds a camera fixed at the scene origin with unit magnification, which is the identity placement.
     fn identity_camera() -> Option<Camera> {
         let zero = make_ratio(0, 1)?;
-        Some(still_camera_at(Point::new(zero, zero)))
+        still_camera_at(Point::new(zero, zero))
     }
 
     /// Builds a scene with the given backdrop and objects on an 8x8 frame.
@@ -478,10 +486,13 @@ mod tests {
         let Some(two) = make_ratio(2, 1) else { return };
         let Some(zero) = make_ratio(0, 1) else { return };
         let Some(one) = make_ratio(1, 1) else { return };
+        let Some(unit) = Magnification::new(one) else {
+            return;
+        };
         let shifted_camera = Camera::new(
             Motion::Fixed(Point::new(two, zero)),
-            Motion::Fixed(Point::new(zero, zero)),
-            Motion::Fixed(Point::new(one, zero)),
+            Rotation::Fixed(Turns::new(zero)),
+            Zoom::Fixed(unit),
         );
         let (Some(w), Some(h)) = (Width::new(8), Height::new(8)) else {
             return;

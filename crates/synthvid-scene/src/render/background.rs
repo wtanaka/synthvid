@@ -257,15 +257,21 @@ pub(super) fn paint_background(frame: &mut Frame, background: Background) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scene::{Camera, Motion, Scene};
+    use crate::camera::{Camera, Magnification, Rotation, Turns, Zoom};
+    use crate::scene::{Motion, Scene};
     use crate::testutil::make_ratio;
     use crate::units::{Dimensions, FrameCount, FrameRate, Height, Width};
 
-    /// Builds a camera fixed at the scene origin.
+    /// Builds the identity camera: still at the origin with unit magnification.
     fn identity_camera() -> Option<Camera> {
         let zero = make_ratio(0, 1)?;
-        let still = Motion::Fixed(Point::new(zero, zero));
-        Some(Camera::new(still.clone(), still.clone(), still))
+        let angle = Turns::new(zero);
+        let unit = Zoom::Fixed(Magnification::new(make_ratio(1, 1)?)?);
+        Some(Camera::new(
+            Motion::Fixed(Point::new(zero, zero)),
+            Rotation::Fixed(angle),
+            unit,
+        ))
     }
 
     /// Builds an 8x8 scene with the given backdrop and no objects.
