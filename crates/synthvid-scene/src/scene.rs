@@ -380,12 +380,12 @@ mod tests {
 
     #[test]
     fn test_scale_rejects_non_positive() {
-        let Some(zero) = make_ratio(0, 1) else { return };
-        let Some(neg) = make_ratio(-3, 2) else { return };
-        let Some(pos) = make_ratio(3, 2) else { return };
+        let zero = make_ratio(0, 1).unwrap();
+        let neg = make_ratio(-3, 2).unwrap();
+        let pos = make_ratio(3, 2).unwrap();
         assert!(Scale::new(zero).is_none(), "zero scale must be rejected");
         assert!(Scale::new(neg).is_none(), "negative scale must be rejected");
-        let Some(scale) = Scale::new(pos) else { return };
+        let scale = Scale::new(pos).expect("positive scale accepted");
         assert_eq!(scale.get(), pos, "positive scale must round-trip");
         assert_eq!(scale.ratio(), pos, "scale ratio must round-trip");
         assert_eq!(
@@ -407,7 +407,7 @@ mod tests {
 
     #[test]
     fn test_frame_span_contains_and_rejects_inverted() {
-        let Some(span) = make_span(2, 5) else { return };
+        let span = make_span(2, 5).expect("valid span");
         assert!(span.contains(FrameIndex::new(2)), "span must contain start");
         assert!(
             span.contains(FrameIndex::new(4)),
@@ -421,7 +421,7 @@ mod tests {
         assert!(make_span(5, 2).is_none(), "inverted span must be rejected");
         assert!(make_span(5, 4).is_none(), "inverted span must be rejected");
         assert!(make_span(5, 5).is_none(), "empty span must be rejected");
-        let Some(unit) = make_span(5, 6) else { return };
+        let unit = make_span(5, 6).expect("unit span");
         assert!(
             unit.contains(FrameIndex::new(5)),
             "unit span must contain start"
@@ -434,27 +434,17 @@ mod tests {
 
     #[test]
     fn test_scene_clone_compares_equal() {
-        let Some(width) = Width::new(64) else { return };
-        let Some(height) = Height::new(48) else {
-            return;
-        };
+        let width = Width::new(64).unwrap();
+        let height = Height::new(48).unwrap();
         let dimensions = Dimensions::new(width, height);
-        let Some(rate) = FrameRate::from_fps(30) else {
-            return;
-        };
-        let Some(count) = FrameCount::new(4) else {
-            return;
-        };
-        let Some(unit) = make_ratio(2, 1) else { return };
-        let Some(scale) = Scale::new(unit) else {
-            return;
-        };
-        let Some(camera) = fixed_camera() else { return };
-        let Some(origin) = origin_point() else { return };
-        let Some(radius) = make_ratio(5, 1) else {
-            return;
-        };
-        let Some(span) = make_span(0, 4) else { return };
+        let rate = FrameRate::from_fps(30).unwrap();
+        let count = FrameCount::new(4).unwrap();
+        let unit = make_ratio(2, 1).unwrap();
+        let scale = Scale::new(unit).unwrap();
+        let camera = fixed_camera().unwrap();
+        let origin = origin_point().unwrap();
+        let radius = make_ratio(5, 1).unwrap();
+        let span = make_span(0, 4).unwrap();
         let red = Rgb8::new(200, 30, 30);
         let disc = Object::new(Shape::Disc { radius }, red, Motion::Fixed(origin), span);
         let scene = Scene::new(
@@ -471,10 +461,10 @@ mod tests {
     }
 
     /// Builds the shared object list covering every shape variant.
-    fn every_shape_objects(green: Rgb8, span: FrameSpan) -> Option<Vec<Object>> {
-        let origin = origin_point()?;
-        let one = make_ratio(1, 1)?;
-        let two = make_ratio(2, 1)?;
+    fn every_shape_objects(green: Rgb8, span: FrameSpan) -> Vec<Object> {
+        let origin = origin_point().unwrap();
+        let one = make_ratio(1, 1).unwrap();
+        let two = make_ratio(2, 1).unwrap();
         let drift = Motion::Linear {
             origin,
             velocity: Vector::new(one, one),
@@ -497,18 +487,18 @@ mod tests {
         for shape in shapes {
             objects.push(Object::new(shape, green, drift.clone(), span));
         }
-        Some(objects)
+        objects
     }
 
     /// Builds every background variant in declaration order.
-    fn every_background() -> Option<[Background; 6]> {
+    fn every_background() -> [Background; 6] {
         let red = Rgb8::new(255, 0, 0);
         let blue = Rgb8::new(0, 0, 255);
         let white = Rgb8::new(255, 255, 255);
         let black = Rgb8::new(0, 0, 0);
-        let cell = NonZeroU16::new(4)?;
-        let spacing = NonZeroU16::new(8)?;
-        Some([
+        let cell = NonZeroU16::new(4).unwrap();
+        let spacing = NonZeroU16::new(8).unwrap();
+        [
             Background::Solid(red),
             Background::Checker {
                 cell,
@@ -536,36 +526,28 @@ mod tests {
                 line: white,
                 ground: black,
             },
-        ])
+        ]
     }
 
     /// Builds a small scene with the given backdrop and objects.
-    fn small_scene(background: Background, objects: Vec<Object>) -> Option<Scene> {
-        let width = Width::new(32)?;
-        let height = Height::new(32)?;
+    fn small_scene(background: Background, objects: Vec<Object>) -> Scene {
+        let width = Width::new(32).unwrap();
+        let height = Height::new(32).unwrap();
         let dimensions = Dimensions::new(width, height);
-        let rate = FrameRate::from_fps(60)?;
-        let count = FrameCount::new(8)?;
-        let camera = fixed_camera()?;
-        Some(Scene::new(
-            dimensions, rate, count, None, background, camera, objects,
-        ))
+        let rate = FrameRate::from_fps(60).unwrap();
+        let count = FrameCount::new(8).unwrap();
+        let camera = fixed_camera().unwrap();
+        Scene::new(dimensions, rate, count, None, background, camera, objects)
     }
 
     #[test]
     fn test_scene_backgrounds_round_trip() {
-        let Some(backgrounds) = every_background() else {
-            return;
-        };
-        let Some(span) = make_span(0, 8) else { return };
+        let backgrounds = every_background();
+        let span = make_span(0, 8).unwrap();
         let green = Rgb8::new(0, 255, 0);
-        let Some(objects) = every_shape_objects(green, span) else {
-            return;
-        };
+        let objects = every_shape_objects(green, span);
         for background in backgrounds {
-            let Some(scene) = small_scene(background, objects.clone()) else {
-                return;
-            };
+            let scene = small_scene(background, objects.clone());
             let cloned = scene.clone();
             assert_eq!(
                 cloned, scene,
@@ -576,24 +558,14 @@ mod tests {
 
     #[test]
     fn test_scene_shapes_round_trip() {
-        let Some(span) = make_span(0, 8) else { return };
+        let span = make_span(0, 8).unwrap();
         let green = Rgb8::new(0, 255, 0);
-        let Some(objects) = every_shape_objects(green, span) else {
-            return;
-        };
-        let Some(slice) = objects.get(0..4) else {
-            return;
-        };
+        let objects = every_shape_objects(green, span);
+        let slice = &objects[0..4];
         assert_eq!(slice.len(), 4, "one object per shape variant must exist");
-        let Some(backgrounds) = every_background() else {
-            return;
-        };
-        let Some(first) = backgrounds.first().copied() else {
-            return;
-        };
-        let Some(scene) = small_scene(first, objects) else {
-            return;
-        };
+        let backgrounds = every_background();
+        let first = backgrounds[0];
+        let scene = small_scene(first, objects);
         let cloned = scene.clone();
         assert_eq!(
             cloned, scene,
@@ -603,30 +575,22 @@ mod tests {
 
     #[test]
     fn test_scene_inequality() {
-        let Some(backgrounds) = every_background() else {
-            return;
-        };
-        let Some(first) = backgrounds.first().copied() else {
-            return;
-        };
-        let Some(span) = make_span(0, 8) else { return };
+        let backgrounds = every_background();
+        let first = backgrounds[0];
+        let span = make_span(0, 8).unwrap();
         let green = Rgb8::new(0, 255, 0);
         let red = Rgb8::new(255, 0, 0);
-        let Some(objects) = every_shape_objects(green, span) else {
-            return;
-        };
-        let Some(scene) = small_scene(first, objects) else {
-            return;
-        };
+        let objects = every_shape_objects(green, span);
+        let scene = small_scene(first, objects);
         let mut altered = scene.clone();
         altered.background = Background::Solid(green);
         assert!(
             altered != scene,
             "changing the background must compare unequal"
         );
-        let Some(one) = make_ratio(1, 1) else { return };
-        let Some(two) = make_ratio(2, 1) else { return };
-        let Some(origin) = origin_point() else { return };
+        let one = make_ratio(1, 1).unwrap();
+        let two = make_ratio(2, 1).unwrap();
+        let origin = origin_point().unwrap();
         let still = Motion::Fixed(origin);
         let still_object = Object::new(Shape::Disc { radius: one }, red, still, span);
         assert!(
@@ -637,14 +601,10 @@ mod tests {
 
     #[test]
     fn test_motion_variants_clone_equal() {
-        let Some(origin) = origin_point() else { return };
-        let Some(one) = make_ratio(1, 1) else { return };
-        let Some(quarter) = make_ratio(1, 4) else {
-            return;
-        };
-        let Some(count) = FrameCount::new(24) else {
-            return;
-        };
+        let origin = origin_point().unwrap();
+        let one = make_ratio(1, 1).unwrap();
+        let quarter = make_ratio(1, 4).unwrap();
+        let count = FrameCount::new(24).unwrap();
         let vector = Vector::new(one, one);
         let motions = [
             Motion::Fixed(origin),

@@ -192,34 +192,30 @@ mod tests {
     use crate::testutil::make_ratio;
 
     /// Builds an angle in turns from a numerator and denominator.
-    fn make_turns(numer: i64, denom: i64) -> Option<Turns> {
-        Some(Turns::new(make_ratio(numer, denom)?))
+    fn make_turns(numer: i64, denom: i64) -> Turns {
+        Turns::new(make_ratio(numer, denom).unwrap())
     }
 
     /// Builds a magnification from a numerator and denominator.
-    fn make_magnification(numer: i64, denom: i64) -> Option<Magnification> {
-        Magnification::new(make_ratio(numer, denom)?)
+    fn make_magnification(numer: i64, denom: i64) -> Magnification {
+        Magnification::new(make_ratio(numer, denom).unwrap()).unwrap()
     }
 
     /// Builds a ramp from `start` to `end` over `over` frames.
-    fn make_ramp(start: Magnification, end: Magnification, over: u32) -> Option<Zoom> {
-        let span = FrameCount::new(over)?;
-        Some(Zoom::Ramp {
+    fn make_ramp(start: Magnification, end: Magnification, over: u32) -> Zoom {
+        let span = FrameCount::new(over).unwrap();
+        Zoom::Ramp {
             start,
             end,
             over: span,
-        })
+        }
     }
 
     #[test]
     fn test_magnification_rejects_zero_and_negative() {
-        let Some(zero) = make_ratio(0, 1) else { return };
-        let Some(negative) = make_ratio(-3, 2) else {
-            return;
-        };
-        let Some(positive) = make_ratio(3, 2) else {
-            return;
-        };
+        let zero = make_ratio(0, 1).unwrap();
+        let negative = make_ratio(-3, 2).unwrap();
+        let positive = make_ratio(3, 2).unwrap();
         assert!(
             Magnification::new(zero).is_none(),
             "zero magnification must be rejected"
@@ -228,9 +224,7 @@ mod tests {
             Magnification::new(negative).is_none(),
             "negative magnification must be rejected"
         );
-        let Some(magnification) = Magnification::new(positive) else {
-            return;
-        };
+        let magnification = Magnification::new(positive).unwrap();
         assert_eq!(
             magnification.get(),
             positive,
@@ -240,20 +234,12 @@ mod tests {
 
     #[test]
     fn test_zoom_ramp_stays_positive_before_inside_after() {
-        let Some(start) = make_magnification(1, 1) else {
-            return;
-        };
-        let Some(end) = make_magnification(3, 1) else {
-            return;
-        };
-        let Some(ramp) = make_ramp(start, end, 4) else {
-            return;
-        };
-        let Some(zero) = make_ratio(0, 1) else { return };
+        let start = make_magnification(1, 1);
+        let end = make_magnification(3, 1);
+        let ramp = make_ramp(start, end, 4);
+        let zero = make_ratio(0, 1).unwrap();
         for n in [0_u32, 2, 9] {
-            let Some(at) = zoom_at(&ramp, FrameIndex::new(n)) else {
-                return;
-            };
+            let at = zoom_at(&ramp, FrameIndex::new(n)).unwrap();
             assert!(
                 at.get() > zero,
                 "ramp magnification at frame {n} must stay strictly positive"
@@ -263,15 +249,9 @@ mod tests {
 
     #[test]
     fn test_zoom_ramp_endpoints_exact() {
-        let Some(start) = make_magnification(1, 2) else {
-            return;
-        };
-        let Some(end) = make_magnification(5, 1) else {
-            return;
-        };
-        let Some(ramp) = make_ramp(start, end, 6) else {
-            return;
-        };
+        let start = make_magnification(1, 2);
+        let end = make_magnification(5, 1);
+        let ramp = make_ramp(start, end, 6);
         assert_eq!(
             zoom_at(&ramp, FrameIndex::new(0)),
             Some(start),
@@ -291,19 +271,11 @@ mod tests {
 
     #[test]
     fn test_zoom_ramp_midpoint_matches_hand_value() {
-        let Some(start) = make_magnification(1, 1) else {
-            return;
-        };
-        let Some(end) = make_magnification(3, 1) else {
-            return;
-        };
-        let Some(ramp) = make_ramp(start, end, 4) else {
-            return;
-        };
+        let start = make_magnification(1, 1);
+        let end = make_magnification(3, 1);
+        let ramp = make_ramp(start, end, 4);
         // t = 2 / 4 = 1 / 2, so the value is 1 + (1 / 2) * (3 - 1) = 2.
-        let Some(want) = make_magnification(2, 1) else {
-            return;
-        };
+        let want = make_magnification(2, 1);
         assert_eq!(
             zoom_at(&ramp, FrameIndex::new(2)),
             Some(want),
@@ -313,28 +285,20 @@ mod tests {
 
     #[test]
     fn test_rotation_linear_matches_hand_table() {
-        let Some(start) = make_turns(1, 4) else {
-            return;
-        };
-        let Some(per_frame) = make_turns(1, 8) else {
-            return;
-        };
+        let start = make_turns(1, 4);
+        let per_frame = make_turns(1, 8);
         let spin = Rotation::Linear { start, per_frame };
         // Hand-computed from start + per_frame * n.
         let cases: [(u32, i64, i64); 3] = [(0, 1, 4), (2, 1, 2), (4, 3, 4)];
         for (n, numer, denom) in cases {
-            let Some(want) = make_turns(numer, denom) else {
-                return;
-            };
+            let want = make_turns(numer, denom);
             assert_eq!(
                 rotation_at(&spin, FrameIndex::new(n)),
                 Some(want),
                 "linear rotation at frame {n} must equal start plus rate times frame"
             );
         }
-        let Some(fixed_angle) = make_turns(-3, 2) else {
-            return;
-        };
+        let fixed_angle = make_turns(-3, 2);
         let still = Rotation::Fixed(fixed_angle);
         for n in 0..4_u32 {
             assert_eq!(
@@ -348,12 +312,8 @@ mod tests {
     #[test]
     fn test_rotation_linear_order_independence() {
         const COUNT: u32 = 25;
-        let Some(start) = make_turns(1, 4) else {
-            return;
-        };
-        let Some(per_frame) = make_turns(1, 8) else {
-            return;
-        };
+        let start = make_turns(1, 4);
+        let per_frame = make_turns(1, 8);
         let spin = Rotation::Linear { start, per_frame };
         let mut forward = Vec::new();
         for n in 0..COUNT {
@@ -363,7 +323,7 @@ mod tests {
         let mut shuffled = Vec::new();
         for n in 0..COUNT {
             let permuted = n.wrapping_mul(7).wrapping_add(3);
-            let j = permuted.checked_rem(COUNT).unwrap_or_default();
+            let j = permuted.checked_rem(COUNT).unwrap();
             shuffled.push((j, rotation_at(&spin, FrameIndex::new(j))));
         }
         shuffled.sort_by_key(|entry| entry.0);

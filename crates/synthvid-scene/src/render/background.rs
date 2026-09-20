@@ -266,25 +266,25 @@ mod tests {
     use crate::units::{Dimensions, FrameCount, FrameRate, Height, Width};
 
     /// Builds the identity camera: still at the origin with unit magnification.
-    fn identity_camera() -> Option<Camera> {
-        let zero = make_ratio(0, 1)?;
+    fn identity_camera() -> Camera {
+        let zero = make_ratio(0, 1).unwrap();
         let angle = Turns::new(zero);
-        let unit = Zoom::Fixed(Magnification::new(make_ratio(1, 1)?)?);
-        Some(Camera::new(
+        let unit = Zoom::Fixed(Magnification::new(make_ratio(1, 1).unwrap()).unwrap());
+        Camera::new(
             Motion::Fixed(Point::new(zero, zero)),
             Rotation::Fixed(angle),
             unit,
-        ))
+        )
     }
 
     /// Builds an 8x8 scene with the given backdrop and no objects.
-    fn bare_scene(background: Background) -> Option<Scene> {
-        let width = Width::new(8)?;
-        let height = Height::new(8)?;
-        let rate = FrameRate::from_fps(30)?;
-        let count = FrameCount::new(4)?;
-        let camera = identity_camera()?;
-        Some(Scene::new(
+    fn bare_scene(background: Background) -> Scene {
+        let width = Width::new(8).unwrap();
+        let height = Height::new(8).unwrap();
+        let rate = FrameRate::from_fps(30).unwrap();
+        let count = FrameCount::new(4).unwrap();
+        let camera = identity_camera();
+        Scene::new(
             Dimensions::new(width, height),
             rate,
             count,
@@ -292,26 +292,20 @@ mod tests {
             background,
             camera,
             Vec::new(),
-        ))
+        )
     }
 
     #[test]
     fn test_checker_pixels() {
-        let Some(cell) = core::num::NonZeroU16::new(2) else {
-            return;
-        };
+        let cell = core::num::NonZeroU16::new(2).unwrap();
         let red = Rgb8::new(255, 0, 0);
         let blue = Rgb8::new(0, 0, 255);
-        let Some(scene) = bare_scene(Background::Checker {
+        let scene = bare_scene(Background::Checker {
             cell,
             a: red,
             b: blue,
-        }) else {
-            return;
-        };
-        let Some(mut frame) = Frame::zeroed(scene.dimensions) else {
-            return;
-        };
+        });
+        let mut frame = Frame::zeroed(scene.dimensions).unwrap();
         paint_background(&mut frame, scene.background);
         assert_eq!(frame.pixel(0, 0), Some(red), "origin square must be a");
         assert_eq!(
@@ -329,21 +323,15 @@ mod tests {
 
     #[test]
     fn test_grid_pixels() {
-        let Some(spacing) = core::num::NonZeroU16::new(4) else {
-            return;
-        };
+        let spacing = core::num::NonZeroU16::new(4).unwrap();
         let white = Rgb8::new(255, 255, 255);
         let black = Rgb8::new(0, 0, 0);
-        let Some(scene) = bare_scene(Background::Grid {
+        let scene = bare_scene(Background::Grid {
             spacing,
             line: white,
             ground: black,
-        }) else {
-            return;
-        };
-        let Some(mut frame) = Frame::zeroed(scene.dimensions) else {
-            return;
-        };
+        });
+        let mut frame = Frame::zeroed(scene.dimensions).unwrap();
         paint_background(&mut frame, scene.background);
         assert_eq!(frame.pixel(0, 3), Some(white), "column zero must be a line");
         assert_eq!(frame.pixel(3, 0), Some(white), "row zero must be a line");
@@ -363,16 +351,12 @@ mod tests {
     fn test_gradient_edges() {
         let from = Rgb8::new(10, 20, 30);
         let to = Rgb8::new(200, 180, 160);
-        let Some(scene) = bare_scene(Background::Gradient {
+        let scene = bare_scene(Background::Gradient {
             from,
             to,
             direction: Direction::Horizontal,
-        }) else {
-            return;
-        };
-        let Some(mut frame) = Frame::zeroed(scene.dimensions) else {
-            return;
-        };
+        });
+        let mut frame = Frame::zeroed(scene.dimensions).unwrap();
         paint_background(&mut frame, scene.background);
         assert_eq!(
             frame.pixel(0, 0),
@@ -395,15 +379,9 @@ mod tests {
             min_radius: 1,
             max_radius: 4,
         };
-        let Some(scene) = bare_scene(blobs) else {
-            return;
-        };
-        let Some(mut once) = Frame::zeroed(scene.dimensions) else {
-            return;
-        };
-        let Some(mut twice) = Frame::zeroed(scene.dimensions) else {
-            return;
-        };
+        let scene = bare_scene(blobs);
+        let mut once = Frame::zeroed(scene.dimensions).unwrap();
+        let mut twice = Frame::zeroed(scene.dimensions).unwrap();
         paint_background(&mut once, scene.background);
         paint_background(&mut twice, scene.background);
         assert_eq!(
@@ -411,9 +389,7 @@ mod tests {
             twice.data(),
             "blob layout from one seed must paint identically twice"
         );
-        let Some(mut ground_only) = Frame::zeroed(scene.dimensions) else {
-            return;
-        };
+        let mut ground_only = Frame::zeroed(scene.dimensions).unwrap();
         paint_background(
             &mut ground_only,
             Background::Blobs {

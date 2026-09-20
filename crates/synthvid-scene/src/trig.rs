@@ -235,25 +235,13 @@ mod tests {
 
     #[test]
     fn test_sin_cos_cardinal_angles() {
-        let Some(zero) = Ratio::from_integer(0) else {
-            return;
-        };
-        let Some(one) = Ratio::from_integer(1) else {
-            return;
-        };
-        let Some(neg_one) = Ratio::from_integer(-1) else {
-            return;
-        };
+        let zero = Ratio::from_integer(0).unwrap();
+        let one = Ratio::from_integer(1).unwrap();
+        let neg_one = Ratio::from_integer(-1).unwrap();
 
-        let Some(quarter) = make_ratio(1, 4) else {
-            return;
-        };
-        let Some(half) = make_ratio(1, 2) else {
-            return;
-        };
-        let Some(three_quarters) = make_ratio(3, 4) else {
-            return;
-        };
+        let quarter = make_ratio(1, 4).unwrap();
+        let half = make_ratio(1, 2).unwrap();
+        let three_quarters = make_ratio(3, 4).unwrap();
 
         assert_eq!(sin_turns(zero), zero, "sin(0) must be 0/1");
         assert_eq!(cos_turns(zero), one, "cos(0) must be 1/1");
@@ -268,18 +256,10 @@ mod tests {
         assert_eq!(cos_turns(three_quarters), zero, "cos(3/4) must be 0/1");
 
         // Full revolutions and negative angles
-        let Some(neg_quarter) = make_ratio(-1, 4) else {
-            return;
-        };
-        let Some(neg_half) = make_ratio(-1, 2) else {
-            return;
-        };
-        let Some(neg_three_quarters) = make_ratio(-3, 4) else {
-            return;
-        };
-        let Some(two) = Ratio::from_integer(2) else {
-            return;
-        };
+        let neg_quarter = make_ratio(-1, 4).unwrap();
+        let neg_half = make_ratio(-1, 2).unwrap();
+        let neg_three_quarters = make_ratio(-3, 4).unwrap();
+        let two = Ratio::from_integer(2).unwrap();
 
         assert_eq!(sin_turns(neg_quarter), neg_one, "sin(-1/4) must be -1/1");
         assert_eq!(cos_turns(neg_quarter), zero, "cos(-1/4) must be 0/1");
@@ -326,15 +306,9 @@ mod tests {
         ];
 
         for (an, ad, sn, sd, cn, cd) in frozen_entries {
-            let Some(angle) = make_ratio(an, ad) else {
-                return;
-            };
-            let Some(expected_sin) = make_ratio(sn, sd) else {
-                return;
-            };
-            let Some(expected_cos) = make_ratio(cn, cd) else {
-                return;
-            };
+            let angle = make_ratio(an, ad).unwrap();
+            let expected_sin = make_ratio(sn, sd).unwrap();
+            let expected_cos = make_ratio(cn, cd).unwrap();
 
             let actual_sin = sin_turns(angle);
             let actual_cos = cos_turns(angle);
@@ -352,39 +326,22 @@ mod tests {
 
     #[test]
     fn test_pythagorean_identity_error_bound() {
-        let Some(one) = Ratio::from_integer(1) else {
-            return;
-        };
+        let one = Ratio::from_integer(1).unwrap();
         // Maximum documented identity error: 1.1e-4 (11 / 100_000)
-        let Some(error_bound) = make_ratio(11, 100_000) else {
-            return;
-        };
+        let error_bound = make_ratio(11, 100_000).unwrap();
 
         // Test over 128 angles across the unit circle
         for k in 0..=128_i64 {
-            let Some(angle) = make_ratio(k, 128) else {
-                return;
-            };
+            let angle = make_ratio(k, 128).unwrap();
             let s = sin_turns(angle);
             let c = cos_turns(angle);
 
-            let Some(s2) = s.checked_mul(s) else {
-                return;
-            };
-            let Some(c2) = c.checked_mul(c) else {
-                return;
-            };
-            let Some(sum) = s2.checked_add(c2) else {
-                return;
-            };
-            let Some(diff) = sum.checked_sub(one) else {
-                return;
-            };
+            let s2 = s.checked_mul(s).unwrap();
+            let c2 = c.checked_mul(c).unwrap();
+            let sum = s2.checked_add(c2).unwrap();
+            let diff = sum.checked_sub(one).unwrap();
             let abs_diff = if diff.numer() < 0 {
-                let Some(neg) = diff.checked_neg() else {
-                    return;
-                };
-                neg
+                diff.checked_neg().unwrap()
             } else {
                 diff
             };

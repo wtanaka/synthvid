@@ -351,86 +351,67 @@ mod tests {
 
     #[test]
     fn test_ratio_normalisation_equal_values() {
-        let nz1 = NonZeroI64::new(1);
-        let nz2 = NonZeroI64::new(2);
-        let nz_neg2 = NonZeroI64::new(-2);
-        let nz4 = NonZeroI64::new(4);
-        let nz_neg4 = NonZeroI64::new(-4);
-        let nz6 = NonZeroI64::new(6);
-        let nz200 = NonZeroI64::new(200);
+        let d1 = NonZeroI64::new(1).unwrap();
+        let d2 = NonZeroI64::new(2).unwrap();
+        let d_neg2 = NonZeroI64::new(-2).unwrap();
+        let d4 = NonZeroI64::new(4).unwrap();
+        let d_neg4 = NonZeroI64::new(-4).unwrap();
+        let d6 = NonZeroI64::new(6).unwrap();
+        let d200 = NonZeroI64::new(200).unwrap();
 
-        assert!(nz1.is_some(), "non-zero 1 must be some");
-        assert!(nz2.is_some(), "non-zero 2 must be some");
-        assert!(nz_neg2.is_some(), "non-zero -2 must be some");
-        assert!(nz4.is_some(), "non-zero 4 must be some");
-        assert!(nz_neg4.is_some(), "non-zero -4 must be some");
-        assert!(nz6.is_some(), "non-zero 6 must be some");
-        assert!(nz200.is_some(), "non-zero 200 must be some");
-
-        let Some(d1) = nz1 else { return };
-        let Some(d2) = nz2 else { return };
-        let Some(d_neg2) = nz_neg2 else { return };
-        let Some(d4) = nz4 else { return };
-        let Some(d_neg4) = nz_neg4 else { return };
-        let Some(d6) = nz6 else { return };
-        let Some(d200) = nz200 else { return };
-
-        let r_half1 = Ratio::new(1, d2);
-        let r_half2 = Ratio::new(2, d4);
-        let r_half3 = Ratio::new(3, d6);
-        let r_half4 = Ratio::new(100, d200);
-        let r_half_neg = Ratio::new(-2, d_neg4);
+        let r_half1 = Ratio::new(1, d2).unwrap();
+        let r_half2 = Ratio::new(2, d4).unwrap();
+        let r_half3 = Ratio::new(3, d6).unwrap();
+        let r_half4 = Ratio::new(100, d200).unwrap();
+        let r_half_neg = Ratio::new(-2, d_neg4).unwrap();
 
         assert_eq!(r_half1, r_half2, "1/2 must equal 2/4");
         assert_eq!(r_half1, r_half3, "1/2 must equal 3/6");
         assert_eq!(r_half1, r_half4, "1/2 must equal 100/200");
         assert_eq!(r_half1, r_half_neg, "1/2 must equal -2/-4");
 
-        let Some(r) = r_half1 else { return };
-        assert_eq!(r.numer(), 1, "numerator of 1/2 must be 1");
-        assert_eq!(r.denom().get(), 2, "denominator of 1/2 must be 2");
+        assert_eq!(r_half1.numer(), 1, "numerator of 1/2 must be 1");
+        assert_eq!(r_half1.denom().get(), 2, "denominator of 1/2 must be 2");
 
         // Negative values sign carried in numerator.
-        let r_neg_half1 = Ratio::new(-1, d2);
-        let r_neg_half2 = Ratio::new(1, d_neg2);
-        let r_neg_half3 = Ratio::new(-2, d4);
+        let r_neg_half1 = Ratio::new(-1, d2).unwrap();
+        let r_neg_half2 = Ratio::new(1, d_neg2).unwrap();
+        let r_neg_half3 = Ratio::new(-2, d4).unwrap();
         assert_eq!(r_neg_half1, r_neg_half2, "-1/2 must equal 1/-2");
         assert_eq!(r_neg_half1, r_neg_half3, "-1/2 must equal -2/4");
 
-        let Some(rn) = r_neg_half1 else { return };
-        assert_eq!(rn.numer(), -1, "numerator must carry negative sign");
-        assert_eq!(rn.denom().get(), 2, "denominator must remain positive");
+        assert_eq!(
+            r_neg_half1.numer(),
+            -1,
+            "numerator must carry negative sign"
+        );
+        assert_eq!(
+            r_neg_half1.denom().get(),
+            2,
+            "denominator must remain positive"
+        );
 
         // Zero representation is uniquely 0/1.
-        let r_zero1 = Ratio::new(0, d1);
-        let r_zero2 = Ratio::new(0, d4);
-        let r_zero3 = Ratio::new(0, d_neg4);
+        let r_zero1 = Ratio::new(0, d1).unwrap();
+        let r_zero2 = Ratio::new(0, d4).unwrap();
+        let r_zero3 = Ratio::new(0, d_neg4).unwrap();
         assert_eq!(r_zero1, r_zero2, "0/1 must equal 0/4");
         assert_eq!(r_zero1, r_zero3, "0/1 must equal 0/-4");
 
-        let Some(rz) = r_zero1 else { return };
-        assert_eq!(rz.numer(), 0, "zero numerator must be 0");
-        assert_eq!(rz.denom().get(), 1, "zero denominator must be 1");
+        assert_eq!(r_zero1.numer(), 0, "zero numerator must be 0");
+        assert_eq!(r_zero1.denom().get(), 1, "zero denominator must be 1");
     }
 
     #[test]
     fn test_ratio_comparison() {
-        let Some(d1) = NonZeroI64::new(1) else { return };
-        let Some(d2) = NonZeroI64::new(2) else { return };
-        let Some(d3) = NonZeroI64::new(3) else { return };
+        let d1 = NonZeroI64::new(1).unwrap();
+        let d2 = NonZeroI64::new(2).unwrap();
+        let d3 = NonZeroI64::new(3).unwrap();
 
-        let Some(r_half) = Ratio::new(1, d2) else {
-            return;
-        };
-        let Some(r_third) = Ratio::new(1, d3) else {
-            return;
-        };
-        let Some(r_two_thirds) = Ratio::new(2, d3) else {
-            return;
-        };
-        let Some(r_neg_one) = Ratio::new(-1, d1) else {
-            return;
-        };
+        let r_half = Ratio::new(1, d2).unwrap();
+        let r_third = Ratio::new(1, d3).unwrap();
+        let r_two_thirds = Ratio::new(2, d3).unwrap();
+        let r_neg_one = Ratio::new(-1, d1).unwrap();
 
         assert!(r_third < r_half, "1/3 < 1/2");
         assert!(r_half < r_two_thirds, "1/2 < 2/3");
@@ -440,14 +421,14 @@ mod tests {
 
     #[test]
     fn test_ratio_to_f64() {
-        let Some(d1) = NonZeroI64::new(1) else { return };
-        let Some(d2) = NonZeroI64::new(2) else { return };
-        let Some(d4) = NonZeroI64::new(4) else { return };
+        let d1 = NonZeroI64::new(1).unwrap();
+        let d2 = NonZeroI64::new(2).unwrap();
+        let d4 = NonZeroI64::new(4).unwrap();
 
-        let Some(r1) = Ratio::new(1, d2) else { return };
-        let Some(r2) = Ratio::new(3, d4) else { return };
-        let Some(r3) = Ratio::new(-1, d4) else { return };
-        let Some(r4) = Ratio::new(0, d1) else { return };
+        let r1 = Ratio::new(1, d2).unwrap();
+        let r2 = Ratio::new(3, d4).unwrap();
+        let r3 = Ratio::new(-1, d4).unwrap();
+        let r4 = Ratio::new(0, d1).unwrap();
 
         assert!((r1.to_f64() - 0.5).abs() < 1e-12, "1/2 must be 0.5");
         assert!((r2.to_f64() - 0.75).abs() < 1e-12, "3/4 must be 0.75");
@@ -457,19 +438,11 @@ mod tests {
 
     #[test]
     fn test_ratio_overflow_returns_none() {
-        let Some(d1) = NonZeroI64::new(1) else { return };
-        let Some(max_ratio) = Ratio::new(i64::MAX, d1) else {
-            return;
-        };
-        let Some(one_ratio) = Ratio::new(1, d1) else {
-            return;
-        };
-        let Some(min_ratio) = Ratio::new(i64::MIN, d1) else {
-            return;
-        };
-        let Some(zero_ratio) = Ratio::new(0, d1) else {
-            return;
-        };
+        let d1 = NonZeroI64::new(1).unwrap();
+        let max_ratio = Ratio::new(i64::MAX, d1).unwrap();
+        let one_ratio = Ratio::new(1, d1).unwrap();
+        let min_ratio = Ratio::new(i64::MIN, d1).unwrap();
+        let zero_ratio = Ratio::new(0, d1).unwrap();
 
         // Addition overflow
         assert!(
@@ -484,9 +457,7 @@ mod tests {
         );
 
         // Multiplication overflow
-        let Some(two_ratio) = Ratio::new(2, d1) else {
-            return;
-        };
+        let two_ratio = Ratio::new(2, d1).unwrap();
         assert!(
             max_ratio.checked_mul(two_ratio).is_none(),
             "i64::MAX * 2 must return None"

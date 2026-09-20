@@ -288,16 +288,14 @@ mod tests {
 
     #[test]
     fn test_frame_buffer_length_invariant() {
-        let Some(w) = Width::new(4) else { return };
-        let Some(h) = Height::new(3) else { return };
+        let w = Width::new(4).unwrap();
+        let h = Height::new(3).unwrap();
         let dims = Dimensions {
             width: w,
             height: h,
         };
         // Expected buffer size: 4 * 3 * 3 = 36 bytes.
-        let Some(expected_len) = required_buffer_len(dims) else {
-            return;
-        };
+        let expected_len = required_buffer_len(dims).unwrap();
         assert_eq!(expected_len, 36, "4x3 RGB frame requires exactly 36 bytes");
 
         // Too short buffer must be rejected.
@@ -322,12 +320,7 @@ mod tests {
 
         // Exact length buffer must succeed.
         let exact = vec![0_u8; 36];
-        let frame_opt = Frame::new(dims, exact);
-        assert!(
-            frame_opt.is_some(),
-            "exact length buffer must return Some(Frame)"
-        );
-        let Some(frame) = frame_opt else { return };
+        let frame = Frame::new(dims, exact).expect("exact length buffer must return Some(Frame)");
         assert_eq!(frame.len(), 36, "frame len must equal 36");
         assert!(!frame.is_empty(), "frame must not be empty");
         assert_eq!(frame.dimensions(), dims, "dimensions must match");
@@ -337,25 +330,21 @@ mod tests {
 
     #[test]
     fn test_frame_zeroed_and_from_color() {
-        let Some(w) = Width::new(2) else { return };
-        let Some(h) = Height::new(2) else { return };
+        let w = Width::new(2).unwrap();
+        let h = Height::new(2).unwrap();
         let dims = Dimensions {
             width: w,
             height: h,
         };
 
-        let Some(zeroed) = Frame::zeroed(dims) else {
-            return;
-        };
+        let zeroed = Frame::zeroed(dims).unwrap();
         assert_eq!(zeroed.len(), 12, "2x2 frame must have 12 bytes");
         for b in zeroed.data() {
             assert_eq!(*b, 0, "all bytes in zeroed frame must be 0");
         }
 
         let red = Rgb8::new(255, 0, 0);
-        let Some(color_frame) = Frame::from_color(dims, red) else {
-            return;
-        };
+        let color_frame = Frame::from_color(dims, red).unwrap();
         for y in 0..2_u16 {
             for x in 0..2_u16 {
                 assert_eq!(
@@ -369,15 +358,13 @@ mod tests {
 
     #[test]
     fn test_frame_bounds_checked_accessors() {
-        let Some(w) = Width::new(3) else { return };
-        let Some(h) = Height::new(2) else { return };
+        let w = Width::new(3).unwrap();
+        let h = Height::new(2).unwrap();
         let dims = Dimensions {
             width: w,
             height: h,
         };
-        let Some(mut frame) = Frame::zeroed(dims) else {
-            return;
-        };
+        let mut frame = Frame::zeroed(dims).unwrap();
 
         // Within bounds
         let col = Rgb8::new(10, 20, 30);
@@ -449,15 +436,13 @@ mod tests {
 
     #[test]
     fn test_frame_fill() {
-        let Some(w) = Width::new(2) else { return };
-        let Some(h) = Height::new(2) else { return };
+        let w = Width::new(2).unwrap();
+        let h = Height::new(2).unwrap();
         let dims = Dimensions {
             width: w,
             height: h,
         };
-        let Some(mut frame) = Frame::zeroed(dims) else {
-            return;
-        };
+        let mut frame = Frame::zeroed(dims).unwrap();
 
         let green = Rgb8::new(0, 255, 0);
         frame.fill(green);
@@ -475,15 +460,13 @@ mod tests {
 
     #[test]
     fn test_frame_blend_pixel() {
-        let Some(w) = Width::new(2) else { return };
-        let Some(h) = Height::new(2) else { return };
+        let w = Width::new(2).unwrap();
+        let h = Height::new(2).unwrap();
         let dims = Dimensions {
             width: w,
             height: h,
         };
-        let Some(mut frame) = Frame::zeroed(dims) else {
-            return;
-        };
+        let mut frame = Frame::zeroed(dims).unwrap();
 
         // Set pixel (0, 0) to white (255, 255, 255)
         let white = Rgb8::new(255, 255, 255);
@@ -522,9 +505,7 @@ mod tests {
             "blend at alpha 128 must succeed"
         );
         // Blend formula: (200 * 128 + 100 * 127 + 127) / 255 = (25600 + 12700 + 127) / 255 = 38427 / 255 = 150
-        let Some(blended) = frame.pixel(1, 1) else {
-            return;
-        };
+        let blended = frame.pixel(1, 1).expect("pixel after blend must exist");
         assert_eq!(
             blended.r, 150,
             "blended channel at 50% opacity must equal 150"

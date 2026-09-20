@@ -206,27 +206,27 @@ mod tests {
     }
 
     /// Draws one shape centred at `(9 / 2, 9 / 2)` on an 8x8 black frame.
-    fn render_shape(shape: &Shape, fill: Rgb8) -> Option<Frame> {
-        let width = Width::new(8)?;
-        let height = Height::new(8)?;
-        let mut frame = Frame::zeroed(Dimensions::new(width, height))?;
+    fn render_shape(shape: &Shape, fill: Rgb8) -> Frame {
+        let width = Width::new(8).unwrap();
+        let height = Height::new(8).unwrap();
+        let mut frame = Frame::zeroed(Dimensions::new(width, height)).unwrap();
         frame.fill(Rgb8::new(0, 0, 0));
-        let half = make_ratio(9, 2)?;
+        let half = make_ratio(9, 2).unwrap();
         let at = Point::new(half, half);
         let camera = identity_placement();
         let frame_index = FrameIndex::new(0);
         let object = ObjectIndex::new(0);
-        draw_object(&mut frame, shape, at, &camera, fill, frame_index, object).ok()?;
-        Some(frame)
+        draw_object(&mut frame, shape, at, &camera, fill, frame_index, object).unwrap();
+        frame
     }
 
     #[test]
     fn test_every_shape_draws_pixels() {
         let green = Rgb8::new(0, 255, 0);
         let black = Rgb8::new(0, 0, 0);
-        let Some(one) = make_ratio(1, 1) else { return };
-        let Some(two) = make_ratio(2, 1) else { return };
-        let Some(half) = make_ratio(9, 2) else { return };
+        let one = make_ratio(1, 1).unwrap();
+        let two = make_ratio(2, 1).unwrap();
+        let half = make_ratio(9, 2).unwrap();
         let centre = Point::new(half, half);
         let shapes = [
             Shape::Disc { radius: two },
@@ -243,9 +243,7 @@ mod tests {
             },
         ];
         for shape in &shapes {
-            let Some(frame) = render_shape(shape, green) else {
-                return;
-            };
+            let frame = render_shape(shape, green);
             let mut painted = false;
             for y in 0..8_u16 {
                 for x in 0..8_u16 {
@@ -261,48 +259,29 @@ mod tests {
     #[test]
     fn test_rect_matches_manual_polygon() {
         let red = Rgb8::new(200, 30, 30);
-        let Some(half_width) = make_ratio(2, 1) else {
-            return;
-        };
-        let Some(half_height) = make_ratio(1, 1) else {
-            return;
-        };
-        let Some(half) = make_ratio(9, 2) else { return };
-        let Some(rect_frame) = render_shape(
+        let half_width = make_ratio(2, 1).unwrap();
+        let half_height = make_ratio(1, 1).unwrap();
+        let half = make_ratio(9, 2).unwrap();
+        let rect_frame = render_shape(
             &Shape::Rect {
                 half_width,
                 half_height,
             },
             red,
-        ) else {
-            return;
-        };
-        let Some(left) = half.checked_sub(half_width) else {
-            return;
-        };
-        let Some(right) = half.checked_add(half_width) else {
-            return;
-        };
-        let Some(top) = half.checked_sub(half_height) else {
-            return;
-        };
-        let Some(bottom) = half.checked_add(half_height) else {
-            return;
-        };
+        );
+        let left = half.checked_sub(half_width).unwrap();
+        let right = half.checked_add(half_width).unwrap();
+        let top = half.checked_sub(half_height).unwrap();
+        let bottom = half.checked_add(half_height).unwrap();
         let corners = [
             Point::new(left, top),
             Point::new(right, top),
             Point::new(right, bottom),
             Point::new(left, bottom),
         ];
-        let width = Width::new(8);
-        let height = Height::new(8);
-        let (Some(w), Some(h)) = (width, height) else {
-            return;
-        };
-        let Some(mut poly_frame) = Frame::zeroed(Dimensions::new(w, h)) else {
-            return;
-        };
+        let w = Width::new(8).unwrap();
+        let h = Height::new(8).unwrap();
+        let mut poly_frame = Frame::zeroed(Dimensions::new(w, h)).unwrap();
         poly_frame.fill(Rgb8::new(0, 0, 0));
         fill_polygon(&mut poly_frame, &corners, red);
         assert_eq!(

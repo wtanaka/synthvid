@@ -297,29 +297,29 @@ mod tests {
     use crate::units::FrameCount;
 
     /// Builds the point `(xn / xd, yn / yd)` for motion tests.
-    fn point_ratio(xn: i64, xd: i64, yn: i64, yd: i64) -> Option<Point> {
-        let x = make_ratio(xn, xd)?;
-        let y = make_ratio(yn, yd)?;
-        Some(Point::new(x, y))
+    fn point_ratio(xn: i64, xd: i64, yn: i64, yd: i64) -> Point {
+        let x = make_ratio(xn, xd).unwrap();
+        let y = make_ratio(yn, yd).unwrap();
+        Point::new(x, y)
     }
 
     /// Builds a velocity-style [`Vector`] from integer components.
-    fn int_vector(x: i64, y: i64) -> Option<Vector> {
-        let vx = make_ratio(x, 1)?;
-        let vy = make_ratio(y, 1)?;
-        Some(Vector::new(vx, vy))
+    fn int_vector(x: i64, y: i64) -> Vector {
+        let vx = make_ratio(x, 1).unwrap();
+        let vy = make_ratio(y, 1).unwrap();
+        Vector::new(vx, vy)
     }
 
     /// Builds every motion variant over a shared origin for order tests.
-    fn every_motion(origin: Point) -> Option<Vec<Motion>> {
-        let drift = int_vector(3, -1)?;
-        let accel = int_vector(2, 4)?;
-        let radius = make_ratio(4, 1)?;
-        let quarter = make_ratio(1, 4)?;
-        let step = make_ratio(2, 1)?;
-        let period = FrameCount::new(4)?;
+    fn every_motion(origin: Point) -> Vec<Motion> {
+        let drift = int_vector(3, -1);
+        let accel = int_vector(2, 4);
+        let radius = make_ratio(4, 1).unwrap();
+        let quarter = make_ratio(1, 4).unwrap();
+        let step = make_ratio(2, 1).unwrap();
+        let period = FrameCount::new(4).unwrap();
         let still = Motion::Fixed(origin);
-        Some(vec![
+        vec![
             still.clone(),
             Motion::Linear {
                 origin,
@@ -334,13 +334,13 @@ mod tests {
                 centre: origin,
                 radius,
                 turns_per_frame: quarter,
-                phase: make_ratio(0, 1)?,
+                phase: make_ratio(0, 1).unwrap(),
             },
             Motion::Oscillating {
                 origin,
                 amplitude: drift,
                 period,
-                phase: make_ratio(0, 1)?,
+                phase: make_ratio(0, 1).unwrap(),
             },
             Motion::Walk {
                 origin,
@@ -357,14 +357,12 @@ mod tests {
                 ),
                 (FrameIndex::new(10), still),
             ]),
-        ])
+        ]
     }
 
     #[test]
     fn test_fixed_and_linear_basic() {
-        let Some(spot) = point_ratio(3, 2, -5, 4) else {
-            return;
-        };
+        let spot = point_ratio(3, 2, -5, 4);
         let still = Motion::Fixed(spot);
         for n in 0..8_u32 {
             assert_eq!(
@@ -373,18 +371,12 @@ mod tests {
                 "a fixed motion must hold its point on every frame"
             );
         }
-        let Some(origin) = point_ratio(1, 1, 2, 1) else {
-            return;
-        };
-        let Some(velocity) = int_vector(3, -1) else {
-            return;
-        };
+        let origin = point_ratio(1, 1, 2, 1);
+        let velocity = int_vector(3, -1);
         let line = Motion::Linear { origin, velocity };
         let cases: [(u32, i64, i64); 3] = [(0, 1, 2), (1, 4, 1), (4, 13, -2)];
         for (n, ex, ey) in cases {
-            let Some(want) = point_ratio(ex, 1, ey, 1) else {
-                return;
-            };
+            let want = point_ratio(ex, 1, ey, 1);
             assert_eq!(
                 position_at(&line, FrameIndex::new(n)),
                 want,
@@ -395,15 +387,9 @@ mod tests {
 
     #[test]
     fn test_ballistic_matches_hand_table() {
-        let Some(origin) = point_ratio(1, 1, 2, 1) else {
-            return;
-        };
-        let Some(velocity) = int_vector(3, -1) else {
-            return;
-        };
-        let Some(acceleration) = int_vector(2, 4) else {
-            return;
-        };
+        let origin = point_ratio(1, 1, 2, 1);
+        let velocity = int_vector(3, -1);
+        let acceleration = int_vector(2, 4);
         let toss = Motion::Ballistic {
             origin,
             velocity,
@@ -413,9 +399,7 @@ mod tests {
         let cases: [(u32, i64, i64); 5] =
             [(0, 1, 2), (1, 5, 3), (2, 11, 8), (3, 19, 17), (4, 29, 30)];
         for (n, ex, ey) in cases {
-            let Some(want) = point_ratio(ex, 1, ey, 1) else {
-                return;
-            };
+            let want = point_ratio(ex, 1, ey, 1);
             assert_eq!(
                 position_at(&toss, FrameIndex::new(n)),
                 want,
@@ -426,18 +410,10 @@ mod tests {
 
     #[test]
     fn test_circular_cardinal_frames() {
-        let Some(centre) = point_ratio(0, 1, 0, 1) else {
-            return;
-        };
-        let Some(radius) = make_ratio(4, 1) else {
-            return;
-        };
-        let Some(turns) = make_ratio(1, 4) else {
-            return;
-        };
-        let Some(phase) = make_ratio(0, 1) else {
-            return;
-        };
+        let centre = point_ratio(0, 1, 0, 1);
+        let radius = make_ratio(4, 1).unwrap();
+        let turns = make_ratio(1, 4).unwrap();
+        let phase = make_ratio(0, 1).unwrap();
         let orbit = Motion::Circular {
             centre,
             radius,
@@ -446,9 +422,7 @@ mod tests {
         };
         let cases: [(u32, i64, i64); 5] = [(0, 4, 0), (1, 0, 4), (2, -4, 0), (3, 0, -4), (4, 4, 0)];
         for (n, ex, ey) in cases {
-            let Some(want) = point_ratio(ex, 1, ey, 1) else {
-                return;
-            };
+            let want = point_ratio(ex, 1, ey, 1);
             assert_eq!(
                 position_at(&orbit, FrameIndex::new(n)),
                 want,
@@ -459,18 +433,10 @@ mod tests {
 
     #[test]
     fn test_oscillating_peaks_and_midpoints() {
-        let Some(origin) = point_ratio(10, 1, 20, 1) else {
-            return;
-        };
-        let Some(amplitude) = int_vector(4, -6) else {
-            return;
-        };
-        let Some(period) = FrameCount::new(4) else {
-            return;
-        };
-        let Some(phase) = make_ratio(0, 1) else {
-            return;
-        };
+        let origin = point_ratio(10, 1, 20, 1);
+        let amplitude = int_vector(4, -6);
+        let period = FrameCount::new(4).unwrap();
+        let phase = make_ratio(0, 1).unwrap();
         let swing = Motion::Oscillating {
             origin,
             amplitude,
@@ -485,9 +451,7 @@ mod tests {
             (4, 10, 20),
         ];
         for (n, ex, ey) in cases {
-            let Some(want) = point_ratio(ex, 1, ey, 1) else {
-                return;
-            };
+            let want = point_ratio(ex, 1, ey, 1);
             assert_eq!(
                 position_at(&swing, FrameIndex::new(n)),
                 want,
@@ -498,15 +462,9 @@ mod tests {
 
     #[test]
     fn test_walk_zero_determinism_and_bounded_steps() {
-        let Some(origin) = point_ratio(7, 1, -3, 1) else {
-            return;
-        };
-        let Some(step) = make_ratio(2, 1) else {
-            return;
-        };
-        let Some(neg_step) = make_ratio(-2, 1) else {
-            return;
-        };
+        let origin = point_ratio(7, 1, -3, 1);
+        let step = make_ratio(2, 1).unwrap();
+        let neg_step = make_ratio(-2, 1).unwrap();
         let stroll = Motion::Walk {
             origin,
             step,
@@ -530,16 +488,10 @@ mod tests {
                 here,
                 "walk evaluation must be a pure function of the frame index"
             );
-            let Some(next) = n.checked_add(1) else {
-                return;
-            };
+            let next = n.checked_add(1).unwrap();
             let there = position_at(&stroll, FrameIndex::new(next));
-            let Some(dx) = there.x.checked_sub(here.x) else {
-                return;
-            };
-            let Some(dy) = there.y.checked_sub(here.y) else {
-                return;
-            };
+            let dx = there.x.checked_sub(here.x).unwrap();
+            let dy = there.y.checked_sub(here.y).unwrap();
             assert!(
                 dx >= neg_step && dx <= step,
                 "one walk step in x must stay within the declared bound"
@@ -554,12 +506,8 @@ mod tests {
     #[test]
     fn test_order_independence_forward_backward_shuffled() {
         const COUNT: u32 = 25;
-        let Some(origin) = point_ratio(1, 1, 2, 1) else {
-            return;
-        };
-        let Some(motions) = every_motion(origin) else {
-            return;
-        };
+        let origin = point_ratio(1, 1, 2, 1);
+        let motions = every_motion(origin);
         for motion in &motions {
             let mut forward = Vec::new();
             for n in 0..COUNT {
@@ -578,7 +526,7 @@ mod tests {
             let mut shuffled = Vec::new();
             for n in 0..COUNT {
                 let permuted = n.wrapping_mul(7).wrapping_add(3);
-                let j = permuted.checked_rem(COUNT).unwrap_or_default();
+                let j = permuted.checked_rem(COUNT).unwrap();
                 shuffled.push((j, position_at(motion, FrameIndex::new(j))));
             }
             shuffled.sort_by_key(|entry| entry.0);
@@ -592,21 +540,13 @@ mod tests {
 
     #[test]
     fn test_piecewise_boundary_continuous() {
-        let Some(first_origin) = point_ratio(0, 1, 0, 1) else {
-            return;
-        };
-        let Some(first_velocity) = int_vector(1, 2) else {
-            return;
-        };
+        let first_origin = point_ratio(0, 1, 0, 1);
+        let first_velocity = int_vector(1, 2);
         // Segments evaluate at the absolute frame number, so the second leg's
         // origin is chosen to pass through the shared position (10, 20) at
         // frame 10: 20 + (-1) * 10 = 10.
-        let Some(second_origin) = point_ratio(20, 1, 20, 1) else {
-            return;
-        };
-        let Some(second_velocity) = int_vector(-1, 0) else {
-            return;
-        };
+        let second_origin = point_ratio(20, 1, 20, 1);
+        let second_velocity = int_vector(-1, 0);
         let legs = Motion::Piecewise(vec![
             (
                 FrameIndex::new(0),
@@ -623,15 +563,9 @@ mod tests {
                 },
             ),
         ]);
-        let Some(before) = point_ratio(9, 1, 18, 1) else {
-            return;
-        };
-        let Some(at_edge) = point_ratio(10, 1, 20, 1) else {
-            return;
-        };
-        let Some(after) = point_ratio(9, 1, 20, 1) else {
-            return;
-        };
+        let before = point_ratio(9, 1, 18, 1);
+        let at_edge = point_ratio(10, 1, 20, 1);
+        let after = point_ratio(9, 1, 20, 1);
         assert_eq!(
             position_at(&legs, FrameIndex::new(9)),
             before,
@@ -651,12 +585,8 @@ mod tests {
 
     #[test]
     fn test_piecewise_first_entry_empty_and_nested() {
-        let Some(early) = point_ratio(1, 1, 1, 1) else {
-            return;
-        };
-        let Some(late) = point_ratio(9, 1, 9, 1) else {
-            return;
-        };
+        let early = point_ratio(1, 1, 1, 1);
+        let late = point_ratio(9, 1, 9, 1);
         let late_motion = Motion::Fixed(late);
         let legs = Motion::Piecewise(vec![
             (FrameIndex::new(5), Motion::Fixed(early)),
@@ -673,9 +603,7 @@ mod tests {
             "frames at a later key must use that key's motion"
         );
         let empty = Motion::Piecewise(Vec::new());
-        let Some(scene_origin) = point_ratio(0, 1, 0, 1) else {
-            return;
-        };
+        let scene_origin = point_ratio(0, 1, 0, 1);
         assert_eq!(
             position_at(&empty, FrameIndex::new(3)),
             scene_origin,
