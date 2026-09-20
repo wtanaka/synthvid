@@ -470,7 +470,10 @@ mod tests {
 
         // Set pixel (0, 0) to white (255, 255, 255)
         let white = Rgb8::new(255, 255, 255);
-        let _ = frame.set_pixel(0, 0, white);
+        assert!(
+            frame.set_pixel(0, 0, white).is_some(),
+            "set_pixel(0, 0) must succeed"
+        );
 
         // Blend with black (0, 0, 0) at alpha 0 -> must remain white
         let black = Rgb8::new(0, 0, 0);
@@ -498,7 +501,10 @@ mod tests {
 
         // Set pixel (1, 1) to (100, 100, 100) and blend with (200, 200, 200) at alpha 128
         let gray100 = Rgb8::new(100, 100, 100);
-        let _ = frame.set_pixel(1, 1, gray100);
+        assert!(
+            frame.set_pixel(1, 1, gray100).is_some(),
+            "set_pixel(1, 1) must succeed"
+        );
         let gray200 = Rgb8::new(200, 200, 200);
         assert!(
             frame.blend_pixel(1, 1, gray200, 128).is_some(),

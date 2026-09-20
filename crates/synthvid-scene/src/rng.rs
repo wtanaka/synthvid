@@ -215,12 +215,8 @@ mod tests {
     #[test]
     fn test_rng_ratio_unit() {
         let mut rng = Rng::from_seed(Seed::new(123));
-        let Some(one) = Ratio::from_integer(1) else {
-            return;
-        };
-        let Some(zero) = Ratio::from_integer(0) else {
-            return;
-        };
+        let one = Ratio::from_integer(1).unwrap();
+        let zero = Ratio::from_integer(0).unwrap();
 
         for _ in 0..1000 {
             let r = rng.next_ratio_unit();

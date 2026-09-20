@@ -343,8 +343,8 @@ mod tests {
             let span = max.wrapping_sub(min);
             let u_span = span.unsigned_abs();
             let rand = self.next_u64();
-            let rem = rand.checked_rem(u_span.wrapping_add(1)).unwrap_or_default();
-            let rem_i64 = i64::try_from(rem).unwrap_or_default();
+            let rem = rand.checked_rem(u_span.wrapping_add(1)).unwrap();
+            let rem_i64 = i64::try_from(rem).unwrap();
             min.wrapping_add(rem_i64)
         }
     }
