@@ -48,8 +48,13 @@ pub(crate) fn blend_channel(src: u8, dst: u8, alpha: u8) -> Option<u8> {
     let src_u32 = u32::from(src);
     let dst_u32 = u32::from(dst);
     let alpha_u32 = u32::from(alpha);
-    // saturating_sub prevents underflow since alpha <= 255.
-    let inv_alpha = 255_u32.saturating_sub(alpha_u32);
+    // Total: alpha_u32 is at most 255 (widened from a u8), so subtracting
+    // it from 255 never underflows.
+    let inv_alpha = match 255_u32.checked_sub(alpha_u32) {
+        Some(v) => v,
+        None if alpha_u32 == 0 => 255,
+        None => 0,
+    };
     // Both src_u32 and alpha_u32 are at most 255, so their product (max 65,025) fits in u32.
     let term1 = src_u32.checked_mul(alpha_u32)?;
     // Both dst_u32 and inv_alpha are at most 255, so their product (max 65,025) fits in u32.

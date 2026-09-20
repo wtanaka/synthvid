@@ -12,5 +12,9 @@ categories.workspace = true
 [dependencies]
 synthvid-catalog = { path = "../synthvid-catalog" }
 
+[dev-dependencies]
+synthvid-encode = { path = "../synthvid-encode" }
+synthvid-scene = { path = "../synthvid-scene" }
+
 [lints]
 workspace = true

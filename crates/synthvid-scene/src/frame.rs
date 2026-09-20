@@ -26,6 +26,59 @@ impl PixelCoord {
     }
 }
 
+/// A flat index into a `Frame`'s pixels -- specifically, an index into the
+/// `[u8; 3]` chunks `Frame::data.as_chunks::<3>()` produces, not a byte
+/// offset into `Frame::data` itself. Kept distinct from a bare `usize` (and
+/// private, so nothing outside this module can construct one except via
+/// [`Frame::pixel_index`]) so that indexing `Frame::data` directly with one
+/// -- which would read three times too far into the buffer -- is a type
+/// error rather than a silent off-by-a-factor-of-3 bug.
+#[derive(Debug, Clone, Copy)]
+struct PixelIndex(usize);
+
+/// One pixel's raw 24-bit RGB bytes, in on-buffer order (red, green, blue).
+///
+/// This is the [`Frame::data`] wire-format encoding of one pixel, distinct
+/// from [`Rgb8`] (the decoded color value with named `r`/`g`/`b` fields):
+/// specifically "3 bytes as they sit in the buffer," which is also why
+/// [`Frame::pixel_bytes`] returns this rather than a bare `[u8; 3]` that
+/// reads identically to any other 3 bytes.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct PixelBytes([u8; 3]);
+
+impl PixelBytes {
+    /// The underlying bytes, in on-buffer order (red, green, blue).
+    #[must_use]
+    pub const fn get(self) -> [u8; 3] {
+        self.0
+    }
+}
+
+impl From<[u8; 3]> for PixelBytes {
+    fn from(bytes: [u8; 3]) -> Self {
+        Self(bytes)
+    }
+}
+
+impl From<PixelBytes> for [u8; 3] {
+    fn from(bytes: PixelBytes) -> Self {
+        bytes.0
+    }
+}
+
+impl From<Rgb8> for PixelBytes {
+    fn from(color: Rgb8) -> Self {
+        Self([color.r, color.g, color.b])
+    }
+}
+
+impl From<PixelBytes> for Rgb8 {
+    fn from(bytes: PixelBytes) -> Self {
+        let [r, g, b] = bytes.0;
+        Self::new(r, g, b)
+    }
+}
+
 /// A video frame owning a 24-bit RGB pixel buffer of exactly `width * height * 3` bytes.
 ///
 /// Constructed only through constructors that strictly guarantee the length invariant.
@@ -74,17 +127,12 @@ impl fmt::Display for FrameError {
 
 impl core::error::Error for FrameError {}
 
-/// Largest pixel index any frame can produce: `y * width + x` with the maximum
-/// `u16` dimensions. Computed in `u32`, which is the narrowest type that must
-/// hold it. If this bound were false the constant would overflow and the crate
-/// would not compile.
-const _MAX_PIXEL_INDEX: u32 = 65_535 * 65_535 + 65_535;
-
-/// This crate addresses pixel buffers through `usize`, so it requires a target
-/// whose `usize` is at least 32 bits. On anything narrower this constant
-/// underflows and the crate does not build, rather than silently addressing
-/// the wrong byte.
-const _USIZE_AT_LEAST_32_BITS: usize = usize::MAX - 4_294_967_295;
+// This crate addresses pixel buffers through `usize`, so it requires a
+// target whose `usize` is at least 32 bits, true of every platform Rust
+// supports as a hosted (`std`) target. A 16-bit target fails the build
+// here rather than silently addressing the wrong byte.
+#[cfg(target_pointer_width = "16")]
+compile_error!("synthvid-scene assumes usize is at least 32 bits wide");
 
 impl Frame {
     /// Creates a new [`Frame`] from [`Dimensions`] and an owned pixel buffer.
@@ -232,20 +280,7 @@ impl Frame {
 
     /// Retrieves pixel, distinguishing bounds from arithmetic errors.
     fn pixel_inner(&self, coord: PixelCoord) -> Result<Rgb8, PixelOutOfBounds> {
-        let width = self.dimensions.width.get().get();
-        let height = self.dimensions.height.get().get();
-
-        if coord.x >= width || coord.y >= height {
-            return Err(PixelOutOfBounds);
-        }
-
-        let [r_idx, g_idx, b_idx] = self.channel_offsets(coord);
-
-        let red = *self.data.get(r_idx).ok_or(PixelOutOfBounds)?;
-        let green = *self.data.get(g_idx).ok_or(PixelOutOfBounds)?;
-        let blue = *self.data.get(b_idx).ok_or(PixelOutOfBounds)?;
-
-        Ok(Rgb8::new(red, green, blue))
+        Ok(Rgb8::from(self.pixel_bytes_inner(coord)?))
     }
 
     /// Returns the [`Rgb8`] pixel color at the given coordinate,
@@ -257,25 +292,19 @@ impl Frame {
         self.pixel(coord)
     }
 
-    /// Returns the 3-byte RGB slice for the pixel at the given coordinate,
-    /// or `None` if out of bounds.
+    /// Returns the pixel's raw bytes at the given coordinate, or `None` if
+    /// out of bounds.
     #[must_use]
-    pub fn pixel_bytes(&self, coord: PixelCoord) -> Option<&[u8]> {
+    pub fn pixel_bytes(&self, coord: PixelCoord) -> Option<PixelBytes> {
         self.pixel_bytes_inner(coord).ok()
     }
 
     /// Retrieves pixel bytes, distinguishing bounds from arithmetic errors.
-    fn pixel_bytes_inner(&self, coord: PixelCoord) -> Result<&[u8], PixelOutOfBounds> {
-        let width = self.dimensions.width.get().get();
-        let height = self.dimensions.height.get().get();
-
-        if coord.x >= width || coord.y >= height {
-            return Err(PixelOutOfBounds);
-        }
-
-        let [byte_index, _, end_index] = self.channel_offsets(coord);
-        self.data
-            .get(byte_index..=end_index)
+    fn pixel_bytes_inner(&self, coord: PixelCoord) -> Result<PixelBytes, PixelOutOfBounds> {
+        let index = self.pixel_index(coord).ok_or(PixelOutOfBounds)?;
+        self.pixel_chunk(index)
+            .copied()
+            .map(PixelBytes::from)
             .ok_or(PixelOutOfBounds)
     }
 
@@ -304,69 +333,65 @@ impl Frame {
         self.blend_pixel_inner(coord, color, alpha)
     }
 
-    /// Writes the pixel, or an error if the coordinate lies outside the frame or arithmetic overflows.
+    /// Writes the pixel, or an error if the coordinate lies outside the frame.
     fn set_pixel_inner(&mut self, coord: PixelCoord, color: Rgb8) -> Result<(), PixelOutOfBounds> {
-        let width = self.dimensions.width.get().get();
-        let height = self.dimensions.height.get().get();
-
-        if coord.x >= width || coord.y >= height {
-            return Err(PixelOutOfBounds);
-        }
-
-        let [r_idx, g_idx, b_idx] = self.channel_offsets(coord);
-
-        self.data
-            .get_mut(r_idx)
-            .ok_or(PixelOutOfBounds)
-            .map(|r| *r = color.r)?;
-        self.data
-            .get_mut(g_idx)
-            .ok_or(PixelOutOfBounds)
-            .map(|g| *g = color.g)?;
-        self.data
-            .get_mut(b_idx)
-            .ok_or(PixelOutOfBounds)
-            .map(|b| *b = color.b)?;
-
+        let index = self.pixel_index(coord).ok_or(PixelOutOfBounds)?;
+        let pixel = self.pixel_chunk_mut(index).ok_or(PixelOutOfBounds)?;
+        *pixel = PixelBytes::from(color).get();
         Ok(())
     }
 
-    /// Converts a byte index (u64) to a usize for buffer indexing.
-    /// Returns `None` if the index exceeds `usize::MAX`.
-    #[inline]
+    /// The flat index of `coord`'s pixel among this frame's `[u8; 3]`
+    /// chunks, or `None` if `coord` lies outside the frame. Total: bounds
+    /// are checked just below, and `width`/`height` are each at most
+    /// `u16::MAX`, so `y * width + x` is at most `4_294_967_295`, which
+    /// fits any `usize` this crate builds for (see the guard above).
     #[must_use]
-    /// Byte offsets of a pixel's three channels within [`Frame::data`].
-    ///
-    /// The caller must already have established `coord.x < width` and
-    /// `coord.y < height`; every call site does so immediately above.
-    ///
-    /// The suppression below is discharged by the `_MAX_*` constants beside
-    /// this function rather than by this comment. A `const` whose arithmetic
-    /// overflows is a compile error, and those constants compute the same
-    /// bounds in the same type this expression uses, for the target actually
-    /// being compiled -- so the claim is checked where it matters rather than
-    /// resting on an assumption about one developer's machine.
-    ///
-    /// The multiply by three is bounded by the allocation instead: `data` was
-    /// built with `width * height * 3` bytes, already a valid `usize`, and
-    /// these offsets are strictly below that length. That part is an invariant
-    /// of construction, which the constants cannot state and which the slice
-    /// accesses at each call site still check.
-    #[expect(
-        clippy::arithmetic_side_effects,
-        reason = "bounds proved by _MAX_PIXEL_INDEX and _USIZE_AT_LEAST_32_BITS at compile time"
-    )]
-    fn channel_offsets(&self, coord: PixelCoord) -> [usize; 3] {
-        let width = usize::from(self.dimensions.width.get().get());
-        let red = (usize::from(coord.y) * width + usize::from(coord.x)) * 3;
-        [red, red + 1, red + 2]
+    fn pixel_index(&self, coord: PixelCoord) -> Option<PixelIndex> {
+        let width = self.dimensions.width.get().get();
+        let height = self.dimensions.height.get().get();
+        if coord.x >= width || coord.y >= height {
+            return None;
+        }
+        let width = usize::from(width);
+        let row_start = match usize::from(coord.y).checked_mul(width) {
+            Some(v) => v,
+            None if width == 0 => 0,
+            None => usize::MAX,
+        };
+        let index = match row_start.checked_add(usize::from(coord.x)) {
+            Some(v) => v,
+            None if coord.x == 0 => row_start,
+            None => usize::MAX,
+        };
+        Some(PixelIndex(index))
+    }
+
+    /// The pixel chunk at `index`, or `None` if out of bounds. The only way
+    /// to obtain a `PixelIndex` is `pixel_index`, which counts `[u8; 3]`
+    /// pixel chunks, not bytes -- so this and `pixel_chunk_mut` are the
+    /// only places that index can be used, and `self.data.get(index)`
+    /// (which would read the wrong byte range, since a pixel index is not
+    /// a byte offset) does not type-check.
+    #[must_use]
+    fn pixel_chunk(&self, index: PixelIndex) -> Option<&[u8; 3]> {
+        let (pixels, _) = self.data.as_chunks::<3>();
+        pixels.get(index.0)
+    }
+
+    /// Mutable access to the pixel chunk at `index`; see [`Self::pixel_chunk`].
+    #[must_use]
+    fn pixel_chunk_mut(&mut self, index: PixelIndex) -> Option<&mut [u8; 3]> {
+        let (pixels, _) = self.data.as_chunks_mut::<3>();
+        pixels.get_mut(index.0)
     }
 
     /// Fills the entire frame with a uniform [`Rgb8`] color.
     pub fn fill(&mut self, color: Rgb8) {
+        let bytes = PixelBytes::from(color).get();
         let (chunks, _) = self.data.as_chunks_mut::<3>();
         for pixel in chunks {
-            *pixel = [color.r, color.g, color.b];
+            *pixel = bytes;
         }
     }
 
@@ -383,35 +408,24 @@ impl Frame {
         color: Rgb8,
         alpha: u8,
     ) -> Result<(), PixelOutOfBounds> {
-        let width = self.dimensions.width.get().get();
-        let height = self.dimensions.height.get().get();
-
-        if coord.x >= width || coord.y >= height {
-            return Err(PixelOutOfBounds);
-        }
+        let index = self.pixel_index(coord).ok_or(PixelOutOfBounds)?;
         if alpha == 0 {
             return Ok(());
         }
 
-        let [r_idx, g_idx, b_idx] = self.channel_offsets(coord);
+        let pixel = self.pixel_chunk_mut(index).ok_or(PixelOutOfBounds)?;
 
         if alpha == 255 {
-            *self.data.get_mut(r_idx).ok_or(PixelOutOfBounds)? = color.r;
-            *self.data.get_mut(g_idx).ok_or(PixelOutOfBounds)? = color.g;
-            *self.data.get_mut(b_idx).ok_or(PixelOutOfBounds)? = color.b;
+            *pixel = PixelBytes::from(color).get();
             return Ok(());
         }
 
-        let dst_red = *self.data.get(r_idx).ok_or(PixelOutOfBounds)?;
-        let dst_green = *self.data.get(g_idx).ok_or(PixelOutOfBounds)?;
-        let dst_blue = *self.data.get(b_idx).ok_or(PixelOutOfBounds)?;
-
-        *self.data.get_mut(r_idx).ok_or(PixelOutOfBounds)? =
-            blend_channel(color.r, dst_red, alpha).ok_or(PixelOutOfBounds)?;
-        *self.data.get_mut(g_idx).ok_or(PixelOutOfBounds)? =
-            blend_channel(color.g, dst_green, alpha).ok_or(PixelOutOfBounds)?;
-        *self.data.get_mut(b_idx).ok_or(PixelOutOfBounds)? =
-            blend_channel(color.b, dst_blue, alpha).ok_or(PixelOutOfBounds)?;
+        let [dst_red, dst_green, dst_blue] = *pixel;
+        *pixel = [
+            blend_channel(color.r, dst_red, alpha).ok_or(PixelOutOfBounds)?,
+            blend_channel(color.g, dst_green, alpha).ok_or(PixelOutOfBounds)?,
+            blend_channel(color.b, dst_blue, alpha).ok_or(PixelOutOfBounds)?,
+        ];
 
         Ok(())
     }
@@ -521,7 +535,7 @@ mod tests {
         );
         assert_eq!(
             frame.pixel_bytes(coord_1_1),
-            Some(&[10, 20, 30][..]),
+            Some(PixelBytes::from([10, 20, 30])),
             "pixel_bytes at (1, 1) must return [10, 20, 30]"
         );
 

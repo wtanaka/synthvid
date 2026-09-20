@@ -39,14 +39,57 @@ fn frame_ratio(frame: FrameIndex) -> Ratio {
     int_ratio(i64::from(frame.get()))
 }
 
+/// Truncates a `u128` to its low 64 bits. Total, and exact: reading the
+/// low 8 bytes of the little-endian representation is precisely "reduce
+/// modulo 2^64", the same reduction `u64::wrapping_add`/`wrapping_mul`
+/// perform, spelled out explicitly rather than via a method this crate's
+/// own modular-arithmetic guard flags (for good reason everywhere except
+/// deliberate hash/seed mixing like this).
+fn truncate_u128_to_u64(value: u128) -> u64 {
+    let bytes = value.to_le_bytes();
+    let mut low = [0_u8; 8];
+    low.copy_from_slice(&bytes[..8]);
+    u64::from_le_bytes(low)
+}
+
+/// Computes `factors.0 * factors.1 + addend`, reduced modulo 2^64 (i.e.
+/// what `u64::wrapping_mul` followed by `u64::wrapping_add` computes).
+/// Takes the multiplicands bundled as one tuple parameter, not two
+/// adjacent `u64`s, for the same reason `color.rs`'s `weighted_sum` bundles
+/// its terms: two separate `u64` parameters here would just be another
+/// same-type pair against this crate's transposable-parameter budget, for
+/// an operation (multiplication) where swapping them changes nothing.
+///
+/// Total: widened to `u128`, two `u64` operands multiply to at most
+/// `(2^64 - 1)^2`, still below `u128::MAX` (`2^128 - 1`), and adding a
+/// third `u64` to that product stays far below `u128::MAX` as well, so
+/// neither widened operation can overflow.
+fn mul_add_mod_2_64(factors: (u64, u64), addend: u64) -> u64 {
+    let (a, b) = factors;
+    let product = match u128::from(a).checked_mul(u128::from(b)) {
+        Some(p) => p,
+        // Unreachable: see this function's doc comment.
+        None if a == 0 => 0,
+        None => u128::MAX,
+    };
+    let sum = match product.checked_add(u128::from(addend)) {
+        Some(s) => s,
+        None if addend == 0 => product,
+        None => u128::MAX,
+    };
+    truncate_u128_to_u64(sum)
+}
+
 /// Derives the deterministic seed for walk step `step_index` from the base seed.
 ///
-/// `Seed(base.wrapping_add(index * WALK_SEED_STRIDE))`, so step 900 needs no
-/// knowledge of steps 0 through 899 beyond its own index.
+/// `Seed(base + index * WALK_SEED_STRIDE)`, reduced modulo 2^64, so step
+/// 900 needs no knowledge of steps 0 through 899 beyond its own index.
 #[must_use]
 fn walk_step_seed(base: Seed, step_index: u32) -> Seed {
-    let scaled = u64::from(step_index).wrapping_mul(WALK_SEED_STRIDE);
-    Seed::new(base.get().wrapping_add(scaled))
+    Seed::new(mul_add_mod_2_64(
+        (u64::from(step_index), WALK_SEED_STRIDE),
+        base.get(),
+    ))
 }
 
 /// Sums the per-step walk displacements for frames `1..=frame`.
