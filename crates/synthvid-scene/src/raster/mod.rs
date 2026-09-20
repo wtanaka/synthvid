@@ -6,6 +6,9 @@
 //! that answer those questions live in the private `coverage` submodule.
 
 mod coverage;
+pub mod extent;
+
+pub use extent::{cross_extent, disc_extent, line_extent, polygon_extent, rect_extent, Bounds};
 
 use crate::color::Rgb8;
 use crate::frame::Frame;

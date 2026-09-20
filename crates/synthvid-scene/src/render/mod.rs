@@ -24,7 +24,7 @@ mod shape;
 use core::fmt;
 
 use crate::frame::Frame;
-use crate::geom::Affine;
+use crate::geom::Similarity;
 use crate::motion::position_at;
 use crate::ratio::{int_ratio, Ratio};
 use crate::scene::{Camera, Scene};
@@ -75,17 +75,18 @@ impl core::error::Error for RenderError {}
 
 /// Camera placement evaluated for one frame.
 ///
-/// The scene-to-screen [`Affine`] maps a scene point `w` to
+/// The scene-to-screen [`Similarity`] maps a scene point `w` to
 /// `spin * zoom * (w - centre)`, where `centre` is the camera motion position,
 /// `zoom` is the uniform magnification, and `spin` rotates by the negation of
 /// the camera rotation angle about the camera centre. Negation is the camera
 /// convention: turning the camera one way moves the scene the other way.
-/// [`render_into`] falls back to the identity placement when any intermediate
-/// value overflows, so evaluation stays total.
+/// A similarity can only rotate and uniformly scale, so a disc mapped through
+/// it stays a disc; [`render_into`] falls back to the identity placement when
+/// any intermediate value overflows, so evaluation stays total.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 struct CameraFrame {
     /// Scene-to-screen transform applied to every drawn shape.
-    transform: Affine,
+    transform: Similarity,
     /// Uniform magnification applied to shape extents; strictly positive.
     zoom: Ratio,
 }
@@ -99,7 +100,7 @@ struct CameraFrame {
 /// origin points is exactly the identity.
 fn camera_frame(camera: &Camera, frame: FrameIndex) -> CameraFrame {
     let fallback = CameraFrame {
-        transform: Affine::identity(),
+        transform: Similarity::identity(),
         zoom: int_ratio(1),
     };
     let centre = position_at(&camera.motion, frame);
@@ -149,8 +150,12 @@ fn camera_frame(camera: &Camera, frame: FrameIndex) -> CameraFrame {
     let Some(ty) = sum_y.checked_neg() else {
         return fallback;
     };
+    let candidate = Similarity::new(a, b, tx, ty);
+    if candidate.to_affine().is_none() {
+        return fallback;
+    }
     CameraFrame {
-        transform: Affine::new(a, b, tx, c, a, ty),
+        transform: candidate,
         zoom,
     }
 }

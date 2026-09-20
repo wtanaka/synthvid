@@ -298,6 +298,225 @@ impl Affine {
     }
 }
 
+/// A 2D similarity transform with exact rational entries.
+///
+/// Stored as the pair `(a, b)` with translation `(tx, ty)`, acting as
+/// `x' = a * x + b * y + tx`, `y' = -b * x + a * y + ty`.
+///
+/// Every pair `(a, b)` describes a rotation combined with a uniform scale
+/// (plus translation), so a similarity can never shear: a disc mapped through
+/// one stays a disc. Any operation whose intermediate or final value would
+/// overflow returns `None` rather than wrapping. Use
+/// [`Similarity::to_affine`] where a general [`Affine`] is genuinely wanted.
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub struct Similarity {
+    /// Linear entry shared by output `x` from input `x` and output `y` from input `y`.
+    pub a: Ratio,
+    /// Linear entry mapping input `y` to output `x`; its negation maps input `x` to output `y`.
+    pub b: Ratio,
+    /// Translation added to output `x`.
+    pub tx: Ratio,
+    /// Translation added to output `y`.
+    pub ty: Ratio,
+}
+
+impl Similarity {
+    /// Creates a new [`Similarity`] from its linear entries and translation.
+    ///
+    /// Any `(a, b)` pair is a similarity (rotation with uniform scale), so
+    /// this constructor cannot introduce shear.
+    #[must_use]
+    pub const fn new(a: Ratio, b: Ratio, tx: Ratio, ty: Ratio) -> Self {
+        Self { a, b, tx, ty }
+    }
+
+    /// Returns the identity similarity.
+    #[must_use]
+    pub fn identity() -> Self {
+        let zero = int_ratio(0);
+        let one = int_ratio(1);
+        Self {
+            a: one,
+            b: zero,
+            tx: zero,
+            ty: zero,
+        }
+    }
+
+    /// Returns a pure translation by the given displacement.
+    #[must_use]
+    pub fn translation(displacement: Vector) -> Self {
+        let zero = int_ratio(0);
+        let one = int_ratio(1);
+        Self {
+            a: one,
+            b: zero,
+            tx: displacement.x,
+            ty: displacement.y,
+        }
+    }
+
+    /// Returns a uniform scaling by the given factor on both axes.
+    #[must_use]
+    pub fn uniform_scale(factor: Ratio) -> Self {
+        let zero = int_ratio(0);
+        Self {
+            a: factor,
+            b: zero,
+            tx: zero,
+            ty: zero,
+        }
+    }
+
+    /// Returns a rotation about the origin by `turns` quarter turns.
+    ///
+    /// Positive values rotate counter-clockwise in a standard mathematical
+    /// frame (`x` right, `y` up), matching [`Affine::quarter_turns`]: one
+    /// quarter turn maps `(x, y)` to `(-y, x)`. The turn count is reduced
+    /// modulo 4 with Euclidean remainder, so the rotation is exact.
+    #[must_use]
+    pub fn quarter_turns(turns: i32) -> Self {
+        let zero = int_ratio(0);
+        let one = int_ratio(1);
+        let neg_one = int_ratio(-1);
+        let step = turns.rem_euclid(4);
+        if step == 0 {
+            Self {
+                a: one,
+                b: zero,
+                tx: zero,
+                ty: zero,
+            }
+        } else if step == 1 {
+            Self {
+                a: zero,
+                b: neg_one,
+                tx: zero,
+                ty: zero,
+            }
+        } else if step == 2 {
+            Self {
+                a: neg_one,
+                b: zero,
+                tx: zero,
+                ty: zero,
+            }
+        } else {
+            Self {
+                a: zero,
+                b: one,
+                tx: zero,
+                ty: zero,
+            }
+        }
+    }
+
+    /// Applies this similarity to a point.
+    ///
+    /// Returns `None` if any intermediate or final value overflows.
+    #[must_use]
+    pub fn apply(self, point: Point) -> Option<Point> {
+        let neg_b = self.b.checked_neg()?;
+        let ax = self.a.checked_mul(point.x)?;
+        let by = self.b.checked_mul(point.y)?;
+        let x_lin = ax.checked_add(by)?;
+        let x = x_lin.checked_add(self.tx)?;
+        let nx = neg_b.checked_mul(point.x)?;
+        let ay = self.a.checked_mul(point.y)?;
+        let y_lin = nx.checked_add(ay)?;
+        let y = y_lin.checked_add(self.ty)?;
+        Some(Point { x, y })
+    }
+
+    /// Applies only the linear part of this similarity to a vector.
+    ///
+    /// Translation is ignored. Returns `None` on overflow.
+    #[must_use]
+    pub fn apply_vector(self, vector: Vector) -> Option<Vector> {
+        let neg_b = self.b.checked_neg()?;
+        let ax = self.a.checked_mul(vector.x)?;
+        let by = self.b.checked_mul(vector.y)?;
+        let x = ax.checked_add(by)?;
+        let nx = neg_b.checked_mul(vector.x)?;
+        let ay = self.a.checked_mul(vector.y)?;
+        let y = nx.checked_add(ay)?;
+        Some(Vector { x, y })
+    }
+
+    /// Composes two similarities.
+    ///
+    /// `self.compose(other)` returns the similarity that applies `other`
+    /// first and then `self`. Similarities are closed under composition, so
+    /// the result is again a similarity. Returns `None` on overflow.
+    #[must_use]
+    pub fn compose(self, other: Self) -> Option<Self> {
+        let a_part = self.a.checked_mul(other.a)?;
+        let b_part = self.b.checked_mul(other.b)?;
+        let a = a_part.checked_sub(b_part)?;
+        let c_part = self.a.checked_mul(other.b)?;
+        let d_part = self.b.checked_mul(other.a)?;
+        let b = c_part.checked_add(d_part)?;
+        let ax = self.a.checked_mul(other.tx)?;
+        let by = self.b.checked_mul(other.ty)?;
+        let tx = ax.checked_add(by)?.checked_add(self.tx)?;
+        let neg_b = self.b.checked_neg()?;
+        let nx = neg_b.checked_mul(other.tx)?;
+        let ay = self.a.checked_mul(other.ty)?;
+        let ty = nx.checked_add(ay)?.checked_add(self.ty)?;
+        Some(Self { a, b, tx, ty })
+    }
+
+    /// Returns the similarity applied after `self`.
+    ///
+    /// `self.then(next)` equals `next.compose(self)`: apply `self` first,
+    /// then `next`. Returns `None` on overflow.
+    #[must_use]
+    pub fn then(self, next: Self) -> Option<Self> {
+        next.compose(self)
+    }
+
+    /// Inverts this similarity.
+    ///
+    /// Returns `None` when the linear part is singular (both `a` and `b`
+    /// are zero, so the determinant `a * a + b * b` is zero) or when any
+    /// intermediate or final value overflows.
+    #[must_use]
+    pub fn inverse(self) -> Option<Self> {
+        let aa = self.a.checked_mul(self.a)?;
+        let bb = self.b.checked_mul(self.b)?;
+        let det = aa.checked_add(bb)?;
+        if det == int_ratio(0) {
+            return None;
+        }
+        let scale = int_ratio(1).checked_div(det)?;
+        let a_inv = self.a.checked_mul(scale)?;
+        let b_inv = self.b.checked_neg()?.checked_mul(scale)?;
+        let fwd_x = a_inv
+            .checked_mul(self.tx)?
+            .checked_add(b_inv.checked_mul(self.ty)?)?;
+        let back = b_inv.checked_neg()?;
+        let fwd_y = back
+            .checked_mul(self.tx)?
+            .checked_add(a_inv.checked_mul(self.ty)?)?;
+        Some(Self {
+            a: a_inv,
+            b: b_inv,
+            tx: fwd_x.checked_neg()?,
+            ty: fwd_y.checked_neg()?,
+        })
+    }
+
+    /// Converts this similarity to the general [`Affine`] transform.
+    ///
+    /// The affine entries are `(a, b, tx, -b, a, ty)`. Returns `None` only
+    /// when negating `b` overflows.
+    #[must_use]
+    pub fn to_affine(self) -> Option<Affine> {
+        let neg_b = self.b.checked_neg()?;
+        Some(Affine::new(self.a, self.b, self.tx, neg_b, self.a, self.ty))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -415,6 +634,50 @@ mod tests {
         assert_eq!(
             backward, third,
             "minus one quarter turn must equal three forward turns"
+        );
+    }
+
+    #[test]
+    fn test_similarity_roundtrip_and_affine() {
+        let Some(one) = make_ratio(1, 1) else { return };
+        let Some(zero) = make_ratio(0, 1) else { return };
+        let Some(two) = make_ratio(2, 1) else { return };
+        let Some(three) = make_ratio(3, 1) else {
+            return;
+        };
+        let probe = Point::new(two, three);
+        let shift = Similarity::translation(Vector::new(two, three));
+        let Some(moved) = shift.apply(probe) else {
+            return;
+        };
+        let Some(back) = shift.inverse() else { return };
+        let Some(home) = back.apply(moved) else {
+            return;
+        };
+        assert_eq!(home, probe, "inverse must undo a translation exactly");
+        let Some(spun) = Similarity::quarter_turns(1).apply(Point::new(one, zero)) else {
+            return;
+        };
+        assert_eq!(
+            spun,
+            Point::new(zero, one),
+            "a similarity quarter turn must match the affine one"
+        );
+        let scaled = Similarity::uniform_scale(two);
+        let Some(wide) = scaled.apply_vector(Vector::new(one, zero)) else {
+            return;
+        };
+        assert_eq!(
+            wide,
+            Vector::new(two, zero),
+            "uniform scale must multiply both axes equally"
+        );
+        let Some(as_affine) = scaled.to_affine() else {
+            return;
+        };
+        assert_eq!(
+            as_affine.d, as_affine.a,
+            "a similarity affine must scale uniformly"
         );
     }
 }
