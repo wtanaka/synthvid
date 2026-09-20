@@ -16,6 +16,9 @@ version = "0.1.0"
 [[package]]
 name = "synthvid-encode"
 version = "0.1.0"
+dependencies = [
+ "synthvid-scene",
+]
 
 [[package]]
 name = "synthvid-scene"
@@ -26,4 +29,6 @@ name = "synthvid-validate"
 version = "0.1.0"
 dependencies = [
  "synthvid-catalog",
+ "synthvid-encode",
+ "synthvid-scene",
 ]

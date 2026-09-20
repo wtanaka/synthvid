@@ -1,15 +1,7 @@
 use std::process::{Command, Stdio};
 use synthvid_catalog::writer::{JsonArray, JsonKey, JsonObject};
 
-/// Checks if a command is available in the environment.
-fn is_command_available(cmd: &str) -> bool {
-    Command::new("which")
-        .arg(cmd)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success())
-}
+use crate::support::is_command_available;
 
 /// Tries to validate JSON with jq.
 ///
