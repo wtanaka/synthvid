@@ -144,14 +144,14 @@ pub(super) fn draw_object(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::geom::Affine;
+    use crate::geom::Similarity;
     use crate::testutil::make_ratio;
     use crate::units::{Dimensions, Height, Width};
 
     /// Builds the identity camera placement used for shape tests.
     fn identity_placement() -> CameraFrame {
         CameraFrame {
-            transform: Affine::identity(),
+            transform: Similarity::identity(),
             zoom: int_ratio(1),
         }
     }

@@ -50,9 +50,12 @@ pub mod testutil;
 
 pub use crate::color::{required_buffer_len, Rgb8};
 pub use crate::frame::Frame;
-pub use crate::geom::{Affine, Point, Vector};
+pub use crate::geom::{Affine, Point, Similarity, Vector};
 pub use crate::motion::position_at;
-pub use crate::raster::{draw_cross, draw_line, fill_disc, fill_polygon, fill_rect};
+pub use crate::raster::{
+    cross_extent, disc_extent, draw_cross, draw_line, fill_disc, fill_polygon, fill_rect,
+    line_extent, polygon_extent, rect_extent, Bounds,
+};
 pub use crate::ratio::Ratio;
 pub use crate::render::{render_frame, render_into, RenderError};
 pub use crate::rng::Rng;
