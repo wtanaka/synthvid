@@ -15,6 +15,7 @@
 //! | Module     | Owns                                                    |
 //! | ---------- | ------------------------------------------------------- |
 //! | [`ratio`]  | exact rational arithmetic                               |
+//! | [`render`] | closed-form frame rendering                             |
 //! | [`units`]  | frame indices and counts, dimensions, frame rate, seed  |
 //! | [`rng`]    | deterministic pseudo-random number generation           |
 //! | [`color`]  | pixel colour, buffer sizing, channel blending           |
@@ -38,6 +39,7 @@ pub mod geom;
 pub mod motion;
 pub mod raster;
 pub mod ratio;
+pub mod render;
 pub mod rng;
 pub mod scene;
 pub mod trig;
@@ -52,6 +54,7 @@ pub use crate::geom::{Affine, Point, Vector};
 pub use crate::motion::position_at;
 pub use crate::raster::{draw_cross, draw_line, fill_disc, fill_polygon, fill_rect};
 pub use crate::ratio::Ratio;
+pub use crate::render::{render_frame, render_into, RenderError};
 pub use crate::rng::Rng;
 pub use crate::scene::{
     Background, Camera, Direction, FrameSpan, Motion, Object, Scale, ScaleError, Scene, Shape,
