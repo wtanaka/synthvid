@@ -107,7 +107,10 @@ fn paint_gradient(frame: &mut Frame, from: Rgb8, to: Rgb8, direction: Direction)
         frame.fill(from);
         return;
     }
-    let den = u32::from(limit).checked_sub(1).unwrap_or(1);
+    let Some(den) = u32::from(limit).checked_sub(1) else {
+        frame.fill(from);
+        return;
+    };
     for y in 0..height {
         for x in 0..width {
             let num = match direction {
@@ -294,7 +297,9 @@ mod tests {
 
     #[test]
     fn test_checker_pixels() {
-        let cell = core::num::NonZeroU16::new(2).unwrap_or(core::num::NonZeroU16::MIN);
+        let Some(cell) = core::num::NonZeroU16::new(2) else {
+            return;
+        };
         let red = Rgb8::new(255, 0, 0);
         let blue = Rgb8::new(0, 0, 255);
         let Some(scene) = bare_scene(Background::Checker {
@@ -324,7 +329,9 @@ mod tests {
 
     #[test]
     fn test_grid_pixels() {
-        let spacing = core::num::NonZeroU16::new(4).unwrap_or(core::num::NonZeroU16::MIN);
+        let Some(spacing) = core::num::NonZeroU16::new(4) else {
+            return;
+        };
         let white = Rgb8::new(255, 255, 255);
         let black = Rgb8::new(0, 0, 0);
         let Some(scene) = bare_scene(Background::Grid {

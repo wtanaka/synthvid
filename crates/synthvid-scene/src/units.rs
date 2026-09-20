@@ -288,6 +288,39 @@ impl From<Seed> for u64 {
     }
 }
 
+/// Zero-based index of an object in [`Scene`](crate::scene::Scene)::`objects`.
+///
+/// Exists so an error can name which object failed without carrying a bare
+/// integer.
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Default)]
+pub struct ObjectIndex(pub u32);
+
+impl ObjectIndex {
+    /// Creates a new object index.
+    #[must_use]
+    pub const fn new(index: u32) -> Self {
+        Self(index)
+    }
+
+    /// Returns the underlying object index value.
+    #[must_use]
+    pub const fn get(self) -> u32 {
+        self.0
+    }
+}
+
+impl From<u32> for ObjectIndex {
+    fn from(index: u32) -> Self {
+        Self(index)
+    }
+}
+
+impl From<ObjectIndex> for u32 {
+    fn from(index: ObjectIndex) -> Self {
+        index.0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

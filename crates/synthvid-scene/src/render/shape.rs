@@ -5,8 +5,9 @@
 //! through the camera transform and radii scale by the magnification;
 //! rectangles, polygon vertices, and cross bars map corner by corner, so
 //! camera rotation turns them into rotated polygons rather than being
-//! ignored. Anything that overflows skips the shape, leaving earlier pixels
-//! untouched. All arithmetic is exact [`Ratio`] arithmetic.
+//! ignored. A placement that overflows exact arithmetic is an error; see
+//! [`RenderError`](super::RenderError). All arithmetic is exact [`Ratio`]
+//! arithmetic.
 
 use crate::color::Rgb8;
 use crate::frame::Frame;
@@ -14,13 +15,14 @@ use crate::geom::Point;
 use crate::raster::{fill_disc, fill_polygon};
 use crate::ratio::{int_ratio, Ratio};
 use crate::scene::Shape;
+use crate::units::{FrameIndex, ObjectIndex};
 
-use super::CameraFrame;
+use super::{CameraFrame, RenderError};
 
 /// Returns the four corners of an axis-aligned rectangle.
 ///
 /// The corners run clockwise from the top-left `(left, top)`. Returns `None`
-/// on overflow; the caller then draws nothing.
+/// on overflow; the caller reports [`RenderError::ObjectOverflow`].
 fn rect_corners(centre: Point, half_width: Ratio, half_height: Ratio) -> Option<[Point; 4]> {
     let left = centre.x.checked_sub(half_width)?;
     let right = centre.x.checked_add(half_width)?;
@@ -36,24 +38,37 @@ fn rect_corners(centre: Point, half_width: Ratio, half_height: Ratio) -> Option<
 
 /// Fills the polygon through `scene` after mapping each vertex to the screen.
 ///
-/// A vertex whose camera transform overflows skips the whole shape, leaving
-/// earlier pixels untouched.
-fn draw_mapped_polygon(frame: &mut Frame, scene: &[Point], camera: &CameraFrame, colour: Rgb8) {
+/// # Errors
+///
+/// Returns [`RenderError::ObjectOverflow`] when a vertex camera transform
+/// overflows exact arithmetic.
+fn draw_mapped_polygon(
+    frame: &mut Frame,
+    scene: &[Point],
+    camera: &CameraFrame,
+    colour: Rgb8,
+    frame_index: FrameIndex,
+    object: ObjectIndex,
+) -> Result<(), RenderError> {
     let mut mapped = Vec::with_capacity(scene.len());
     for vertex in scene {
         let Some(screen) = camera.transform.apply(*vertex) else {
-            return;
+            return Err(RenderError::ObjectOverflow {
+                frame: frame_index,
+                object,
+            });
         };
         mapped.push(screen);
     }
     fill_polygon(frame, &mapped, colour);
+    Ok(())
 }
 
 /// Shifts polygon vertices from shape space to scene space.
 ///
 /// Shape vertices are offsets from the object position, so each scene vertex
-/// is `at + vertex`. Returns `None` on overflow; the caller then draws
-/// nothing.
+/// is `at + vertex`. Returns `None` on overflow; the caller reports
+/// [`RenderError::ObjectOverflow`].
 fn shifted_vertices(at: Point, vertices: &[Point]) -> Option<Vec<Point>> {
     let mut scene = Vec::with_capacity(vertices.len());
     for vertex in vertices {
@@ -71,72 +86,106 @@ fn shifted_vertices(at: Point, vertices: &[Point]) -> Option<Vec<Point>> {
 /// rectangles rather than being ignored. With the identity camera the corners
 /// match the untransformed bars exactly. A negative arm or a non-positive
 /// thickness draws nothing.
+///
+/// # Errors
+///
+/// Returns [`RenderError::ObjectOverflow`] when any intermediate value
+/// overflows exact arithmetic.
 fn draw_cross_shape(
     frame: &mut Frame,
     at: Point,
-    arm: Ratio,
-    thickness: Ratio,
     camera: &CameraFrame,
     colour: Rgb8,
-) {
+    frame_index: FrameIndex,
+    object: ObjectIndex,
+    geometry: (Ratio, Ratio),
+) -> Result<(), RenderError> {
+    let (arm, thickness) = geometry;
     if arm < int_ratio(0) {
-        return;
+        return Ok(());
     }
     if thickness <= int_ratio(0) {
-        return;
+        return Ok(());
     }
+    let overflow = || RenderError::ObjectOverflow {
+        frame: frame_index,
+        object,
+    };
     let Some(half) = thickness.checked_div(int_ratio(2)) else {
-        return;
+        return Err(overflow());
     };
     let Some(flat) = rect_corners(at, arm, half) else {
-        return;
+        return Err(overflow());
     };
-    draw_mapped_polygon(frame, &flat, camera, colour);
+    draw_mapped_polygon(frame, &flat, camera, colour, frame_index, object)?;
     let Some(tall) = rect_corners(at, half, arm) else {
-        return;
+        return Err(overflow());
     };
-    draw_mapped_polygon(frame, &tall, camera, colour);
+    draw_mapped_polygon(frame, &tall, camera, colour, frame_index, object)?;
+    Ok(())
 }
 
 /// Draws one shape centred on `at` through the camera placement.
 ///
 /// `at` is the object position in scene space. Disc radii scale by the camera
-/// magnification; everything else maps corner by corner. Anything that
-/// overflows skips the shape; the frame keeps whatever earlier shapes drew.
+/// magnification; everything else maps corner by corner.
+///
+/// # Errors
+///
+/// Returns [`RenderError::ObjectOverflow`] when the placement for
+/// `frame_index` and `object` overflows exact arithmetic.
 pub(super) fn draw_object(
     frame: &mut Frame,
     shape: &Shape,
     at: Point,
     camera: &CameraFrame,
     colour: Rgb8,
-) {
+    frame_index: FrameIndex,
+    object: ObjectIndex,
+) -> Result<(), RenderError> {
+    let overflow = || RenderError::ObjectOverflow {
+        frame: frame_index,
+        object,
+    };
     match shape {
         Shape::Disc { radius } => {
             let Some(centre) = camera.transform.apply(at) else {
-                return;
+                return Err(overflow());
             };
             let Some(scaled) = radius.checked_mul(camera.zoom) else {
-                return;
+                return Err(overflow());
             };
             fill_disc(frame, centre, scaled, colour);
+            Ok(())
         }
         Shape::Rect {
             half_width,
             half_height,
         } => {
             let Some(corners) = rect_corners(at, *half_width, *half_height) else {
-                return;
+                return Err(overflow());
             };
-            draw_mapped_polygon(frame, &corners, camera, colour);
+            draw_mapped_polygon(frame, &corners, camera, colour, frame_index, object)?;
+            Ok(())
         }
         Shape::Polygon { vertices } => {
             let Some(scene) = shifted_vertices(at, vertices) else {
-                return;
+                return Err(overflow());
             };
-            draw_mapped_polygon(frame, &scene, camera, colour);
+            draw_mapped_polygon(frame, &scene, camera, colour, frame_index, object)?;
+            Ok(())
         }
         Shape::Cross { arm, thickness } => {
-            draw_cross_shape(frame, at, *arm, *thickness, camera, colour);
+            draw_cross_shape(
+                frame,
+                at,
+                camera,
+                colour,
+                frame_index,
+                object,
+                (*arm, *thickness),
+            )?;
+            Ok(())
         }
     }
 }
@@ -165,7 +214,9 @@ mod tests {
         let half = make_ratio(9, 2)?;
         let at = Point::new(half, half);
         let camera = identity_placement();
-        draw_object(&mut frame, shape, at, &camera, fill);
+        let frame_index = FrameIndex::new(0);
+        let object = ObjectIndex::new(0);
+        draw_object(&mut frame, shape, at, &camera, fill, frame_index, object).ok()?;
         Some(frame)
     }
 
