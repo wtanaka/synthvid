@@ -1168,6 +1168,923 @@ pub fn cos_turns(angle: Ratio) -> Ratio {
     })
 }
 
+/// A point in scene units.
+///
+/// Scene units coincide with pixel units: the pixel with integer indices
+/// `(x, y)` covers the unit square `[x, x + 1)` by `[y, y + 1)` and its
+/// centre is at `(x + 1 / 2, y + 1 / 2)`. The origin `(0, 0)` is the top-left
+/// corner of the frame and `y` grows downwards, matching frame row order.
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub struct Point {
+    /// Horizontal coordinate in scene units.
+    pub x: Ratio,
+    /// Vertical coordinate in scene units.
+    pub y: Ratio,
+}
+
+impl Point {
+    /// Creates a new [`Point`] from exact rational coordinates.
+    #[must_use]
+    pub const fn new(x: Ratio, y: Ratio) -> Self {
+        Self { x, y }
+    }
+}
+
+/// A displacement in scene units.
+///
+/// Unlike [`Point`], a [`Vector`] has no position; it is the difference of
+/// two points. An [`Affine`] transform acts on it through its linear part
+/// only, ignoring translation.
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub struct Vector {
+    /// Horizontal component in scene units.
+    pub x: Ratio,
+    /// Vertical component in scene units.
+    pub y: Ratio,
+}
+
+impl Vector {
+    /// Creates a new [`Vector`] from exact rational components.
+    #[must_use]
+    pub const fn new(x: Ratio, y: Ratio) -> Self {
+        Self { x, y }
+    }
+}
+
+/// A 2D affine transform with exact rational entries.
+///
+/// Stored as the 2x3 matrix
+/// ```text
+/// [ a  b  tx ]
+/// [ c  d  ty ]
+/// ```
+/// acting as `x' = a * x + b * y + tx`, `y' = c * x + d * y + ty`.
+/// All entries are [`Ratio`], so composition and inversion are exact.
+/// Any operation whose intermediate or final value would overflow returns
+/// `None` rather than wrapping.
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub struct Affine {
+    /// Linear entry mapping input `x` to output `x`.
+    pub a: Ratio,
+    /// Linear entry mapping input `y` to output `x`.
+    pub b: Ratio,
+    /// Translation added to output `x`.
+    pub tx: Ratio,
+    /// Linear entry mapping input `x` to output `y`.
+    pub c: Ratio,
+    /// Linear entry mapping input `y` to output `y`.
+    pub d: Ratio,
+    /// Translation added to output `y`.
+    pub ty: Ratio,
+}
+
+impl Affine {
+    /// Creates a new [`Affine`] transform from its six exact entries.
+    #[must_use]
+    pub const fn new(a: Ratio, b: Ratio, tx: Ratio, c: Ratio, d: Ratio, ty: Ratio) -> Self {
+        Self { a, b, tx, c, d, ty }
+    }
+
+    /// Returns the identity transform.
+    #[must_use]
+    pub fn identity() -> Self {
+        let zero = int_ratio(0);
+        let one = int_ratio(1);
+        Self {
+            a: one,
+            b: zero,
+            tx: zero,
+            c: zero,
+            d: one,
+            ty: zero,
+        }
+    }
+
+    /// Returns a pure translation by the given displacement.
+    #[must_use]
+    pub fn translation(displacement: Vector) -> Self {
+        let zero = int_ratio(0);
+        let one = int_ratio(1);
+        Self {
+            a: one,
+            b: zero,
+            tx: displacement.x,
+            c: zero,
+            d: one,
+            ty: displacement.y,
+        }
+    }
+
+    /// Returns an axis-aligned scaling by the given factors.
+    #[must_use]
+    pub fn scaling(sx: Ratio, sy: Ratio) -> Self {
+        let zero = int_ratio(0);
+        Self {
+            a: sx,
+            b: zero,
+            tx: zero,
+            c: zero,
+            d: sy,
+            ty: zero,
+        }
+    }
+
+    /// Returns a rotation about the origin by `turns` quarter turns.
+    ///
+    /// Positive values rotate counter-clockwise in a standard
+    /// mathematical frame (`x` right, `y` up). In frame coordinates, where
+    /// `y` grows downwards, the visual direction is mirrored, but the
+    /// mapping itself is fixed: one quarter turn maps `(x, y)` to
+    /// `(-y, x)`. All entries are `-1`, `0`, or `1`, so the rotation is
+    /// exact. The turn count is reduced modulo 4 with Euclidean remainder.
+    #[must_use]
+    pub fn quarter_turns(turns: i32) -> Self {
+        let zero = int_ratio(0);
+        let one = int_ratio(1);
+        let neg_one = int_ratio(-1);
+        let step = turns.rem_euclid(4);
+        if step == 0 {
+            Self {
+                a: one,
+                b: zero,
+                tx: zero,
+                c: zero,
+                d: one,
+                ty: zero,
+            }
+        } else if step == 1 {
+            Self {
+                a: zero,
+                b: neg_one,
+                tx: zero,
+                c: one,
+                d: zero,
+                ty: zero,
+            }
+        } else if step == 2 {
+            Self {
+                a: neg_one,
+                b: zero,
+                tx: zero,
+                c: zero,
+                d: neg_one,
+                ty: zero,
+            }
+        } else {
+            Self {
+                a: zero,
+                b: one,
+                tx: zero,
+                c: neg_one,
+                d: zero,
+                ty: zero,
+            }
+        }
+    }
+
+    /// Applies this transform to a point.
+    ///
+    /// Returns `None` if any intermediate or final value overflows.
+    #[must_use]
+    pub fn apply(self, point: Point) -> Option<Point> {
+        let ax = self.a.checked_mul(point.x)?;
+        let by = self.b.checked_mul(point.y)?;
+        let x_lin = ax.checked_add(by)?;
+        let x = x_lin.checked_add(self.tx)?;
+        let cx = self.c.checked_mul(point.x)?;
+        let dy = self.d.checked_mul(point.y)?;
+        let y_lin = cx.checked_add(dy)?;
+        let y = y_lin.checked_add(self.ty)?;
+        Some(Point { x, y })
+    }
+
+    /// Applies only the linear part of this transform to a vector.
+    ///
+    /// Translation is ignored. Returns `None` on overflow.
+    #[must_use]
+    pub fn apply_vector(self, vector: Vector) -> Option<Vector> {
+        let ax = self.a.checked_mul(vector.x)?;
+        let by = self.b.checked_mul(vector.y)?;
+        let x = ax.checked_add(by)?;
+        let cx = self.c.checked_mul(vector.x)?;
+        let dy = self.d.checked_mul(vector.y)?;
+        let y = cx.checked_add(dy)?;
+        Some(Vector { x, y })
+    }
+
+    /// Composes two transforms.
+    ///
+    /// `self.compose(other)` returns the transform that applies `other`
+    /// first and then `self`, that is `(self . other)(p) = self(other(p))`.
+    /// Returns `None` if any intermediate or final value overflows.
+    #[must_use]
+    pub fn compose(self, other: Self) -> Option<Self> {
+        Some(Self {
+            a: self
+                .a
+                .checked_mul(other.a)?
+                .checked_add(self.b.checked_mul(other.c)?)?,
+            b: self
+                .a
+                .checked_mul(other.b)?
+                .checked_add(self.b.checked_mul(other.d)?)?,
+            tx: self
+                .a
+                .checked_mul(other.tx)?
+                .checked_add(self.b.checked_mul(other.ty)?)?
+                .checked_add(self.tx)?,
+            c: self
+                .c
+                .checked_mul(other.a)?
+                .checked_add(self.d.checked_mul(other.c)?)?,
+            d: self
+                .c
+                .checked_mul(other.b)?
+                .checked_add(self.d.checked_mul(other.d)?)?,
+            ty: self
+                .c
+                .checked_mul(other.tx)?
+                .checked_add(self.d.checked_mul(other.ty)?)?
+                .checked_add(self.ty)?,
+        })
+    }
+
+    /// Returns the transform applied after `self`.
+    ///
+    /// `self.then(next)` equals `next.compose(self)`: apply `self` first,
+    /// then `next`. Returns `None` on overflow.
+    #[must_use]
+    pub fn then(self, next: Self) -> Option<Self> {
+        next.compose(self)
+    }
+
+    /// Inverts this transform.
+    ///
+    /// Returns `None` when the linear part is singular (determinant zero)
+    /// or when any intermediate or final value overflows.
+    #[must_use]
+    pub fn inverse(self) -> Option<Self> {
+        let det = self
+            .a
+            .checked_mul(self.d)?
+            .checked_sub(self.b.checked_mul(self.c)?)?;
+        if det == int_ratio(0) {
+            return None;
+        }
+        let scale = int_ratio(1).checked_div(det)?;
+        Some(Self {
+            a: self.d.checked_mul(scale)?,
+            b: self.b.checked_neg()?.checked_mul(scale)?,
+            tx: self
+                .d
+                .checked_mul(scale)?
+                .checked_mul(self.tx)?
+                .checked_add(
+                    self.b
+                        .checked_neg()?
+                        .checked_mul(scale)?
+                        .checked_mul(self.ty)?,
+                )?
+                .checked_neg()?,
+            c: self.c.checked_neg()?.checked_mul(scale)?,
+            d: self.a.checked_mul(scale)?,
+            ty: self
+                .c
+                .checked_neg()?
+                .checked_mul(scale)?
+                .checked_mul(self.tx)?
+                .checked_add(self.a.checked_mul(scale)?.checked_mul(self.ty)?)?
+                .checked_neg()?,
+        })
+    }
+}
+
+/// Returns the exact ratio `value / 1`.
+///
+/// The construction cannot fail for any `i64`; the fallback is unreachable
+/// and exists only because [`Ratio::from_integer`] returns [`Option`].
+fn int_ratio(value: i64) -> Ratio {
+    let fallback_denom = NonZeroI64::new(1).unwrap_or(NonZeroI64::MIN);
+    let fallback = Ratio {
+        numer: 0,
+        denom: fallback_denom,
+    };
+    Ratio::from_integer(value).unwrap_or(fallback)
+}
+
+/// Returns the exact ratio `1 / 2`.
+///
+/// The fallback is unreachable; see [`int_ratio`].
+fn half_ratio() -> Ratio {
+    let one = int_ratio(1);
+    let two = int_ratio(2);
+    let fallback = int_ratio(0);
+    one.checked_div(two).unwrap_or(fallback)
+}
+
+/// Returns the exact ratio `1 / 4`, the squared pixel-centre threshold.
+///
+/// The fallback is unreachable; see [`int_ratio`].
+fn quarter_ratio() -> Ratio {
+    let one = int_ratio(1);
+    let four = int_ratio(4);
+    let fallback = int_ratio(0);
+    one.checked_div(four).unwrap_or(fallback)
+}
+
+/// Returns the greatest integer less than or equal to `value`.
+///
+/// Uses Euclidean division; the denominator is strictly positive so the
+/// result always fits in `i64` and this only returns `None` in theory.
+const fn floor_ratio(value: Ratio) -> Option<i64> {
+    value.numer().checked_div_euclid(value.denom().get())
+}
+
+/// Returns the smallest integer greater than or equal to `value`.
+///
+/// Computed as the Euclidean floor plus one when there is a remainder, so
+/// no negation of `i64::MIN` is ever required.
+fn ceil_ratio(value: Ratio) -> Option<i64> {
+    let quot = value.numer().checked_div_euclid(value.denom().get())?;
+    let remnant = value.numer().checked_rem_euclid(value.denom().get())?;
+    if remnant == 0 {
+        Some(quot)
+    } else {
+        quot.checked_add(1)
+    }
+}
+
+/// Converts an inclusive scene-coordinate interval into clipped pixel indices.
+///
+/// Given that valid pixel centres lie in `[lo, hi]` in scene units, computes
+/// the inclusive pixel index range whose centres fall in that interval,
+/// clipped to `[0, limit)`. Pixel `i` has centre `i + 1 / 2`, so the raw
+/// range is `[ceil(lo - 1 / 2), floor(hi - 1 / 2)]`. Returns `None` when the
+/// interval is empty, overflows, or lies entirely outside the frame. This is
+/// the explicit clipping step: callers iterate only over the returned range
+/// and never rely on per-pixel bounds checks to discard out-of-frame work.
+fn clipped_pixel_range(lo: Ratio, hi: Ratio, limit: u16) -> Option<(u16, u16)> {
+    if hi < lo {
+        return None;
+    }
+    let alpha = ceil_ratio(lo.checked_sub(half_ratio())?)?;
+    let omega = floor_ratio(hi.checked_sub(half_ratio())?)?;
+    if omega < alpha {
+        return None;
+    }
+    let top = i64::from(limit).checked_sub(1)?;
+    let begin = if alpha < 0 { 0 } else { alpha };
+    let finish = if omega > top { top } else { omega };
+    if finish < begin {
+        return None;
+    }
+    Some((u16::try_from(begin).ok()?, u16::try_from(finish).ok()?))
+}
+
+/// Returns the exact centre of the pixel with the given indices.
+///
+/// The centre is `(x + 1 / 2, y + 1 / 2)` as [`Ratio`]s. Returns `None`
+/// only on overflow, which cannot occur for `u16` indices.
+fn pixel_centre(x: u16, y: u16) -> Option<Point> {
+    let denom = NonZeroI64::new(2).unwrap_or(NonZeroI64::MIN);
+    let fallback = int_ratio(0);
+    let centre_x =
+        Ratio::new(i64::from(x).checked_mul(2)?.checked_add(1)?, denom).unwrap_or(fallback);
+    let centre_y =
+        Ratio::new(i64::from(y).checked_mul(2)?.checked_add(1)?, denom).unwrap_or(fallback);
+    Some(Point {
+        x: centre_x,
+        y: centre_y,
+    })
+}
+
+/// Returns the exact cross product for the segment test.
+///
+/// Computes `(b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x)`.
+/// Returns `None` on overflow.
+fn segment_cross(p: Point, a: Point, b: Point) -> Option<Ratio> {
+    b.x.checked_sub(a.x)?
+        .checked_mul(p.y.checked_sub(a.y)?)?
+        .checked_sub(b.y.checked_sub(a.y)?.checked_mul(p.x.checked_sub(a.x)?)?)
+}
+
+/// Tests whether `p` lies exactly on the closed segment `a` to `b`.
+///
+/// Collinearity comes from [`segment_cross`] and containment from exact
+/// comparisons. Overflow yields `false` deterministically.
+fn point_on_segment(p: Point, a: Point, b: Point) -> bool {
+    let Some(cross) = segment_cross(p, a, b) else {
+        return false;
+    };
+    if cross != int_ratio(0) {
+        return false;
+    }
+    if p.x < a.x && p.x < b.x {
+        return false;
+    }
+    if a.x < p.x && b.x < p.x {
+        return false;
+    }
+    if p.y < a.y && p.y < b.y {
+        return false;
+    }
+    if a.y < p.y && b.y < p.y {
+        return false;
+    }
+    true
+}
+
+/// Tests whether `p` lies on any edge of the polygon.
+fn point_on_polygon_edge(p: Point, vertices: &[Point]) -> bool {
+    let mut iter = vertices.iter();
+    let Some(first) = iter.next() else {
+        return false;
+    };
+    let mut prev = *first;
+    for current in iter {
+        if point_on_segment(p, prev, *current) {
+            return true;
+        }
+        prev = *current;
+    }
+    point_on_segment(p, prev, *first)
+}
+
+/// Counts ray crossings of the polygon with the horizontal ray from `p`.
+///
+/// Uses the half-open rule that an edge counts exactly when one endpoint is
+/// at or below `p.y` and the other is strictly above it. Edges whose
+/// intersection overflows are treated as non-crossing. The count parity is
+/// independent of vertex order and of edge direction.
+fn ray_crossings(p: Point, vertices: &[Point]) -> Option<usize> {
+    let mut iter = vertices.iter();
+    let Some(first) = iter.next() else {
+        return Some(0);
+    };
+    let mut prev = *first;
+    let mut count: usize = 0;
+    for current in iter {
+        let next_count = edge_crossing(p, prev, *current, count)?;
+        count = next_count;
+        prev = *current;
+    }
+    edge_crossing(p, prev, *first, count)
+}
+
+/// Adds one crossing for the directed edge `a` to `b` when appropriate.
+///
+/// Returns the updated count, or `None` only if the counter itself would
+/// overflow `usize` (unreachable for real polygons).
+fn edge_crossing(p: Point, a: Point, b: Point, count: usize) -> Option<usize> {
+    let a_below = a.y <= p.y;
+    let b_below = b.y <= p.y;
+    if a_below == b_below {
+        return Some(count);
+    }
+    let num = p.y.checked_sub(a.y)?;
+    let den = b.y.checked_sub(a.y)?;
+    let t = num.checked_div(den)?;
+    let dx = b.x.checked_sub(a.x)?;
+    let shift = t.checked_mul(dx)?;
+    let x_int = a.x.checked_add(shift)?;
+    if x_int <= p.x {
+        return Some(count);
+    }
+    count.checked_add(1)
+}
+
+/// Tests whether a point is inside a polygon.
+///
+/// # Exact edge rule
+///
+/// A point lying exactly on any edge counts as inside. Otherwise the
+/// even-odd rule applies: a ray from the point in the positive `x` direction
+/// is cast, and the point is inside when the number of crossings is odd.
+/// Edges are counted with the half-open rule (the lower endpoint inclusive,
+/// the upper exclusive), so a ray through a vertex counts exactly once and
+/// the result never depends on floating-point rounding, vertex order, or
+/// winding direction. All arithmetic is exact [`Ratio`] arithmetic.
+fn point_in_polygon(p: Point, vertices: &[Point]) -> bool {
+    if vertices.len() < 3 {
+        return false;
+    }
+    if point_on_polygon_edge(p, vertices) {
+        return true;
+    }
+    let Some(crossings) = ray_crossings(p, vertices) else {
+        return false;
+    };
+    let Some(rem) = crossings.checked_rem(2) else {
+        return false;
+    };
+    rem == 1
+}
+
+/// Returns the displacement from `start` to `tip`.
+///
+/// Returns `None` on overflow.
+fn vector_between(start: Point, tip: Point) -> Option<Vector> {
+    Some(Vector {
+        x: tip.x.checked_sub(start.x)?,
+        y: tip.y.checked_sub(start.y)?,
+    })
+}
+
+/// Returns the squared Euclidean length of a displacement.
+///
+/// Computes `x * x + y * y` exactly. Returns `None` on overflow.
+fn squared_length(delta: Vector) -> Option<Ratio> {
+    delta
+        .x
+        .checked_mul(delta.x)?
+        .checked_add(delta.y.checked_mul(delta.y)?)
+}
+
+/// Returns the exact dot product of two displacements.
+///
+/// Returns `None` on overflow.
+fn dot_product(first: Vector, second: Vector) -> Option<Ratio> {
+    first
+        .x
+        .checked_mul(second.x)?
+        .checked_add(first.y.checked_mul(second.y)?)
+}
+
+/// Returns the inclusive interval centred on a coordinate.
+///
+/// Computes `(centre - radius, centre + radius)`. Returns `None` on overflow.
+fn axis_range(centre_coord: Ratio, radius: Ratio) -> Option<(Ratio, Ratio)> {
+    Some((
+        centre_coord.checked_sub(radius)?,
+        centre_coord.checked_add(radius)?,
+    ))
+}
+
+/// Returns the point `centre` shifted by the given offsets.
+///
+/// Returns `None` on overflow.
+fn shifted_point(centre: Point, delta_x: Ratio, delta_y: Ratio) -> Option<Point> {
+    Some(Point {
+        x: centre.x.checked_add(delta_x)?,
+        y: centre.y.checked_add(delta_y)?,
+    })
+}
+
+/// Returns the closest point on the segment to the sample.
+///
+/// The projection parameter is clamped to `[0, 1]`. Returns `None` on
+/// overflow.
+fn closest_on_segment(edge: Vector, join: Vector, origin: Point) -> Option<Point> {
+    let extent = squared_length(edge)?;
+    if extent == int_ratio(0) {
+        return Some(origin);
+    }
+    let along = dot_product(join, edge)?;
+    let fraction = along.checked_div(extent)?;
+    let clamped = if fraction < int_ratio(0) {
+        int_ratio(0)
+    } else if int_ratio(1) < fraction {
+        int_ratio(1)
+    } else {
+        fraction
+    };
+    shifted_point(
+        origin,
+        clamped.checked_mul(edge.x)?,
+        clamped.checked_mul(edge.y)?,
+    )
+}
+
+/// Tests whether a pixel centre is inside the disc.
+///
+/// Uses the exact inequality `(cx - px)^2 + (cy - py)^2 <= r^2` in [`Ratio`]
+/// arithmetic. Overflow yields `false` deterministically.
+fn disc_covers(centre: Point, radius: Ratio, sample: Point) -> bool {
+    if radius <= int_ratio(0) {
+        return false;
+    }
+    let Some(gap) = vector_between(sample, centre) else {
+        return false;
+    };
+    let Some(dist2) = squared_length(gap) else {
+        return false;
+    };
+    let Some(bound) = radius.checked_mul(radius) else {
+        return false;
+    };
+    dist2 <= bound
+}
+
+/// Tests whether a pixel centre is within half a unit of a segment.
+///
+/// This is the exact rule for [`draw_line`]: a 1-unit-thick line is the set
+/// of points whose Euclidean distance to the segment is at most `1 / 2`.
+/// Overflow yields `false` deterministically.
+fn line_covers(start: Point, tip: Point, sample: Point) -> bool {
+    let Some(edge) = vector_between(start, tip) else {
+        return false;
+    };
+    let Some(join) = vector_between(start, sample) else {
+        return false;
+    };
+    let Some(nearest) = closest_on_segment(edge, join, start) else {
+        return false;
+    };
+    let Some(gap) = vector_between(nearest, sample) else {
+        return false;
+    };
+    let Some(dist2) = squared_length(gap) else {
+        return false;
+    };
+    dist2 <= quarter_ratio()
+}
+
+/// Fills the pixels whose centres fall inside the disc.
+///
+/// The disc is `{ p : |p - centre|^2 <= radius^2 }`, tested with exact
+/// [`Ratio`] arithmetic. A non-positive radius draws nothing. The bounding
+/// box `[centre - radius, centre + radius]` is clipped to the frame with
+/// `clipped_pixel_range` before any pixel is visited.
+pub fn fill_disc(frame: &mut Frame, centre: Point, radius: Ratio, colour: Rgb8) {
+    if radius <= int_ratio(0) {
+        return;
+    }
+    let Some(across) = axis_range(centre.x, radius) else {
+        return;
+    };
+    let Some(down) = axis_range(centre.y, radius) else {
+        return;
+    };
+    let width = frame.width().get().get();
+    let height = frame.height().get().get();
+    let Some(columns) = clipped_pixel_range(across.0, across.1, width) else {
+        return;
+    };
+    let Some(rows) = clipped_pixel_range(down.0, down.1, height) else {
+        return;
+    };
+    let mut y = rows.0;
+    loop {
+        let mut x = columns.0;
+        loop {
+            let covered =
+                pixel_centre(x, y).is_some_and(|sample| disc_covers(centre, radius, sample));
+            if covered {
+                let _ = frame.set_pixel(x, y, colour);
+            }
+            if x == columns.1 {
+                break;
+            }
+            let Some(east) = x.checked_add(1) else {
+                break;
+            };
+            x = east;
+        }
+        if y == rows.1 {
+            break;
+        }
+        let Some(south) = y.checked_add(1) else {
+            break;
+        };
+        y = south;
+    }
+}
+
+/// Fills the pixels whose centres fall inside the polygon.
+///
+/// See `point_in_polygon` for the documented, exact edge rule: centres on
+/// an edge count as inside, otherwise the even-odd rule with a half-open
+/// vertex rule decides. Polygons with fewer than three vertices draw
+/// nothing. The vertex bounding box is clipped to the frame before any
+/// pixel is visited.
+pub fn fill_polygon(frame: &mut Frame, vertices: &[Point], colour: Rgb8) {
+    if vertices.len() < 3 {
+        return;
+    }
+    let mut iter = vertices.iter();
+    let Some(first) = iter.next() else {
+        return;
+    };
+    let mut across = (first.x, first.x);
+    let mut down = (first.y, first.y);
+    for vertex in iter {
+        if vertex.x < across.0 {
+            across.0 = vertex.x;
+        }
+        if across.1 < vertex.x {
+            across.1 = vertex.x;
+        }
+        if vertex.y < down.0 {
+            down.0 = vertex.y;
+        }
+        if down.1 < vertex.y {
+            down.1 = vertex.y;
+        }
+    }
+    let width = frame.width().get().get();
+    let height = frame.height().get().get();
+    let Some(columns) = clipped_pixel_range(across.0, across.1, width) else {
+        return;
+    };
+    let Some(rows) = clipped_pixel_range(down.0, down.1, height) else {
+        return;
+    };
+    let mut y = rows.0;
+    loop {
+        let mut x = columns.0;
+        loop {
+            let covered =
+                pixel_centre(x, y).is_some_and(|sample| point_in_polygon(sample, vertices));
+            if covered {
+                let _ = frame.set_pixel(x, y, colour);
+            }
+            if x == columns.1 {
+                break;
+            }
+            let Some(east) = x.checked_add(1) else {
+                break;
+            };
+            x = east;
+        }
+        if y == rows.1 {
+            break;
+        }
+        let Some(south) = y.checked_add(1) else {
+            break;
+        };
+        y = south;
+    }
+}
+
+/// Fills the axis-aligned rectangle from `min` to `max`.
+///
+/// The rectangle is the set `{ p : min.x <= p.x <= max.x,
+/// min.y <= p.y <= max.y }`, using the same inclusive edge rule as
+/// [`fill_polygon`]. When `max` lies strictly below `min` on either axis the
+/// rectangle is empty and nothing is drawn. The implementation fills through
+/// the identical polygon path with corners `min`, `(max.x, min.y)`, `max`,
+/// `(min.x, max.y)`, so a rectangle and its equivalent four-vertex polygon
+/// always produce byte-identical frames.
+pub fn fill_rect(frame: &mut Frame, min: Point, max: Point, colour: Rgb8) {
+    if max.x < min.x {
+        return;
+    }
+    if max.y < min.y {
+        return;
+    }
+    let corners = [
+        min,
+        Point { x: max.x, y: min.y },
+        max,
+        Point { x: min.x, y: max.y },
+    ];
+    let Some(slice) = corners.get(0..4) else {
+        return;
+    };
+    fill_polygon(frame, slice, colour);
+}
+
+/// Draws a 1-unit-thick line segment from `start` to `end`.
+///
+/// A pixel is drawn when its centre lies within `1 / 2` of the segment,
+/// tested with exact [`Ratio`] arithmetic (see `line_covers`). A
+/// zero-length segment draws the disc of radius `1 / 2` around the point.
+/// The segment bounding box expanded by half a unit is clipped to the frame
+/// before any pixel is visited.
+pub fn draw_line(frame: &mut Frame, start: Point, end: Point, colour: Rgb8) {
+    let mut across = if start.x < end.x {
+        (start.x, end.x)
+    } else {
+        (end.x, start.x)
+    };
+    let mut down = if start.y < end.y {
+        (start.y, end.y)
+    } else {
+        (end.y, start.y)
+    };
+    let Some(low_across) = across.0.checked_sub(half_ratio()) else {
+        return;
+    };
+    across.0 = low_across;
+    let Some(high_across) = across.1.checked_add(half_ratio()) else {
+        return;
+    };
+    across.1 = high_across;
+    let Some(low_down) = down.0.checked_sub(half_ratio()) else {
+        return;
+    };
+    down.0 = low_down;
+    let Some(high_down) = down.1.checked_add(half_ratio()) else {
+        return;
+    };
+    down.1 = high_down;
+    let width = frame.width().get().get();
+    let height = frame.height().get().get();
+    let Some(columns) = clipped_pixel_range(across.0, across.1, width) else {
+        return;
+    };
+    let Some(rows) = clipped_pixel_range(down.0, down.1, height) else {
+        return;
+    };
+    let mut y = rows.0;
+    loop {
+        let mut x = columns.0;
+        loop {
+            let covered = pixel_centre(x, y).is_some_and(|sample| line_covers(start, end, sample));
+            if covered {
+                let _ = frame.set_pixel(x, y, colour);
+            }
+            if x == columns.1 {
+                break;
+            }
+            let Some(east) = x.checked_add(1) else {
+                break;
+            };
+            x = east;
+        }
+        if y == rows.1 {
+            break;
+        }
+        let Some(south) = y.checked_add(1) else {
+            break;
+        };
+        y = south;
+    }
+}
+
+/// Draws an axis-aligned cross centred at `centre`.
+///
+/// `arm` is the half-length from the centre to the tip of each bar along its
+/// axis; `thickness` is the full width of each bar. The cross is the union of
+/// the horizontal bar `[cx - arm, cx + arm]` by
+/// `[cy - thickness / 2, cy + thickness / 2]` and the vertical bar
+/// `[cx - thickness / 2, cx + thickness / 2]` by `[cy - arm, cy + arm]`,
+/// each filled with the inclusive rectangle rule of [`fill_rect`]. A
+/// negative `arm` or a non-positive `thickness` draws nothing.
+pub fn draw_cross(frame: &mut Frame, centre: Point, arm: Ratio, thickness: Ratio, colour: Rgb8) {
+    if arm < int_ratio(0) {
+        return;
+    }
+    if thickness <= int_ratio(0) {
+        return;
+    }
+    let Some(half_thick) = thickness.checked_div(int_ratio(2)) else {
+        return;
+    };
+    {
+        let Some(bar_left) = centre.x.checked_sub(arm) else {
+            return;
+        };
+        let Some(bar_right) = centre.x.checked_add(arm) else {
+            return;
+        };
+        let Some(bar_top) = centre.y.checked_sub(half_thick) else {
+            return;
+        };
+        let Some(bar_bottom) = centre.y.checked_add(half_thick) else {
+            return;
+        };
+        fill_rect(
+            frame,
+            Point {
+                x: bar_left,
+                y: bar_top,
+            },
+            Point {
+                x: bar_right,
+                y: bar_bottom,
+            },
+            colour,
+        );
+    }
+    {
+        let Some(bar_left) = centre.x.checked_sub(half_thick) else {
+            return;
+        };
+        let Some(bar_right) = centre.x.checked_add(half_thick) else {
+            return;
+        };
+        let Some(bar_top) = centre.y.checked_sub(arm) else {
+            return;
+        };
+        let Some(bar_bottom) = centre.y.checked_add(arm) else {
+            return;
+        };
+        fill_rect(
+            frame,
+            Point {
+                x: bar_left,
+                y: bar_top,
+            },
+            Point {
+                x: bar_right,
+                y: bar_bottom,
+            },
+            colour,
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2107,6 +3024,362 @@ mod tests {
         assert!(
             frame.blend_pixel(u16::MAX, u16::MAX, red, 255).is_none(),
             "out of bounds blend at u16::MAX must return None"
+        );
+    }
+
+    /// Builds an 8x8 black frame for raster tests.
+    fn black_8x8() -> Option<Frame> {
+        let width = Width::new(8)?;
+        let tall = Height::new(8)?;
+        Frame::zeroed(Dimensions::new(width, tall))
+    }
+
+    #[test]
+    fn test_affine_apply_compose_inverse() {
+        let Some(x) = make_ratio(3, 2) else { return };
+        let Some(y) = make_ratio(-5, 4) else { return };
+        let probe = Point::new(x, y);
+        let same = Affine::identity().apply(probe);
+        assert_eq!(same, Some(probe), "identity must map a point to itself");
+        let Some(dx) = make_ratio(2, 1) else { return };
+        let Some(dy) = make_ratio(3, 1) else { return };
+        let shift = Affine::translation(Vector::new(dx, dy));
+        let Some(moved) = shift.apply(probe) else {
+            return;
+        };
+        let Some(expect_x) = x.checked_add(dx) else {
+            return;
+        };
+        let Some(expect_y) = y.checked_add(dy) else {
+            return;
+        };
+        assert_eq!(
+            moved,
+            Point::new(expect_x, expect_y),
+            "translation must add the displacement"
+        );
+        let Some(back) = shift.inverse() else { return };
+        let Some(there) = shift.apply(probe) else {
+            return;
+        };
+        let Some(roundtrip) = back.apply(there) else {
+            return;
+        };
+        assert_eq!(
+            roundtrip, probe,
+            "inverse must undo the translation exactly"
+        );
+        let Some(there_and_back) = shift.then(back) else {
+            return;
+        };
+        assert_eq!(
+            there_and_back,
+            Affine::identity(),
+            "a transform followed by its inverse must be identity"
+        );
+        let Some(sx) = make_ratio(2, 1) else { return };
+        let Some(sy) = make_ratio(3, 1) else { return };
+        let scale = Affine::scaling(sx, sy);
+        let Some(scaled_x) = x.checked_mul(sx) else {
+            return;
+        };
+        let Some(scaled_y) = y.checked_mul(sy) else {
+            return;
+        };
+        let Some(scaled) = scale.apply_vector(Vector::new(x, y)) else {
+            return;
+        };
+        assert_eq!(
+            scaled,
+            Vector::new(scaled_x, scaled_y),
+            "scaling must multiply vector components"
+        );
+        let Some(vec_moved) = shift.apply_vector(Vector::new(x, y)) else {
+            return;
+        };
+        assert_eq!(
+            vec_moved,
+            Vector::new(x, y),
+            "translation must not affect vectors"
+        );
+    }
+
+    #[test]
+    fn test_affine_quarter_turns() {
+        let Some(one) = make_ratio(1, 1) else { return };
+        let Some(zero) = make_ratio(0, 1) else { return };
+        let Some(neg_one) = make_ratio(-1, 1) else {
+            return;
+        };
+        let probe = Point::new(one, zero);
+        let Some(first) = Affine::quarter_turns(1).apply(probe) else {
+            return;
+        };
+        assert_eq!(
+            first,
+            Point::new(zero, one),
+            "one quarter turn must map (1, 0) to (0, 1)"
+        );
+        let Some(second) = Affine::quarter_turns(2).apply(probe) else {
+            return;
+        };
+        assert_eq!(
+            second,
+            Point::new(neg_one, zero),
+            "two quarter turns must map (1, 0) to (-1, 0)"
+        );
+        let Some(third) = Affine::quarter_turns(3).apply(probe) else {
+            return;
+        };
+        assert_eq!(
+            third,
+            Point::new(zero, neg_one),
+            "three quarter turns must map (1, 0) to (0, -1)"
+        );
+        let Some(full) = Affine::quarter_turns(4).apply(probe) else {
+            return;
+        };
+        assert_eq!(full, probe, "four quarter turns must be identity");
+        let Some(backward) = Affine::quarter_turns(-1).apply(probe) else {
+            return;
+        };
+        assert_eq!(
+            backward, third,
+            "minus one quarter turn must equal three forward turns"
+        );
+    }
+
+    #[test]
+    fn test_raster_outside_draws_nothing() {
+        let Some(mut frame) = black_8x8() else { return };
+        let Some(before) = Frame::zeroed(frame.dimensions()) else {
+            return;
+        };
+        let red = Rgb8::new(255, 0, 0);
+        let Some(far_x) = make_ratio(100, 1) else {
+            return;
+        };
+        let Some(far_y) = make_ratio(100, 1) else {
+            return;
+        };
+        let Some(small) = make_ratio(2, 1) else {
+            return;
+        };
+        let Some(unit) = make_ratio(1, 1) else { return };
+        let far = Point::new(far_x, far_y);
+        fill_disc(&mut frame, far, small, red);
+        let Some(near_x) = make_ratio(102, 1) else {
+            return;
+        };
+        let Some(near_y) = make_ratio(102, 1) else {
+            return;
+        };
+        let far_poly = [far, Point::new(near_x, far_y), Point::new(near_x, near_y)];
+        let Some(slice) = far_poly.get(0..3) else {
+            return;
+        };
+        fill_polygon(&mut frame, slice, red);
+        fill_rect(&mut frame, far, Point::new(near_x, near_y), red);
+        draw_line(&mut frame, far, Point::new(near_x, near_y), red);
+        draw_cross(&mut frame, far, small, unit, red);
+        assert_eq!(
+            frame.data(),
+            before.data(),
+            "shapes entirely outside must draw nothing"
+        );
+    }
+
+    #[test]
+    fn test_raster_straddling_edges_partial() {
+        let Some(mut frame) = black_8x8() else { return };
+        let red = Rgb8::new(255, 0, 0);
+        let black = Rgb8::new(0, 0, 0);
+        let Some(neg_two) = make_ratio(-2, 1) else {
+            return;
+        };
+        let Some(ten) = make_ratio(10, 1) else { return };
+        fill_rect(
+            &mut frame,
+            Point::new(neg_two, neg_two),
+            Point::new(ten, ten),
+            red,
+        );
+        for row in 0..8_u16 {
+            for col in 0..8_u16 {
+                assert_eq!(
+                    frame.pixel(col, row),
+                    Some(red),
+                    "oversized rect must fill every pixel"
+                );
+            }
+        }
+        let Some(mut partial) = black_8x8() else {
+            return;
+        };
+        let Some(three) = make_ratio(3, 1) else {
+            return;
+        };
+        fill_rect(
+            &mut partial,
+            Point::new(neg_two, neg_two),
+            Point::new(three, three),
+            red,
+        );
+        assert_eq!(
+            partial.pixel(0, 0),
+            Some(red),
+            "partial rect must cover the top-left pixel"
+        );
+        assert_eq!(
+            partial.pixel(2, 2),
+            Some(red),
+            "partial rect must cover pixel (2, 2)"
+        );
+        assert_eq!(
+            partial.pixel(3, 3),
+            Some(black),
+            "partial rect must not cover pixel (3, 3)"
+        );
+        assert_eq!(
+            partial.pixel(7, 7),
+            Some(black),
+            "partial rect must not cover the bottom-right pixel"
+        );
+    }
+
+    #[test]
+    fn test_polygon_rect_identical() {
+        let Some(dims_w) = Width::new(8) else { return };
+        let Some(dims_h) = Height::new(8) else { return };
+        let dims = Dimensions::new(dims_w, dims_h);
+        let Some(mut via_rect) = Frame::zeroed(dims) else {
+            return;
+        };
+        let Some(mut via_poly) = Frame::zeroed(dims) else {
+            return;
+        };
+        let red = Rgb8::new(10, 200, 30);
+        let Some(two) = make_ratio(2, 1) else { return };
+        let Some(six) = make_ratio(6, 1) else { return };
+        let Some(four) = make_ratio(4, 1) else { return };
+        let lower = Point::new(two, two);
+        let upper = Point::new(six, four);
+        fill_rect(&mut via_rect, lower, upper, red);
+        let corners = [lower, Point::new(six, two), upper, Point::new(two, four)];
+        let Some(slice) = corners.get(0..4) else {
+            return;
+        };
+        fill_polygon(&mut via_poly, slice, red);
+        assert_eq!(
+            via_rect.data(),
+            via_poly.data(),
+            "rectangle and equivalent polygon must be byte-identical"
+        );
+    }
+
+    #[test]
+    fn test_quarter_turn_square_identical() {
+        let Some(dims_w) = Width::new(10) else { return };
+        let Some(dims_h) = Height::new(10) else {
+            return;
+        };
+        let dims = Dimensions::new(dims_w, dims_h);
+        let Some(mut original) = Frame::zeroed(dims) else {
+            return;
+        };
+        let Some(mut rotated) = Frame::zeroed(dims) else {
+            return;
+        };
+        let white = Rgb8::new(255, 255, 255);
+        let Some(two) = make_ratio(2, 1) else { return };
+        let Some(six) = make_ratio(6, 1) else { return };
+        let Some(four) = make_ratio(4, 1) else { return };
+        let Some(neg_four) = make_ratio(-4, 1) else {
+            return;
+        };
+        let square = [
+            Point::new(two, two),
+            Point::new(six, two),
+            Point::new(six, six),
+            Point::new(two, six),
+        ];
+        let Some(square_slice) = square.get(0..4) else {
+            return;
+        };
+        fill_polygon(&mut original, square_slice, white);
+        let to_origin = Affine::translation(Vector::new(neg_four, neg_four));
+        let spin = Affine::quarter_turns(1);
+        let back_home = Affine::translation(Vector::new(four, four));
+        let Some(first_leg) = to_origin.then(spin) else {
+            return;
+        };
+        let Some(about_centre) = first_leg.then(back_home) else {
+            return;
+        };
+        let mut turned = [Point::new(two, two); 4];
+        let mut idx: usize = 0;
+        for corner in square_slice {
+            let Some(mapped) = about_centre.apply(*corner) else {
+                return;
+            };
+            let Some(slot) = turned.get_mut(idx) else {
+                return;
+            };
+            *slot = mapped;
+            idx = idx.wrapping_add(1);
+        }
+        let Some(turned_slice) = turned.get(0..4) else {
+            return;
+        };
+        fill_polygon(&mut rotated, turned_slice, white);
+        assert_eq!(
+            original.data(),
+            rotated.data(),
+            "quarter-turned square must match the original exactly"
+        );
+    }
+
+    #[test]
+    fn test_line_and_cross_basic() {
+        let Some(mut frame) = black_8x8() else { return };
+        let red = Rgb8::new(255, 0, 0);
+        let black = Rgb8::new(0, 0, 0);
+        let Some(zero) = make_ratio(0, 1) else { return };
+        let Some(seven) = make_ratio(7, 1) else {
+            return;
+        };
+        let Some(four) = make_ratio(4, 1) else { return };
+        let Some(two) = make_ratio(2, 1) else { return };
+        let Some(one) = make_ratio(1, 1) else { return };
+        draw_line(
+            &mut frame,
+            Point::new(zero, zero),
+            Point::new(seven, seven),
+            red,
+        );
+        assert_eq!(
+            frame.pixel(0, 0),
+            Some(red),
+            "diagonal line must cover the start pixel"
+        );
+        assert_eq!(
+            frame.pixel(3, 3),
+            Some(red),
+            "diagonal line must cover an interior pixel"
+        );
+        let Some(mut cross_frame) = black_8x8() else {
+            return;
+        };
+        draw_cross(&mut cross_frame, Point::new(four, four), two, one, red);
+        assert_eq!(
+            cross_frame.pixel(4, 4),
+            Some(red),
+            "cross must cover its centre"
+        );
+        assert_eq!(
+            cross_frame.pixel(0, 0),
+            Some(black),
+            "cross must not reach the corner"
         );
     }
 }
