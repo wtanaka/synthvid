@@ -21,6 +21,7 @@
 //! | [`frame`]  | owned RGB pixel buffers with a checked length invariant |
 //! | [`trig`]   | platform-independent sine and cosine                    |
 //! | [`geom`]   | points, vectors, and exact affine transforms            |
+//! | [`motion`] | closed-form evaluation of motion over frames            |
 //! | [`raster`] | drawing geometry onto a frame                           |
 //! | [`scene`]  | declarative scene description                           |
 //!
@@ -34,6 +35,7 @@
 pub mod color;
 pub mod frame;
 pub mod geom;
+pub mod motion;
 pub mod raster;
 pub mod ratio;
 pub mod rng;
@@ -47,6 +49,7 @@ pub mod testutil;
 pub use crate::color::{required_buffer_len, Rgb8};
 pub use crate::frame::Frame;
 pub use crate::geom::{Affine, Point, Vector};
+pub use crate::motion::position_at;
 pub use crate::raster::{draw_cross, draw_line, fill_disc, fill_polygon, fill_rect};
 pub use crate::ratio::Ratio;
 pub use crate::rng::Rng;
