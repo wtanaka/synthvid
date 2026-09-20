@@ -1,17 +1,21 @@
 #!/bin/sh
 # Run every guard. Reports all failures rather than stopping at the first.
 #
-# A guard that invokes cargo must not share the main target directory. Cargo
-# decides whether to re-run a tool from recorded fingerprints, so a guard that
-# reuses `target/` can report success on source it never read -- a green run
-# that proves nothing, which is the one result this repository cannot absorb.
-# `check-rustdoc.sh` and `check-clippy.sh` are the only guards that run
-# cargo today; each builds in a directory of its own that it deletes first.
-# A new guard that runs cargo does the same.
+# A guard that invokes cargo to compile anything must not share the main
+# target directory. Cargo decides whether to re-run a tool from recorded
+# fingerprints, so a guard that reuses `target/` can report success on
+# source it never read -- a green run that proves nothing, which is the one
+# result this repository cannot absorb. `check-rustdoc.sh` and
+# `check-clippy.sh` are the only guards that compile today; each builds in a
+# directory of its own that it deletes first. A new guard that compiles does
+# the same. `check-fmt.sh` runs cargo too, but rustfmt reads source files
+# directly rather than compiling them, so it has no fingerprint to launder a
+# stale result through and needs no directory of its own.
 set -u
 
 status=0
 for check in \
+    check-fmt.sh \
     check-lints-intact.sh \
     check-no-external-deps.sh \
     check-forbidden-tokens.sh \
