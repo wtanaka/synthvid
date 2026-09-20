@@ -4,6 +4,8 @@
 #![forbid(unsafe_code)]
 
 pub mod ac_encoding;
+pub mod avi;
+pub mod avi_helpers;
 pub mod bitstream;
 pub mod color;
 pub mod config;
@@ -13,6 +15,7 @@ pub mod jpeg;
 pub mod jpeg_markers;
 pub mod quant;
 
+pub use crate::avi::{encode_avi, AviCodec, AviError};
 pub use crate::bitstream::BitCount;
 pub use crate::color::YCbCr;
 pub use crate::config::{ChromaSampling, Quality};
