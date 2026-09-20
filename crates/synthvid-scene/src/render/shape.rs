@@ -1,6 +1,6 @@
 //! Shape drawing for frame rendering.
 //!
-//! [`draw_object`] draws one [`Shape`] centred on a world-space position
+//! [`draw_object`] draws one [`Shape`] centred on a scene-space position
 //! through the camera placement of the parent module. Disc centres pass
 //! through the camera transform and radii scale by the magnification;
 //! rectangles, polygon vertices, and cross bars map corner by corner, so
@@ -34,13 +34,13 @@ fn rect_corners(centre: Point, half_width: Ratio, half_height: Ratio) -> Option<
     ])
 }
 
-/// Fills the polygon through `world` after mapping each vertex to the screen.
+/// Fills the polygon through `scene` after mapping each vertex to the screen.
 ///
 /// A vertex whose camera transform overflows skips the whole shape, leaving
 /// earlier pixels untouched.
-fn draw_mapped_polygon(frame: &mut Frame, world: &[Point], camera: &CameraFrame, colour: Rgb8) {
-    let mut mapped = Vec::with_capacity(world.len());
-    for vertex in world {
+fn draw_mapped_polygon(frame: &mut Frame, scene: &[Point], camera: &CameraFrame, colour: Rgb8) {
+    let mut mapped = Vec::with_capacity(scene.len());
+    for vertex in scene {
         let Some(screen) = camera.transform.apply(*vertex) else {
             return;
         };
@@ -49,19 +49,19 @@ fn draw_mapped_polygon(frame: &mut Frame, world: &[Point], camera: &CameraFrame,
     fill_polygon(frame, &mapped, colour);
 }
 
-/// Shifts polygon vertices from shape space to world space.
+/// Shifts polygon vertices from shape space to scene space.
 ///
-/// Shape vertices are offsets from the object position, so each world vertex
+/// Shape vertices are offsets from the object position, so each scene vertex
 /// is `at + vertex`. Returns `None` on overflow; the caller then draws
 /// nothing.
 fn shifted_vertices(at: Point, vertices: &[Point]) -> Option<Vec<Point>> {
-    let mut world = Vec::with_capacity(vertices.len());
+    let mut scene = Vec::with_capacity(vertices.len());
     for vertex in vertices {
         let x = at.x.checked_add(vertex.x)?;
         let y = at.y.checked_add(vertex.y)?;
-        world.push(Point::new(x, y));
+        scene.push(Point::new(x, y));
     }
-    Some(world)
+    Some(scene)
 }
 
 /// Draws a cross shape through the camera transform.
@@ -100,7 +100,7 @@ fn draw_cross_shape(
 
 /// Draws one shape centred on `at` through the camera placement.
 ///
-/// `at` is the object position in world space. Disc radii scale by the camera
+/// `at` is the object position in scene space. Disc radii scale by the camera
 /// magnification; everything else maps corner by corner. Anything that
 /// overflows skips the shape; the frame keeps whatever earlier shapes drew.
 pub(super) fn draw_object(
@@ -130,10 +130,10 @@ pub(super) fn draw_object(
             draw_mapped_polygon(frame, &corners, camera, colour);
         }
         Shape::Polygon { vertices } => {
-            let Some(world) = shifted_vertices(at, vertices) else {
+            let Some(scene) = shifted_vertices(at, vertices) else {
                 return;
             };
-            draw_mapped_polygon(frame, &world, camera, colour);
+            draw_mapped_polygon(frame, &scene, camera, colour);
         }
         Shape::Cross { arm, thickness } => {
             draw_cross_shape(frame, at, *arm, *thickness, camera, colour);

@@ -75,16 +75,16 @@ impl core::error::Error for RenderError {}
 
 /// Camera placement evaluated for one frame.
 ///
-/// The world-to-screen [`Affine`] maps a world point `w` to
+/// The scene-to-screen [`Affine`] maps a scene point `w` to
 /// `spin * zoom * (w - centre)`, where `centre` is the camera motion position,
 /// `zoom` is the uniform magnification, and `spin` rotates by the negation of
 /// the camera rotation angle about the camera centre. Negation is the camera
-/// convention: turning the camera one way moves the world the other way.
+/// convention: turning the camera one way moves the scene the other way.
 /// [`render_into`] falls back to the identity placement when any intermediate
 /// value overflows, so evaluation stays total.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 struct CameraFrame {
-    /// World-to-screen transform applied to every drawn shape.
+    /// Scene-to-screen transform applied to every drawn shape.
     transform: Affine,
     /// Uniform magnification applied to shape extents; strictly positive.
     zoom: Ratio,
@@ -423,7 +423,7 @@ mod tests {
     }
 
     #[test]
-    fn test_identity_camera_maps_world_to_pixels() {
+    fn test_identity_camera_maps_scene_to_pixels() {
         let black = Rgb8::new(0, 0, 0);
         let red = Rgb8::new(255, 0, 0);
         let Some(span) = make_span(0, 4) else { return };
