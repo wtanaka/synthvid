@@ -41,8 +41,14 @@ fi
 clippy_dir="${CARGO_TARGET_DIR:-target}/clippy-check"
 rm -rf "$clippy_dir"
 
-if ! CARGO_TARGET_DIR="$clippy_dir" RUSTFLAGS="-D warnings" \
-    $cargo_cmd clippy --all-targets --all-features -- -D warnings; then
+set +e
+output=$(CARGO_TARGET_DIR="$clippy_dir" RUSTFLAGS="-D warnings" \
+    $cargo_cmd clippy --all-targets --all-features -- -D warnings 2>&1)
+exit_code=$?
+set -e
+
+if [ $exit_code -ne 0 ]; then
+    echo "$output" >&2
     echo "check-clippy: cargo clippy --all-targets --all-features -- -D warnings failed" >&2
     exit 1
 fi

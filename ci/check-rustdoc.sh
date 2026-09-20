@@ -24,8 +24,14 @@ fi
 doc_dir="${CARGO_TARGET_DIR:-target}/rustdoc-check"
 rm -rf "$doc_dir"
 
-if ! CARGO_TARGET_DIR="$doc_dir" RUSTDOCFLAGS="-D warnings" \
-    cargo doc --no-deps --all; then
+set +e
+output=$(CARGO_TARGET_DIR="$doc_dir" RUSTDOCFLAGS="-D warnings" \
+    cargo doc --no-deps --all 2>&1)
+exit_code=$?
+set -e
+
+if [ $exit_code -ne 0 ]; then
+    echo "$output" >&2
     echo "check-rustdoc: cargo doc --no-deps --all failed" >&2
     exit 1
 fi
