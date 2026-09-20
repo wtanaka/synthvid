@@ -44,9 +44,11 @@
 # may build values by hand that the public API refuses.
 #
 # The bare-field total is capped rather than forced to zero. The three that
-# remain are the channels of an 8-bit colour, where the range of `u8` is
-# exactly the range of valid values -- which is the property this guard exists
-# to protect, arrived at from the other direction.
+# remain are the channels of an 8-bit colour: `pub r: u8`, `pub g: u8`, `pub b: u8`
+# in Rgb8 (crates/synthvid-scene/src/color.rs). The range of `u8` is exactly
+# the range of valid values for an 8-bit colour channel -- every `u8` is legal.
+# Wrapping them in a newtype would forbid nothing. The budget of 3 is therefore
+# a floor rather than a debt to be paid down.
 set -eu
 
 budget_file="${1:-ci/type-safety-budget.txt}"
