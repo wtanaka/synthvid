@@ -96,7 +96,7 @@ impl TryFrom<Ratio> for Scale {
 
 /// Inclusive-start, exclusive-end span of frames during which an object is visible.
 ///
-/// An empty span, where `start` equals `end`, is never visible.
+/// Every span covers at least one frame.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct FrameSpan {
     /// First visible frame index, inclusive.
@@ -108,10 +108,10 @@ pub struct FrameSpan {
 impl FrameSpan {
     /// Creates a frame span from `start` (inclusive) to `end` (exclusive).
     ///
-    /// Returns `None` when `start` lies after `end`.
+    /// Returns `None` when `start` lies at or after `end`.
     #[must_use]
     pub const fn new(start: FrameIndex, end: FrameIndex) -> Option<Self> {
-        if start.get() > end.get() {
+        if start.get() >= end.get() {
             None
         } else {
             Some(Self { start, end })
@@ -435,10 +435,16 @@ mod tests {
             "span must exclude before start"
         );
         assert!(make_span(5, 2).is_none(), "inverted span must be rejected");
-        let Some(empty) = make_span(3, 3) else { return };
+        assert!(make_span(5, 4).is_none(), "inverted span must be rejected");
+        assert!(make_span(5, 5).is_none(), "empty span must be rejected");
+        let Some(unit) = make_span(5, 6) else { return };
         assert!(
-            !empty.contains(FrameIndex::new(3)),
-            "empty span must contain nothing"
+            unit.contains(FrameIndex::new(5)),
+            "unit span must contain start"
+        );
+        assert!(
+            !unit.contains(FrameIndex::new(6)),
+            "unit span must exclude end"
         );
     }
 
