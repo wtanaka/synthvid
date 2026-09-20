@@ -26,13 +26,11 @@
 #   no assertion     A `#[test]` function containing no assert! / assert_eq! /
 #                    assert_ne! passes unconditionally.
 #
-# Only code from the first `#[cfg(test)]` line of a file to its end is scanned.
-# Every test module in this workspace sits at the end of its file, so that span
-# is exactly the test code and nothing else. Scanning the whole file instead
-# would count production code, and the total would then move whenever unrelated
-# work changed a `return` outside a test -- a guard whose reading drifts for
-# reasons it does not name is worse than no guard, because it still looks like
-# it is ratcheting.
+# Unit tests in src/ are marked by #[cfg(test)] at the end of each file, so
+# only code from that marker to EOF is scanned. Integration tests in tests/
+# directories have no #[cfg(test)] marker: the entire file is test code, so
+# those files are scanned from the beginning. This ensures both kinds of tests
+# are checked for violations.
 #
 # The total is capped so that adding a violation is a visible change to a
 # committed number rather than an invisible change to a source file.
@@ -41,7 +39,8 @@ set -eu
 budget_file="${1:-ci/test-hygiene-budget.txt}"
 
 counts=$(find crates -name '*.rs' -type f 2>/dev/null | sort | while read -r f; do
-    awk '
+    awk -v filename="$f" '
+        filename ~ /tests\// { intest = 1 }
         /#\[cfg\(test\)\]/ { intest = 1 }
         intest {
             line = $0; returns += gsub(/return[ \t]*[;}]/, "", line)
