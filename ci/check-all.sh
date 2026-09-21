@@ -24,6 +24,7 @@ for check in \
     check-type-safety.sh \
     check-catalog-generated.sh \
     check-clippy.sh \
+    check-tests.sh \
     check-rustdoc.sh \
     check-module-size.sh
 do
