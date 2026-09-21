@@ -22,7 +22,7 @@ scan() {
     # Comment lines are excluded: rustdoc examples legitimately mention I/O,
     # and a rule about what the code does should not be tripped by prose.
     grep -rnE --include='*.rs' -- "$1" $2 2>/dev/null \
-        | grep -vE '^[^:]*:[0-9]+:[[:space:]]*(///|//!|//|\*)' || true
+        | grep -vE '^[^:]*:[0-9]+:[[:space:]]*(///|//!|//)' || true
 }
 
 # --- Determinism: banned in every crate, tests included. ---------------------
