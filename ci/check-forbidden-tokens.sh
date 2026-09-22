@@ -30,6 +30,23 @@ scan() {
 report "platform transcendental maths (use the in-crate implementation)" \
     "$(scan '\.(sin|cos|tan|asin|acos|atan|atan2|exp|ln|log10|log2|powf|hypot|cbrt)\(' crates)"
 
+# No floating point. The banned transcendental functions above are the
+# famous case, but ordinary float arithmetic is also not bit-identical
+# across targets once an optimiser is allowed to contract or
+# reassociate it, and a value that round-trips through f64 has already
+# lost the exactness this workspace is built on. The pure crates
+# compute in integers and exact rationals; there is nothing here a
+# float may legitimately do.
+#
+# This rule went in the moment the last one disappeared.
+# `Ratio::to_f64` was the only float conversion in the workspace,
+# documented as being "for the render path" and carrying the
+# workspace's only lint suppression, and it had no caller anywhere
+# outside its own test. Deleting it took the suppression budget to
+# zero.
+report "floating point (compute in integers or exact rationals)" \
+    "$(scan '\bf32\b|\bf64\b' crates/synthvid-scene crates/synthvid-catalog crates/synthvid-encode)"
+
 # Iteration order is randomised per process.
 report "unordered collection (use BTreeMap or BTreeSet)" \
     "$(scan '\b(HashMap|HashSet|RandomState)\b' crates)"
