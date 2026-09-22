@@ -404,6 +404,39 @@ if [ "$conflated_count" -gt "$conflated_budget" ]; then
     status=1
 fi
 
+# Every fallible function must refuse to have its result ignored.
+#
+# `Result` is `#[must_use]` and `Option` is not, so `f();` compiles
+# silently when `f` returns `Option`. clippy's `must_use_candidate`
+# covers public items only; this checks private ones.
+#
+# This also finds dead code: a call whose result is ignored is often a
+# call that does nothing.
+#
+# The attribute must sit on the line directly above the signature,
+# which is where rustfmt puts it after any doc comment.
+missing_must_use=""
+for d in $pure; do
+    found=$(find "$d" -name '*.rs' -type f | sort | while read -r f; do
+        cut=$(grep -n '#\[cfg(test)\]' "$f" | head -1 | cut -d: -f1)
+        awk -v c="${cut:-2147483647}" -v f="$f" '
+            NR + 0 < c + 0 {
+                if ($0 ~ /#\[must_use\]/) { mu = NR }
+                if ($0 ~ /fn [A-Za-z0-9_]+/ && $0 ~ /Option</ &&
+                    $0 !~ /^[[:space:]]*\/\// && $0 !~ /fn partial_cmp/) {
+                    if (mu != NR - 1) { print f ":" NR ": " $0 }
+                }
+            }' "$f"
+    done)
+    missing_must_use="$missing_must_use$found"
+done
+if [ -n "$missing_must_use" ]; then
+    echo "check-type-safety: a fallible function does not require its result" >&2
+    printf '%s\n' "$missing_must_use" | sed 's/^/  /' >&2
+    echo "  Add #[must_use], or return Result, which carries it already." >&2
+    status=1
+fi
+
 # A failure that can be dropped without the compiler objecting.
 #
 #   pub fn -> Option<()>   `Result` is `#[must_use]`; `Option` is not. A public
