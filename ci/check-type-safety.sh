@@ -134,6 +134,87 @@ if [ "$fallback_count" -gt "$fallback_budget" ]; then
     status=1
 fi
 
+# A failure reported as an absence.
+#
+# `None` means "there is no value". An arithmetic overflow in this
+# crate means "the computation this crate exists to do could not be
+# done". When one function reports both through `None`, the caller
+# cannot tell them apart, and the overwhelmingly common handling --
+# treat `None` as the empty case and carry on -- silently turns a
+# failure into a wrong answer. This is not hypothetical:
+# `clipped_pixel_range` collapsed four outcomes into `None`, and a
+# frame was emitted with a shape missing rather than an error
+# reported.
+#
+# Two detectors, because the mistake has two shapes:
+#
+#   .ok()?             A `Result` narrowed back into an `Option`. The error was
+#                      named, and this throws the name away to make an absence.
+#                      Information flowing backwards through the layer that
+#                      just produced it. Use `?` and return `Result`, or
+#                      `map_err` to a named error of your own.
+#
+#   fn -> Option with  A function that returns `None` both for a domain
+#   a failure path     condition ("radius is not positive, nothing to draw")
+#                      and for an arithmetic failure. `disc_extent` documented
+#                      exactly this: "Returns None for a non-positive radius,
+#                      which draws nothing, or on overflow." Separate them --
+#                      return `Result`, and express emptiness in the success
+#                      type the way `PixelSpan::Empty` does.
+#
+# The total is budgeted rather than zero so the tree stays green while
+# the remaining ones are worked down. It ratchets and is never raised.
+conflated_budget_file="ci/conflated-failure-budget.txt"
+if [ ! -f "$conflated_budget_file" ]; then
+    echo "check-type-safety: $conflated_budget_file not found" >&2
+    exit 1
+fi
+conflated_budget=$(tr -dc '0-9' < "$conflated_budget_file")
+if [ -z "$conflated_budget" ]; then
+    echo "check-type-safety: $conflated_budget_file must contain a number" >&2
+    exit 1
+fi
+
+narrowed=$(scan '\.ok\(\)\?' || true)
+narrowed_count=$(printf '%s' "$narrowed" | grep -c . || true)
+
+mixed=""
+for d in $pure; do
+    found=$(find "$d" -name '*.rs' -type f | sort | while read -r f; do
+        cut=$(grep -n '#\[cfg(test)\]' "$f" | head -1 | cut -d: -f1)
+        awk -v c="${cut:-2147483647}" -v f="$f" '
+            NR + 0 >= c + 0 { exit }
+            /^[[:space:]]*(pub(\([a-z()]+\))? )?(const )?fn / {
+                if (sig != "" && none > 0 && fail > 0) { print f ":" start ": " sig }
+                sig = $0; start = NR; none = 0; fail = 0
+                if ($0 !~ /Option</) { sig = "" }
+            }
+            /return None;/ { none = 1 }
+            /\.ok\(\)\?/ { fail = 1 }
+            /checked_[a-z_]*\(.*\)\?/ { fail = 1 }
+            /\.ok_or\(/ { fail = 1 }
+            END { if (sig != "" && none > 0 && fail > 0) { print f ":" start ": " sig } }
+        ' "$f"
+    done)
+    mixed="$mixed$found"
+done
+mixed_count=$(printf '%s' "$mixed" | grep -c . || true)
+conflated_count=$((narrowed_count + mixed_count))
+
+if [ "$conflated_count" -gt "$conflated_budget" ]; then
+    echo "check-type-safety: $conflated_count failures reported as absences exceeds the budget of $conflated_budget" >&2
+    if [ -n "$narrowed" ]; then
+        echo "  a Result narrowed into an Option:" >&2
+        printf '%s\n' "$narrowed" | sed 's/^/    /' >&2
+    fi
+    if [ -n "$mixed" ]; then
+        echo "  returns None for both an empty case and a failure:" >&2
+        printf '%s\n' "$mixed" | sed 's/^/    /' >&2
+    fi
+    echo "  Return Result and express the empty case in the success type." >&2
+    status=1
+fi
+
 fields=$(scan '^[[:space:]]*pub [a-z_]+:[[:space:]]*(u8|u16|u32|u64|usize|i8|i16|i32|i64|isize|f32|f64|bool|String|&str)[[:space:]]*,?[[:space:]]*$' || true)
 count=$(printf '%s' "$fields" | grep -c . || true)
 
@@ -219,4 +300,4 @@ if [ "$status" -ne 0 ]; then
     exit 1
 fi
 
-echo "check-type-safety: ok ($count of $budget bare fields, $fallback_count of $fallback_budget silent fallbacks, $transposable_count of $transposable_budget transposable-param functions)"
+echo "check-type-safety: ok ($count of $budget bare fields, $fallback_count of $fallback_budget silent fallbacks, $transposable_count of $transposable_budget transposable-param functions, $conflated_count of $conflated_budget failures-as-absences)"
