@@ -134,6 +134,74 @@ if [ "$fallback_count" -gt "$fallback_budget" ]; then
     status=1
 fi
 
+# An error destructured away and replaced by a value.
+#
+# `let Ok(v) = fallible() else { ... }` binds only the success case. The `Err`
+# is not merely ignored, it is unnameable inside the `else` -- the binding
+# discards it before the block runs. What the block then returns decides
+# whether this is sound:
+#
+#   return Err(...)    Fine. The error is being translated into this layer's
+#                      own error type, which is what a layer boundary is for.
+#
+#   return None,       Not fine. A failure has become a value. The caller sees
+#   return false,      an absence, or a plain `false`, and cannot tell it from
+#   return 0, ...      the ordinary case. The coverage predicates did exactly
+#                      this: an overflow inside `disc_covers` returned `false`,
+#                      meaning "this pixel is not covered", so a frame was
+#                      painted with pixels missing and nothing reported. That
+#                      is the same defect `.ok()?` produces, spelled so that
+#                      the rule against `.ok()?` does not see it -- which is
+#                      how it got written.
+#
+# So the test is not the `let ... else` itself but what its block returns.
+# Anything other than an `Err` is counted.
+discarded_budget_file="ci/discarded-error-budget.txt"
+if [ ! -f "$discarded_budget_file" ]; then
+    echo "check-type-safety: $discarded_budget_file not found" >&2
+    exit 1
+fi
+discarded_budget=$(tr -dc '0-9' < "$discarded_budget_file")
+if [ -z "$discarded_budget" ]; then
+    echo "check-type-safety: $discarded_budget_file must contain a number" >&2
+    exit 1
+fi
+
+discarded=""
+for d in $pure; do
+    found=$(find "$d" -name '*.rs' -type f | sort | while read -r f; do
+        cut=$(grep -n '#\[cfg(test)\]' "$f" | head -1 | cut -d: -f1)
+        awk -v c="${cut:-2147483647}" -v f="$f" '
+            NR + 0 >= c + 0 { exit }
+            /let Ok\(/ {
+                # The whole construct may sit on one line; judge it immediately
+                # rather than looking ahead, or a single-line spelling escapes.
+                if ($0 ~ /return/) {
+                    if ($0 !~ /return Err\(/) { print f ":" NR ": " $0 }
+                    pending = 0
+                } else {
+                    pending = NR; sig = $0
+                }
+                next
+            }
+            pending > 0 && NR <= pending + 3 && /return/ {
+                if ($0 !~ /return Err\(/) { print f ":" pending ": " sig }
+                pending = 0
+            }
+        ' "$f"
+    done)
+    discarded="$discarded$found"
+done
+discarded_count=$(printf '%s' "$discarded" | grep -c . || true)
+
+if [ "$discarded_count" -gt "$discarded_budget" ]; then
+    echo "check-type-safety: $discarded_count errors discarded for a value exceeds the budget of $discarded_budget" >&2
+    printf '%s\n' "$discarded" | sed 's/^/  /' >&2
+    echo "  Return an error of this layer's own, or propagate with ?. A failure" >&2
+    echo "  must not become None, false, or a default." >&2
+    status=1
+fi
+
 # A failure reported as an absence.
 #
 # `None` means "there is no value". An arithmetic overflow in this
@@ -300,4 +368,4 @@ if [ "$status" -ne 0 ]; then
     exit 1
 fi
 
-echo "check-type-safety: ok ($count of $budget bare fields, $fallback_count of $fallback_budget silent fallbacks, $transposable_count of $transposable_budget transposable-param functions, $conflated_count of $conflated_budget failures-as-absences)"
+echo "check-type-safety: ok ($count of $budget bare fields, $fallback_count of $fallback_budget silent fallbacks, $transposable_count of $transposable_budget transposable-param functions, $conflated_count of $conflated_budget failures-as-absences, $discarded_count of $discarded_budget discarded errors)"
