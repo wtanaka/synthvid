@@ -134,6 +134,66 @@ if [ "$fallback_count" -gt "$fallback_budget" ]; then
     status=1
 fi
 
+# Modular arithmetic standing in for a proof.
+#
+# `checked_*` returns an `Option` the caller must discharge. The
+# shortest way to make that `Option` disappear is to swap in
+# `wrapping_*` or `saturating_*`, which return a value
+# unconditionally. That decides, in advance, that a violated bound
+# should silently produce a wrong number instead of a detectable one.
+# For a workspace whose output must be identical everywhere and
+# exactly the scene that was described, that is the worst available
+# answer.
+#
+# Two files are excluded because there the modulus is the
+# specification.
+#
+# Comment lines are not counted. A rule that reads prose as code is how
+# an earlier guard here reported success while six of its rules were
+# dead, and three of the nine this one first reported were doc comments
+# describing the idiom below.
+#
+# `NonZero*::MIN.saturating_*` is not counted either. It is how this
+# workspace builds a non-zero constant -- `NonZeroU8::MIN` is one,
+# saturating addition on a non-zero value cannot reach zero, and the
+# widening conversion is infallible -- and it is the only spelling that
+# is total. Every alternative needs a dead match arm or a construct the
+# lint table forbids, so counting it would push the code back towards
+# `unwrap_or`, which is what this rule exists to prevent.
+modular_budget_file="ci/modular-arithmetic-budget.txt"
+if [ ! -f "$modular_budget_file" ]; then
+    echo "check-type-safety: $modular_budget_file not found" >&2
+    exit 1
+fi
+modular_budget=$(tr -dc '0-9' < "$modular_budget_file")
+if [ -z "$modular_budget" ]; then
+    echo "check-type-safety: $modular_budget_file must contain a number" >&2
+    exit 1
+fi
+
+modular=""
+for d in $pure; do
+    found=$(find "$d" -name '*.rs' -type f | grep -v -e '/sha256\.rs$' -e '/rng\.rs$' | sort | while read -r f; do
+        cut=$(grep -n '#\[cfg(test)\]' "$f" | head -1 | cut -d: -f1)
+        grep -nE '\.(wrapping|saturating)_[a-z]+\(' "$f" 2>/dev/null \
+            | grep -vE '^[0-9]+:[[:space:]]*(///|//!|//)' \
+            | grep -vE 'NonZero[A-Za-z0-9]*::MIN\.saturating_' \
+            | awk -F: -v c="${cut:-2147483647}" -v f="$f" \
+                '$1 + 0 < c + 0 { sub(/^[0-9]*:/, ""); print f ":" $0 }'
+    done)
+    modular="$modular$found"
+done
+modular_count=$(printf '%s' "$modular" | grep -c . || true)
+
+if [ "$modular_count" -gt "$modular_budget" ]; then
+    echo "check-type-safety: $modular_count modular-arithmetic uses exceeds the budget of $modular_budget" >&2
+    printf '%s\n' "$modular" | sed 's/^/  /' >&2
+    echo "  wrapping_* and saturating_* do not establish a bound, they hide its" >&2
+    echo "  violation. Widen the type or narrow the input so the operation is" >&2
+    echo "  total, or keep checked_* and report the failure." >&2
+    status=1
+fi
+
 # An error destructured away and replaced by a value.
 #
 # `let Ok(v) = fallible() else { ... }` binds only the success case. The `Err`
@@ -368,4 +428,4 @@ if [ "$status" -ne 0 ]; then
     exit 1
 fi
 
-echo "check-type-safety: ok ($count of $budget bare fields, $fallback_count of $fallback_budget silent fallbacks, $transposable_count of $transposable_budget transposable-param functions, $conflated_count of $conflated_budget failures-as-absences, $discarded_count of $discarded_budget discarded errors)"
+echo "check-type-safety: ok ($count of $budget bare fields, $fallback_count of $fallback_budget silent fallbacks, $transposable_count of $transposable_budget transposable-param functions, $conflated_count of $conflated_budget failures-as-absences, $discarded_count of $discarded_budget discarded errors, $modular_count of $modular_budget modular-arithmetic uses)"
