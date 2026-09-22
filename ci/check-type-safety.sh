@@ -134,6 +134,67 @@ if [ "$fallback_count" -gt "$fallback_budget" ]; then
     status=1
 fi
 
+# An arithmetic failure renamed as something else.
+#
+# The arithmetic lint forces `checked_*`, which yields an `Option` the
+# caller must discharge.  One cheap way is to keep the `checked_*` and
+# hand its `None` to `ok_or(SomeOtherError)` which obscures an
+# overflow as a domain specific error.
+#
+# Example:
+#
+#     // Bounds check guarantees arithmetic will not overflow
+#     let pixel_index = u64::from(coord.y)
+#         .checked_mul(u64::from(width))
+#         .ok_or(PixelOutOfBounds)?;
+#
+# If the bound is guaranteed, the `checked_*` is dead and the widening
+# should be stated in the types -- `u32` holds `65535 * 65535 +
+# 65535`, so nothing can fail. If the bound is not guaranteed, the
+# error must say `Overflow`.
+#
+# So the rule is narrow: a `checked_*` whose `None` is converted by
+# `ok_or` or `ok_or_else` into anything that is not `Overflow`.
+# Discharging into `Overflow` is not counted.
+mislabelled_budget_file="ci/mislabelled-failure-budget.txt"
+if [ ! -f "$mislabelled_budget_file" ]; then
+    echo "check-type-safety: $mislabelled_budget_file not found" >&2
+    exit 1
+fi
+mislabelled_budget=$(tr -dc '0-9' < "$mislabelled_budget_file")
+if [ -z "$mislabelled_budget" ]; then
+    echo "check-type-safety: $mislabelled_budget_file must contain a number" >&2
+    exit 1
+fi
+
+mislabelled=""
+for d in $pure; do
+    found=$(find "$d" -name '*.rs' -type f | sort | while read -r f; do
+        cut=$(grep -n '#\[cfg(test)\]' "$f" | head -1 | cut -d: -f1)
+        awk -v c="${cut:-2147483647}" -v f="$f" '
+            NR + 0 >= c + 0 { exit }
+            { buf = buf " " $0 }
+            /ok_or/ {
+                if (buf ~ /checked_[a-z_]+\(/ && $0 !~ /Overflow/) {
+                    sub(/^[[:space:]]+/, "")
+                    print f ":" NR ": " $0
+                }
+            }
+            /;/ { buf = "" }
+        ' "$f"
+    done)
+    mislabelled="$mislabelled$found"
+done
+mislabelled_count=$(printf '%s' "$mislabelled" | grep -c . || true)
+
+if [ "$mislabelled_count" -gt "$mislabelled_budget" ]; then
+    echo "check-type-safety: $mislabelled_count arithmetic failures renamed exceeds the budget of $mislabelled_budget" >&2
+    printf '%s\n' "$mislabelled" | sed 's/^/  /' >&2
+    echo "  An overflow is an Overflow. If it cannot happen, widen the type and" >&2
+    echo "  delete the check; if it can, do not give it another failure's name." >&2
+    status=1
+fi
+
 # Modular arithmetic standing in for a proof.
 #
 # `checked_*` returns an `Option` the caller must discharge. The
@@ -428,4 +489,4 @@ if [ "$status" -ne 0 ]; then
     exit 1
 fi
 
-echo "check-type-safety: ok ($count of $budget bare fields, $fallback_count of $fallback_budget silent fallbacks, $transposable_count of $transposable_budget transposable-param functions, $conflated_count of $conflated_budget failures-as-absences, $discarded_count of $discarded_budget discarded errors, $modular_count of $modular_budget modular-arithmetic uses)"
+echo "check-type-safety: ok ($count of $budget bare fields, $fallback_count of $fallback_budget silent fallbacks, $transposable_count of $transposable_budget transposable-param functions, $conflated_count of $conflated_budget failures-as-absences, $discarded_count of $discarded_budget discarded errors, $modular_count of $modular_budget modular-arithmetic uses, $mislabelled_count of $mislabelled_budget renamed failures)"
