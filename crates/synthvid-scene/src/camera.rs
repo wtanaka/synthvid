@@ -6,9 +6,10 @@
 //! from being silently ignored and makes a non-positive magnification
 //! unrepresentable instead of clamped at render time.
 
+use core::fmt;
 use core::num::NonZeroI64;
 
-use crate::ratio::{int_ratio, Ratio};
+use crate::ratio::{int_ratio, Overflow, Ratio};
 use crate::scene::Motion;
 use crate::units::{FrameCount, FrameIndex};
 
@@ -33,6 +34,23 @@ impl Turns {
     }
 }
 
+/// Error returned when attempting to construct a non-positive [`Magnification`].
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum MagnificationError {
+    /// Magnification must be strictly positive.
+    NonPositive,
+}
+
+impl fmt::Display for MagnificationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NonPositive => write!(f, "magnification must be strictly positive"),
+        }
+    }
+}
+
+impl core::error::Error for MagnificationError {}
+
 /// A camera magnification.
 ///
 /// The value is strictly positive by construction: [`Magnification::new`]
@@ -44,13 +62,14 @@ pub struct Magnification(Ratio);
 impl Magnification {
     /// Creates a magnification from a [`Ratio`], rejecting zero and negative values.
     ///
-    /// Returns `None` when `factor` is zero or negative.
-    #[must_use]
-    pub const fn new(factor: Ratio) -> Option<Self> {
+    /// # Errors
+    ///
+    /// Returns `Err(MagnificationError::NonPositive)` when `factor` is zero or negative.
+    pub const fn new(factor: Ratio) -> Result<Self, MagnificationError> {
         if factor.numer() > 0 {
-            Some(Self(factor))
+            Ok(Self(factor))
         } else {
-            None
+            Err(MagnificationError::NonPositive)
         }
     }
 
@@ -128,12 +147,11 @@ impl Camera {
 
 /// Returns the frame index as an exact [`Ratio`].
 ///
-/// Every `u32` fits in an `i64`, so the conversion cannot fail; the fallback
-/// is unreachable and exists only because [`Ratio::from_integer`] returns
-/// [`Option`].
+/// Every `u32` fits in an `i64`, and `v / 1` is already in lowest terms, so
+/// this construction is total.
 #[must_use]
 fn frame_ratio(frame: FrameIndex) -> Ratio {
-    Ratio::from_integer(i64::from(frame.get())).unwrap_or_else(|| int_ratio(0))
+    int_ratio(i64::from(frame.get()))
 }
 
 /// Evaluates a [`Rotation`] at a frame index, in closed form.
@@ -141,16 +159,19 @@ fn frame_ratio(frame: FrameIndex) -> Ratio {
 /// - [`Rotation::Fixed`] holds its angle on every frame.
 /// - `Linear` yields `start + per_frame * n`, where `n` is the frame index.
 ///
-/// Returns `None` when exact arithmetic overflows. The result is a pure
-/// function of the frame index, so evaluating frames in any order gives
+/// The result is a pure function of the frame index, so evaluating frames in any order gives
 /// identical values.
-#[must_use]
-pub fn rotation_at(rotation: &Rotation, frame: FrameIndex) -> Option<Turns> {
+///
+/// # Errors
+///
+/// Returns `Err(Overflow)` when exact arithmetic overflows.
+pub fn rotation_at(rotation: &Rotation, frame: FrameIndex) -> Result<Turns, Overflow> {
     match rotation {
-        Rotation::Fixed(angle) => Some(*angle),
+        Rotation::Fixed(angle) => Ok(*angle),
         Rotation::Linear { start, per_frame } => {
             let step = per_frame.get().checked_mul(frame_ratio(frame))?;
-            start.get().checked_add(step).map(Turns::new)
+            let result = start.get().checked_add(step)?;
+            Ok(Turns::new(result))
         }
     }
 }
@@ -167,21 +188,24 @@ pub fn rotation_at(rotation: &Rotation, frame: FrameIndex) -> Option<Turns> {
 /// so the division cannot fail. Because the type only admits positive values,
 /// the renderer needs no magnification check downstream.
 ///
-/// Returns `None` when exact arithmetic overflows. The result is a pure
-/// function of the frame index, so evaluating frames in any order gives
+/// The result is a pure function of the frame index, so evaluating frames in any order gives
 /// identical values.
-#[must_use]
-pub fn zoom_at(zoom: &Zoom, frame: FrameIndex) -> Option<Magnification> {
+///
+/// # Errors
+///
+/// Returns `Err(Overflow)` when exact arithmetic overflows.
+pub fn zoom_at(zoom: &Zoom, frame: FrameIndex) -> Result<Magnification, Overflow> {
     match zoom {
-        Zoom::Fixed(magnification) => Some(*magnification),
+        Zoom::Fixed(magnification) => Ok(*magnification),
         Zoom::Ramp { start, end, over } => {
             let span = i64::from(over.get().get());
             let at = i64::from(frame.get().min(over.get().get()));
-            let denom = NonZeroI64::new(span)?;
+            let denom = NonZeroI64::new(span).ok_or(Overflow)?;
             let t = Ratio::new(at, denom)?;
             let spread = end.get().checked_sub(start.get())?;
             let grown = t.checked_mul(spread)?;
-            Magnification::new(start.get().checked_add(grown)?)
+            let result = start.get().checked_add(grown)?;
+            Magnification::new(result).map_err(|_| Overflow)
         }
     }
 }
@@ -198,7 +222,7 @@ mod tests {
 
     /// Builds a magnification from a numerator and denominator.
     fn make_magnification(numer: i64, denom: i64) -> Magnification {
-        Magnification::new(make_ratio(numer, denom).unwrap()).unwrap()
+        Magnification::new(make_ratio(numer, denom).unwrap()).expect("test magnification")
     }
 
     /// Builds a ramp from `start` to `end` over `over` frames.
@@ -217,11 +241,11 @@ mod tests {
         let negative = make_ratio(-3, 2).unwrap();
         let positive = make_ratio(3, 2).unwrap();
         assert!(
-            Magnification::new(zero).is_none(),
+            Magnification::new(zero).is_err(),
             "zero magnification must be rejected"
         );
         assert!(
-            Magnification::new(negative).is_none(),
+            Magnification::new(negative).is_err(),
             "negative magnification must be rejected"
         );
         let magnification = Magnification::new(positive).unwrap();
@@ -239,7 +263,7 @@ mod tests {
         let ramp = make_ramp(start, end, 4);
         let zero = make_ratio(0, 1).unwrap();
         for n in [0_u32, 2, 9] {
-            let at = zoom_at(&ramp, FrameIndex::new(n)).unwrap();
+            let at = zoom_at(&ramp, FrameIndex::new(n)).expect("zoom should not overflow");
             assert!(
                 at.get() > zero,
                 "ramp magnification at frame {n} must stay strictly positive"
@@ -254,17 +278,17 @@ mod tests {
         let ramp = make_ramp(start, end, 6);
         assert_eq!(
             zoom_at(&ramp, FrameIndex::new(0)),
-            Some(start),
+            Ok(start),
             "ramp at frame zero must equal its start exactly"
         );
         assert_eq!(
             zoom_at(&ramp, FrameIndex::new(6)),
-            Some(end),
+            Ok(end),
             "ramp at its span must equal its end exactly"
         );
         assert_eq!(
             zoom_at(&ramp, FrameIndex::new(60)),
-            Some(end),
+            Ok(end),
             "ramp past its span must hold its end exactly"
         );
     }
@@ -278,7 +302,7 @@ mod tests {
         let want = make_magnification(2, 1);
         assert_eq!(
             zoom_at(&ramp, FrameIndex::new(2)),
-            Some(want),
+            Ok(want),
             "ramp halfway through its span must equal the midpoint"
         );
     }
@@ -294,7 +318,7 @@ mod tests {
             let want = make_turns(numer, denom);
             assert_eq!(
                 rotation_at(&spin, FrameIndex::new(n)),
-                Some(want),
+                Ok(want),
                 "linear rotation at frame {n} must equal start plus rate times frame"
             );
         }
@@ -303,7 +327,7 @@ mod tests {
         for n in 0..4_u32 {
             assert_eq!(
                 rotation_at(&still, FrameIndex::new(n)),
-                Some(fixed_angle),
+                Ok(fixed_angle),
                 "a fixed rotation must hold its angle on every frame"
             );
         }
@@ -327,7 +351,8 @@ mod tests {
             shuffled.push((j, rotation_at(&spin, FrameIndex::new(j))));
         }
         shuffled.sort_by_key(|entry| entry.0);
-        let back_in_order: Vec<Option<Turns>> = shuffled.iter().map(|entry| entry.1).collect();
+        let back_in_order: Vec<Result<Turns, Overflow>> =
+            shuffled.iter().map(|entry| entry.1).collect();
         assert_eq!(
             back_in_order, forward,
             "evaluating rotation shuffled must match forwards order"

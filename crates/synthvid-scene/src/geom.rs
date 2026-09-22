@@ -5,6 +5,7 @@
 //! accumulating rounding error.
 
 use crate::ratio::int_ratio;
+use crate::ratio::Overflow;
 use crate::ratio::Ratio;
 
 /// A point in scene units.
@@ -183,9 +184,10 @@ impl Affine {
 
     /// Applies this transform to a point.
     ///
-    /// Returns `None` if any intermediate or final value overflows.
-    #[must_use]
-    pub fn apply(self, point: Point) -> Option<Point> {
+    /// # Errors
+    ///
+    /// Returns `Err(Overflow)` if any intermediate or final value overflows.
+    pub fn apply(self, point: Point) -> Result<Point, Overflow> {
         let ax = self.a.checked_mul(point.x)?;
         let by = self.b.checked_mul(point.y)?;
         let x_lin = ax.checked_add(by)?;
@@ -194,31 +196,36 @@ impl Affine {
         let dy = self.d.checked_mul(point.y)?;
         let y_lin = cx.checked_add(dy)?;
         let y = y_lin.checked_add(self.ty)?;
-        Some(Point { x, y })
+        Ok(Point { x, y })
     }
 
     /// Applies only the linear part of this transform to a vector.
     ///
-    /// Translation is ignored. Returns `None` on overflow.
-    #[must_use]
-    pub fn apply_vector(self, vector: Vector) -> Option<Vector> {
+    /// Translation is ignored.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(Overflow)` on overflow.
+    pub fn apply_vector(self, vector: Vector) -> Result<Vector, Overflow> {
         let ax = self.a.checked_mul(vector.x)?;
         let by = self.b.checked_mul(vector.y)?;
         let x = ax.checked_add(by)?;
         let cx = self.c.checked_mul(vector.x)?;
         let dy = self.d.checked_mul(vector.y)?;
         let y = cx.checked_add(dy)?;
-        Some(Vector { x, y })
+        Ok(Vector { x, y })
     }
 
     /// Composes two transforms.
     ///
     /// `self.compose(other)` returns the transform that applies `other`
     /// first and then `self`, that is `(self . other)(p) = self(other(p))`.
-    /// Returns `None` if any intermediate or final value overflows.
-    #[must_use]
-    pub fn compose(self, other: Self) -> Option<Self> {
-        Some(Self {
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(Overflow)` if any intermediate or final value overflows.
+    pub fn compose(self, other: Self) -> Result<Self, Overflow> {
+        Ok(Self {
             a: self
                 .a
                 .checked_mul(other.a)?
@@ -251,27 +258,31 @@ impl Affine {
     /// Returns the transform applied after `self`.
     ///
     /// `self.then(next)` equals `next.compose(self)`: apply `self` first,
-    /// then `next`. Returns `None` on overflow.
-    #[must_use]
-    pub fn then(self, next: Self) -> Option<Self> {
+    /// then `next`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(Overflow)` on overflow.
+    pub fn then(self, next: Self) -> Result<Self, Overflow> {
         next.compose(self)
     }
 
     /// Inverts this transform.
     ///
-    /// Returns `None` when the linear part is singular (determinant zero)
+    /// # Errors
+    ///
+    /// Returns `Err(Overflow)` when the linear part is singular (determinant zero)
     /// or when any intermediate or final value overflows.
-    #[must_use]
-    pub fn inverse(self) -> Option<Self> {
+    pub fn inverse(self) -> Result<Self, Overflow> {
         let det = self
             .a
             .checked_mul(self.d)?
             .checked_sub(self.b.checked_mul(self.c)?)?;
         if det == int_ratio(0) {
-            return None;
+            return Err(Overflow);
         }
         let scale = int_ratio(1).checked_div(det)?;
-        Some(Self {
+        Ok(Self {
             a: self.d.checked_mul(scale)?,
             b: self.b.checked_neg()?.checked_mul(scale)?,
             tx: self
@@ -413,9 +424,10 @@ impl Similarity {
 
     /// Applies this similarity to a point.
     ///
-    /// Returns `None` if any intermediate or final value overflows.
-    #[must_use]
-    pub fn apply(self, point: Point) -> Option<Point> {
+    /// # Errors
+    ///
+    /// Returns `Err(Overflow)` if any intermediate or final value overflows.
+    pub fn apply(self, point: Point) -> Result<Point, Overflow> {
         let neg_b = self.b.checked_neg()?;
         let ax = self.a.checked_mul(point.x)?;
         let by = self.b.checked_mul(point.y)?;
@@ -425,14 +437,17 @@ impl Similarity {
         let ay = self.a.checked_mul(point.y)?;
         let y_lin = nx.checked_add(ay)?;
         let y = y_lin.checked_add(self.ty)?;
-        Some(Point { x, y })
+        Ok(Point { x, y })
     }
 
     /// Applies only the linear part of this similarity to a vector.
     ///
-    /// Translation is ignored. Returns `None` on overflow.
-    #[must_use]
-    pub fn apply_vector(self, vector: Vector) -> Option<Vector> {
+    /// Translation is ignored.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(Overflow)` on overflow.
+    pub fn apply_vector(self, vector: Vector) -> Result<Vector, Overflow> {
         let neg_b = self.b.checked_neg()?;
         let ax = self.a.checked_mul(vector.x)?;
         let by = self.b.checked_mul(vector.y)?;
@@ -440,16 +455,19 @@ impl Similarity {
         let nx = neg_b.checked_mul(vector.x)?;
         let ay = self.a.checked_mul(vector.y)?;
         let y = nx.checked_add(ay)?;
-        Some(Vector { x, y })
+        Ok(Vector { x, y })
     }
 
     /// Composes two similarities.
     ///
     /// `self.compose(other)` returns the similarity that applies `other`
     /// first and then `self`. Similarities are closed under composition, so
-    /// the result is again a similarity. Returns `None` on overflow.
-    #[must_use]
-    pub fn compose(self, other: Self) -> Option<Self> {
+    /// the result is again a similarity.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(Overflow)` on overflow.
+    pub fn compose(self, other: Self) -> Result<Self, Overflow> {
         let a_part = self.a.checked_mul(other.a)?;
         let b_part = self.b.checked_mul(other.b)?;
         let a = a_part.checked_sub(b_part)?;
@@ -463,30 +481,34 @@ impl Similarity {
         let nx = neg_b.checked_mul(other.tx)?;
         let ay = self.a.checked_mul(other.ty)?;
         let ty = nx.checked_add(ay)?.checked_add(self.ty)?;
-        Some(Self { a, b, tx, ty })
+        Ok(Self { a, b, tx, ty })
     }
 
     /// Returns the similarity applied after `self`.
     ///
     /// `self.then(next)` equals `next.compose(self)`: apply `self` first,
-    /// then `next`. Returns `None` on overflow.
-    #[must_use]
-    pub fn then(self, next: Self) -> Option<Self> {
+    /// then `next`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(Overflow)` on overflow.
+    pub fn then(self, next: Self) -> Result<Self, Overflow> {
         next.compose(self)
     }
 
     /// Inverts this similarity.
     ///
-    /// Returns `None` when the linear part is singular (both `a` and `b`
+    /// # Errors
+    ///
+    /// Returns `Err(Overflow)` when the linear part is singular (both `a` and `b`
     /// are zero, so the determinant `a * a + b * b` is zero) or when any
     /// intermediate or final value overflows.
-    #[must_use]
-    pub fn inverse(self) -> Option<Self> {
+    pub fn inverse(self) -> Result<Self, Overflow> {
         let aa = self.a.checked_mul(self.a)?;
         let bb = self.b.checked_mul(self.b)?;
         let det = aa.checked_add(bb)?;
         if det == int_ratio(0) {
-            return None;
+            return Err(Overflow);
         }
         let scale = int_ratio(1).checked_div(det)?;
         let a_inv = self.a.checked_mul(scale)?;
@@ -498,7 +520,7 @@ impl Similarity {
         let fwd_y = back
             .checked_mul(self.tx)?
             .checked_add(a_inv.checked_mul(self.ty)?)?;
-        Some(Self {
+        Ok(Self {
             a: a_inv,
             b: b_inv,
             tx: fwd_x.checked_neg()?,
@@ -508,12 +530,14 @@ impl Similarity {
 
     /// Converts this similarity to the general [`Affine`] transform.
     ///
-    /// The affine entries are `(a, b, tx, -b, a, ty)`. Returns `None` only
-    /// when negating `b` overflows.
-    #[must_use]
-    pub fn to_affine(self) -> Option<Affine> {
+    /// The affine entries are `(a, b, tx, -b, a, ty)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(Overflow)` only when negating `b` overflows.
+    pub fn to_affine(self) -> Result<Affine, Overflow> {
         let neg_b = self.b.checked_neg()?;
-        Some(Affine::new(self.a, self.b, self.tx, neg_b, self.a, self.ty))
+        Ok(Affine::new(self.a, self.b, self.tx, neg_b, self.a, self.ty))
     }
 }
 
@@ -528,13 +552,13 @@ mod tests {
         let y = make_ratio(-5, 4).unwrap();
         let probe = Point::new(x, y);
         let same = Affine::identity().apply(probe);
-        assert_eq!(same, Some(probe), "identity must map a point to itself");
+        assert_eq!(same, Ok(probe), "identity must map a point to itself");
         let dx = make_ratio(2, 1).unwrap();
         let dy = make_ratio(3, 1).unwrap();
         let shift = Affine::translation(Vector::new(dx, dy));
         let moved = shift.apply(probe).unwrap();
-        let expect_x = x.checked_add(dx).unwrap();
-        let expect_y = y.checked_add(dy).unwrap();
+        let expect_x = x.checked_add(dx).ok().unwrap();
+        let expect_y = y.checked_add(dy).ok().unwrap();
         assert_eq!(
             moved,
             Point::new(expect_x, expect_y),
@@ -556,8 +580,8 @@ mod tests {
         let sx = make_ratio(2, 1).unwrap();
         let sy = make_ratio(3, 1).unwrap();
         let scale = Affine::scaling(sx, sy);
-        let scaled_x = x.checked_mul(sx).unwrap();
-        let scaled_y = y.checked_mul(sy).unwrap();
+        let scaled_x = x.checked_mul(sx).ok().unwrap();
+        let scaled_y = y.checked_mul(sy).ok().unwrap();
         let scaled = scale.apply_vector(Vector::new(x, y)).unwrap();
         assert_eq!(
             scaled,

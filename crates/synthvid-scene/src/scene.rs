@@ -56,21 +56,23 @@ pub struct Scale(Ratio);
 impl Scale {
     /// Creates a scale from a [`Ratio`], rejecting zero and negative values.
     ///
-    /// Returns `None` when `units_per_world_unit` is zero or negative.
-    #[must_use]
-    pub const fn new(units_per_world_unit: Ratio) -> Option<Self> {
+    /// # Errors
+    ///
+    /// Returns `Err(ScaleError::NonPositive)` when `units_per_world_unit` is zero or negative.
+    pub const fn new(units_per_world_unit: Ratio) -> Result<Self, ScaleError> {
         if units_per_world_unit.numer() > 0 {
-            Some(Self(units_per_world_unit))
+            Ok(Self(units_per_world_unit))
         } else {
-            None
+            Err(ScaleError::NonPositive)
         }
     }
 
     /// Creates a scale from a [`Ratio`], rejecting zero and negative values.
     ///
-    /// Returns `None` when `units_per_world_unit` is zero or negative.
-    #[must_use]
-    pub const fn from_ratio(units_per_world_unit: Ratio) -> Option<Self> {
+    /// # Errors
+    ///
+    /// Returns `Err(ScaleError::NonPositive)` when `units_per_world_unit` is zero or negative.
+    pub const fn from_ratio(units_per_world_unit: Ratio) -> Result<Self, ScaleError> {
         Self::new(units_per_world_unit)
     }
 
@@ -91,9 +93,26 @@ impl TryFrom<Ratio> for Scale {
     type Error = ScaleError;
 
     fn try_from(units_per_world_unit: Ratio) -> Result<Self, Self::Error> {
-        Self::new(units_per_world_unit).ok_or(ScaleError::NonPositive)
+        Self::new(units_per_world_unit)
     }
 }
+
+/// Error returned when attempting to construct an invalid [`FrameSpan`].
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum FrameSpanError {
+    /// Start frame must be strictly before the end frame.
+    EndBeforeStart,
+}
+
+impl fmt::Display for FrameSpanError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EndBeforeStart => write!(f, "start frame must be strictly before the end frame"),
+        }
+    }
+}
+
+impl core::error::Error for FrameSpanError {}
 
 /// Inclusive-start, exclusive-end span of frames during which an object is visible.
 ///
@@ -109,13 +128,14 @@ pub struct FrameSpan {
 impl FrameSpan {
     /// Creates a frame span from `start` (inclusive) to `end` (exclusive).
     ///
-    /// Returns `None` when `start` lies at or after `end`.
-    #[must_use]
-    pub const fn new(start: FrameIndex, end: FrameIndex) -> Option<Self> {
+    /// # Errors
+    ///
+    /// Returns `Err(FrameSpanError::EndBeforeStart)` when `start` lies at or after `end`.
+    pub const fn new(start: FrameIndex, end: FrameIndex) -> Result<Self, FrameSpanError> {
         if start.get() >= end.get() {
-            None
+            Err(FrameSpanError::EndBeforeStart)
         } else {
-            Some(Self { start, end })
+            Ok(Self { start, end })
         }
     }
 
@@ -365,7 +385,7 @@ mod tests {
     fn fixed_camera() -> Option<Camera> {
         let origin = origin_point()?;
         let angle = Turns::new(make_ratio(0, 1)?);
-        let unit = Zoom::Fixed(Magnification::new(make_ratio(1, 1)?)?);
+        let unit = Zoom::Fixed(Magnification::new(make_ratio(1, 1)?).ok()?);
         Some(Camera::new(
             Motion::Fixed(origin),
             Rotation::Fixed(angle),
@@ -374,7 +394,7 @@ mod tests {
     }
 
     /// Builds a one-frame-per-side span from `start` to `end`.
-    fn make_span(start: u32, end: u32) -> Option<FrameSpan> {
+    fn make_span(start: u32, end: u32) -> Result<FrameSpan, FrameSpanError> {
         FrameSpan::new(FrameIndex::new(start), FrameIndex::new(end))
     }
 
@@ -383,8 +403,8 @@ mod tests {
         let zero = make_ratio(0, 1).unwrap();
         let neg = make_ratio(-3, 2).unwrap();
         let pos = make_ratio(3, 2).unwrap();
-        assert!(Scale::new(zero).is_none(), "zero scale must be rejected");
-        assert!(Scale::new(neg).is_none(), "negative scale must be rejected");
+        assert!(Scale::new(zero).is_err(), "zero scale must be rejected");
+        assert!(Scale::new(neg).is_err(), "negative scale must be rejected");
         let scale = Scale::new(pos).expect("positive scale accepted");
         assert_eq!(scale.get(), pos, "positive scale must round-trip");
         assert_eq!(scale.ratio(), pos, "scale ratio must round-trip");
@@ -400,7 +420,7 @@ mod tests {
         );
         assert_eq!(
             Scale::from_ratio(pos),
-            Some(scale),
+            Ok(scale),
             "from_ratio must match new"
         );
     }
@@ -418,9 +438,9 @@ mod tests {
             !span.contains(FrameIndex::new(1)),
             "span must exclude before start"
         );
-        assert!(make_span(5, 2).is_none(), "inverted span must be rejected");
-        assert!(make_span(5, 4).is_none(), "inverted span must be rejected");
-        assert!(make_span(5, 5).is_none(), "empty span must be rejected");
+        assert!(make_span(5, 2).is_err(), "inverted span must be rejected");
+        assert!(make_span(5, 4).is_err(), "inverted span must be rejected");
+        assert!(make_span(5, 5).is_err(), "empty span must be rejected");
         let unit = make_span(5, 6).expect("unit span");
         assert!(
             unit.contains(FrameIndex::new(5)),

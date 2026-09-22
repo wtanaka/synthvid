@@ -43,13 +43,33 @@ impl From<FrameIndex> for u32 {
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct FrameCount(pub NonZeroU32);
 
+/// Error returned when attempting to construct a zero [`FrameCount`].
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum FrameCountError {
+    /// Frame count must be strictly positive.
+    Zero,
+}
+
+impl fmt::Display for FrameCountError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Zero => write!(f, "frame count must be strictly positive"),
+        }
+    }
+}
+
+impl core::error::Error for FrameCountError {}
+
 impl FrameCount {
     /// Creates a frame count if `count` is non-zero.
-    #[must_use]
-    pub const fn new(count: u32) -> Option<Self> {
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(FrameCountError::Zero)` if `count` is zero.
+    pub const fn new(count: u32) -> Result<Self, FrameCountError> {
         match NonZeroU32::new(count) {
-            Some(nz) => Some(Self(nz)),
-            None => None,
+            Some(nz) => Ok(Self(nz)),
+            None => Err(FrameCountError::Zero),
         }
     }
 
@@ -82,13 +102,33 @@ impl From<FrameCount> for NonZeroU32 {
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct Width(pub NonZeroU16);
 
+/// Error returned when attempting to construct a zero [`Width`].
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum WidthError {
+    /// Width must be strictly positive.
+    Zero,
+}
+
+impl fmt::Display for WidthError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Zero => write!(f, "width must be strictly positive"),
+        }
+    }
+}
+
+impl core::error::Error for WidthError {}
+
 impl Width {
     /// Creates a new width if `width` is non-zero.
-    #[must_use]
-    pub const fn new(width: u16) -> Option<Self> {
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(WidthError::Zero)` if `width` is zero.
+    pub const fn new(width: u16) -> Result<Self, WidthError> {
         match NonZeroU16::new(width) {
-            Some(nz) => Some(Self(nz)),
-            None => None,
+            Some(nz) => Ok(Self(nz)),
+            None => Err(WidthError::Zero),
         }
     }
 
@@ -121,13 +161,33 @@ impl From<Width> for NonZeroU16 {
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct Height(pub NonZeroU16);
 
+/// Error returned when attempting to construct a zero [`Height`].
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum HeightError {
+    /// Height must be strictly positive.
+    Zero,
+}
+
+impl fmt::Display for HeightError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Zero => write!(f, "height must be strictly positive"),
+        }
+    }
+}
+
+impl core::error::Error for HeightError {}
+
 impl Height {
     /// Creates a new height if `height` is non-zero.
-    #[must_use]
-    pub const fn new(height: u16) -> Option<Self> {
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(HeightError::Zero)` if `height` is zero.
+    pub const fn new(height: u16) -> Result<Self, HeightError> {
         match NonZeroU16::new(height) {
-            Some(nz) => Some(Self(nz)),
-            None => None,
+            Some(nz) => Ok(Self(nz)),
+            None => Err(HeightError::Zero),
         }
     }
 
@@ -181,42 +241,48 @@ pub struct FrameRate(Ratio);
 
 impl FrameRate {
     /// Creates a frame rate from a [`Ratio`], rejecting zero and negative values.
-    #[must_use]
-    pub const fn new(rate: Ratio) -> Option<Self> {
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(FrameRateError::NonPositive)` if the rate is zero or negative.
+    pub const fn new(rate: Ratio) -> Result<Self, FrameRateError> {
         if rate.numer() > 0 {
-            Some(Self(rate))
+            Ok(Self(rate))
         } else {
-            None
+            Err(FrameRateError::NonPositive)
         }
     }
 
     /// Creates a frame rate from a [`Ratio`], rejecting zero and negative values.
-    #[must_use]
-    pub const fn from_ratio(rate: Ratio) -> Option<Self> {
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(FrameRateError::NonPositive)` if the rate is zero or negative.
+    pub const fn from_ratio(rate: Ratio) -> Result<Self, FrameRateError> {
         Self::new(rate)
     }
 
     /// Creates an exact frame rate from an integer frames per second value.
     ///
-    /// Rejects zero.
-    #[must_use]
-    pub fn from_fps(fps: u32) -> Option<Self> {
-        let nz_fps = NonZeroU32::new(fps)?;
-        let numer = i64::from(nz_fps.get());
-        let denom = NonZeroI64::new(1)?;
-        let ratio = Ratio::new(numer, denom)?;
+    /// # Errors
+    ///
+    /// Returns `Err(FrameRateError::NonPositive)` if `fps` is zero.
+    pub fn from_fps(fps: u32) -> Result<Self, FrameRateError> {
+        let nz_fps = NonZeroU32::new(fps).ok_or(FrameRateError::NonPositive)?;
+        let ratio = Ratio::from_integer(i64::from(nz_fps.get()));
         Self::new(ratio)
     }
 
     /// Creates an exact frame rate from numerator and non-zero denominator (e.g. 30000 / 1001).
     ///
-    /// Rejects zero numerator.
-    #[must_use]
-    pub fn from_fraction(numer: u32, denom: NonZeroU32) -> Option<Self> {
+    /// # Errors
+    ///
+    /// Returns `Err(FrameRateError::NonPositive)` if the numerator is zero or negative.
+    pub fn from_fraction(numer: u32, denom: NonZeroU32) -> Result<Self, FrameRateError> {
         let n = i64::from(numer);
         let d = i64::from(denom.get());
-        let nz_d = NonZeroI64::new(d)?;
-        let ratio = Ratio::new(n, nz_d)?;
+        let nz_d = NonZeroI64::new(d).ok_or(FrameRateError::NonPositive)?;
+        let ratio = Ratio::new(n, nz_d).map_err(|_| FrameRateError::NonPositive)?;
         Self::new(ratio)
     }
 
@@ -254,7 +320,7 @@ impl TryFrom<Ratio> for FrameRate {
     type Error = FrameRateError;
 
     fn try_from(rate: Ratio) -> Result<Self, Self::Error> {
-        Self::new(rate).ok_or(FrameRateError::NonPositive)
+        Self::new(rate)
     }
 }
 
@@ -338,13 +404,13 @@ mod tests {
         assert_eq!(u32::from(fi42), 42, "frame index from / into");
 
         // FrameCount
-        assert!(FrameCount::new(0).is_none(), "frame count 0 rejected");
+        assert!(FrameCount::new(0).is_err(), "frame count 0 rejected");
         let fc = FrameCount::new(100).expect("frame count 100 accepted");
         assert_eq!(fc.get().get(), 100, "frame count get");
 
         // Width & Height & Dimensions
-        assert!(Width::new(0).is_none(), "width 0 rejected");
-        assert!(Height::new(0).is_none(), "height 0 rejected");
+        assert!(Width::new(0).is_err(), "width 0 rejected");
+        assert!(Height::new(0).is_err(), "height 0 rejected");
         let w = Width::new(1920).expect("width 1920 accepted");
         let h = Height::new(1080).expect("height 1080 accepted");
         let dims = Dimensions::new(w, h);
@@ -363,15 +429,12 @@ mod tests {
 
         // FrameRate
         let d1 = NonZeroI64::new(1).unwrap();
-        let zero_ratio = Ratio::new(0, d1).unwrap();
-        let neg_ratio = Ratio::new(-24, d1).unwrap();
+        let zero_ratio = Ratio::new(0, d1).ok().unwrap();
+        let neg_ratio = Ratio::new(-24, d1).ok().unwrap();
 
-        assert!(FrameRate::new(zero_ratio).is_none(), "rate 0 rejected");
-        assert!(
-            FrameRate::new(neg_ratio).is_none(),
-            "negative rate rejected"
-        );
-        assert!(FrameRate::from_fps(0).is_none(), "fps 0 rejected");
+        assert!(FrameRate::new(zero_ratio).is_err(), "rate 0 rejected");
+        assert!(FrameRate::new(neg_ratio).is_err(), "negative rate rejected");
+        assert!(FrameRate::from_fps(0).is_err(), "fps 0 rejected");
 
         // Integer rate 24 fps
         let fps24 = FrameRate::from_fps(24).expect("fps 24 accepted");
@@ -386,7 +449,7 @@ mod tests {
 
         // Check TryFrom
         let d2 = NonZeroI64::new(2).unwrap();
-        let pos_ratio = Ratio::new(60, d2).unwrap();
+        let pos_ratio = Ratio::new(60, d2).ok().unwrap();
         let try_res = FrameRate::try_from(pos_ratio);
         assert!(try_res.is_ok(), "TryFrom positive ratio succeeds");
         let err_res = FrameRate::try_from(neg_ratio);

@@ -8,8 +8,48 @@
 //! quietly. A drawing function returning `()` cannot be asked what it did;
 //! these can.
 
+use core::fmt;
+
 use crate::geom::Point;
-use crate::ratio::{half_ratio, int_ratio, Ratio};
+use crate::ratio::{half_ratio, int_ratio, Overflow, Ratio};
+
+/// Error returned when attempting to construct an invalid [`Bounds`].
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum BoundsError {
+    /// Bounds must have maximum coordinates at or after minimum coordinates.
+    Inverted,
+}
+
+impl fmt::Display for BoundsError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Inverted => {
+                write!(
+                    f,
+                    "maximum coordinates must be at or after minimum coordinates"
+                )
+            }
+        }
+    }
+}
+
+impl core::error::Error for BoundsError {}
+
+/// A bounding box or an indication that nothing was drawn.
+///
+/// An empty result and an arithmetic failure are different outcomes and must
+/// not share a representation. A shape with invalid parameters (non-positive
+/// radius, non-positive thickness, inverted box, fewer than three vertices)
+/// draws nothing and that is the correct answer. An extent that overflows exact
+/// arithmetic is a failure the caller must hear about. Collapsing both into
+/// `None` is what let an overflow be silently rendered as a missing shape.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum BoundsOrEmpty {
+    /// Nothing is drawn; this is the correct outcome.
+    Empty,
+    /// The bounding box that was computed.
+    Covering(Bounds),
+}
 
 /// An exact rational bounding box.
 ///
@@ -34,17 +74,23 @@ pub struct Bounds {
 impl Bounds {
     /// Creates a bounding box, rejecting an empty one.
     ///
-    /// Returns `None` when `max_x` lies strictly below `min_x` or `max_y`
-    /// lies strictly below `min_y`.
-    #[must_use]
-    pub fn new(min_x: Ratio, min_y: Ratio, max_x: Ratio, max_y: Ratio) -> Option<Self> {
+    /// # Errors
+    ///
+    /// Returns `Err(BoundsError::Inverted)` when `max_x` lies strictly below `min_x`
+    /// or `max_y` lies strictly below `min_y`.
+    pub fn new(
+        min_x: Ratio,
+        min_y: Ratio,
+        max_x: Ratio,
+        max_y: Ratio,
+    ) -> Result<Self, BoundsError> {
         if max_x < min_x {
-            return None;
+            return Err(BoundsError::Inverted);
         }
         if max_y < min_y {
-            return None;
+            return Err(BoundsError::Inverted);
         }
-        Some(Self {
+        Ok(Self {
             min_x,
             min_y,
             max_x,
@@ -54,11 +100,11 @@ impl Bounds {
 
     /// Returns the overlap of two boxes.
     ///
-    /// Returns `None` when the boxes are disjoint. Touching at an edge or a
-    /// corner still overlaps: the result is the degenerate box along that
-    /// edge or point.
-    #[must_use]
-    pub fn intersect(self, other: Self) -> Option<Self> {
+    /// # Errors
+    ///
+    /// Returns `Err(BoundsError::Inverted)` when the boxes are disjoint. Touching at an edge
+    /// or a corner still overlaps: the result is the degenerate box along that edge or point.
+    pub fn intersect(self, other: Self) -> Result<Self, BoundsError> {
         let min_x = if self.min_x < other.min_x {
             other.min_x
         } else {
@@ -84,16 +130,18 @@ impl Bounds {
 
     /// Returns the geometric area of the box.
     ///
-    /// Computes `(max_x - min_x) * (max_y - min_y)` exactly. Returns `None`
-    /// when either side is inverted or when any intermediate or final value
-    /// overflows.
-    #[must_use]
-    pub fn area(self) -> Option<Ratio> {
+    /// Computes `(max_x - min_x) * (max_y - min_y)` exactly.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(Overflow)` when any intermediate or final value overflows.
+    /// An inverted box is treated as empty and returns `Ok(Ratio::zero())`.
+    pub fn area(self) -> Result<Ratio, Overflow> {
         if self.max_x < self.min_x {
-            return None;
+            return Ok(int_ratio(0));
         }
         if self.max_y < self.min_y {
-            return None;
+            return Ok(int_ratio(0));
         }
         let width = self.max_x.checked_sub(self.min_x)?;
         let height = self.max_y.checked_sub(self.min_y)?;
@@ -104,33 +152,40 @@ impl Bounds {
 /// Returns the box covered by [`fill_disc`](super::fill_disc).
 ///
 /// The disc is `{ p : |p - centre|^2 <= radius^2 }`, whose tight box is
-/// `[centre - radius, centre + radius]` on each axis. Returns `None` for a
-/// non-positive radius, which draws nothing, or on overflow.
-#[must_use]
-pub fn disc_extent(centre: Point, radius: Ratio) -> Option<Bounds> {
+/// `[centre - radius, centre + radius]` on each axis.
+///
+/// # Errors
+///
+/// Returns `Err(Overflow)` only when the conversion overflows exact arithmetic.
+/// A non-positive radius yields [`BoundsOrEmpty::Empty`].
+pub fn disc_extent(centre: Point, radius: Ratio) -> Result<BoundsOrEmpty, Overflow> {
     if radius <= int_ratio(0) {
-        return None;
+        return Ok(BoundsOrEmpty::Empty);
     }
     let min_x = centre.x.checked_sub(radius)?;
     let max_x = centre.x.checked_add(radius)?;
     let min_y = centre.y.checked_sub(radius)?;
     let max_y = centre.y.checked_add(radius)?;
-    Bounds::new(min_x, min_y, max_x, max_y)
+    Ok(Bounds::new(min_x, min_y, max_x, max_y)
+        .map_or(BoundsOrEmpty::Empty, BoundsOrEmpty::Covering))
 }
 
 /// Returns the box covered by [`fill_polygon`](super::fill_polygon).
 ///
 /// The box is the minimum and maximum vertex coordinates on each axis, which
 /// is tight for the inclusive edge rule: every covered centre lies on an
-/// edge or strictly inside, hence within the vertex ranges. Returns `None`
-/// for fewer than three vertices, which draws nothing.
-#[must_use]
-pub fn polygon_extent(vertices: &[Point]) -> Option<Bounds> {
+/// edge or strictly inside, hence within the vertex ranges.
+///
+/// # Errors
+///
+/// Returns `Err(Overflow)` only when the conversion overflows exact arithmetic.
+/// Fewer than three vertices yields [`BoundsOrEmpty::Empty`].
+pub fn polygon_extent(vertices: &[Point]) -> Result<BoundsOrEmpty, Overflow> {
     if vertices.len() < 3 {
-        return None;
+        return Ok(BoundsOrEmpty::Empty);
     }
     let mut iter = vertices.iter();
-    let first = iter.next()?;
+    let first = iter.next().ok_or(Overflow)?;
     let mut min_x = first.x;
     let mut max_x = first.x;
     let mut min_y = first.y;
@@ -149,17 +204,22 @@ pub fn polygon_extent(vertices: &[Point]) -> Option<Bounds> {
             max_y = vertex.y;
         }
     }
-    Bounds::new(min_x, min_y, max_x, max_y)
+    Ok(Bounds::new(min_x, min_y, max_x, max_y)
+        .map_or(BoundsOrEmpty::Empty, BoundsOrEmpty::Covering))
 }
 
 /// Returns the box covered by [`fill_rect`](super::fill_rect).
 ///
 /// The rectangle is `{ p : min.x <= p.x <= max.x, min.y <= p.y <= max.y }`,
-/// so its own corners are already the box. Returns `None` when `max` lies
-/// strictly below `min` on either axis, which draws nothing.
-#[must_use]
-pub fn rect_extent(min: Point, max: Point) -> Option<Bounds> {
-    Bounds::new(min.x, min.y, max.x, max.y)
+/// so its own corners are already the box.
+///
+/// # Errors
+///
+/// Returns `Err(Overflow)` only when the conversion overflows exact arithmetic.
+/// When `max` lies strictly below `min` on either axis, yields [`BoundsOrEmpty::Empty`].
+pub fn rect_extent(min: Point, max: Point) -> Result<BoundsOrEmpty, Overflow> {
+    Ok(Bounds::new(min.x, min.y, max.x, max.y)
+        .map_or(BoundsOrEmpty::Empty, BoundsOrEmpty::Covering))
 }
 
 /// Returns the box covered by [`draw_line`](super::draw_line).
@@ -167,9 +227,12 @@ pub fn rect_extent(min: Point, max: Point) -> Option<Bounds> {
 /// A 1-unit-thick line is the set of points within `1 / 2` of the segment,
 /// so the box is the segment range expanded by half a unit on every side.
 /// This also covers a zero-length segment, which draws the disc of radius
-/// `1 / 2` around the point. Returns `None` only on overflow.
-#[must_use]
-pub fn line_extent(start: Point, end: Point) -> Option<Bounds> {
+/// `1 / 2` around the point.
+///
+/// # Errors
+///
+/// Returns `Err(Overflow)` when any intermediate or final value overflows.
+pub fn line_extent(start: Point, end: Point) -> Result<BoundsOrEmpty, Overflow> {
     let half = half_ratio();
     let (mut min_x, mut max_x) = if start.x < end.x {
         (start.x, end.x)
@@ -185,22 +248,30 @@ pub fn line_extent(start: Point, end: Point) -> Option<Bounds> {
     max_x = max_x.checked_add(half)?;
     min_y = min_y.checked_sub(half)?;
     max_y = max_y.checked_add(half)?;
-    Bounds::new(min_x, min_y, max_x, max_y)
+    Ok(Bounds::new(min_x, min_y, max_x, max_y)
+        .map_or(BoundsOrEmpty::Empty, BoundsOrEmpty::Covering))
 }
 
 /// Returns the box covered by [`draw_cross`](super::draw_cross).
 ///
 /// The cross is the union of its horizontal and vertical bars, so the box is
 /// `[centre - reach, centre + reach]` on each axis where `reach` is the
-/// larger of `arm` and `thickness / 2`. Returns `None` for a negative `arm`
-/// or a non-positive `thickness`, which draws nothing, or on overflow.
-#[must_use]
-pub fn cross_extent(centre: Point, arm: Ratio, thickness: Ratio) -> Option<Bounds> {
+/// larger of `arm` and `thickness / 2`.
+///
+/// # Errors
+///
+/// Returns `Err(Overflow)` only when the conversion overflows exact arithmetic.
+/// A negative `arm` or a non-positive `thickness` yields [`BoundsOrEmpty::Empty`].
+pub fn cross_extent(
+    centre: Point,
+    arm: Ratio,
+    thickness: Ratio,
+) -> Result<BoundsOrEmpty, Overflow> {
     if arm < int_ratio(0) {
-        return None;
+        return Ok(BoundsOrEmpty::Empty);
     }
     if thickness <= int_ratio(0) {
-        return None;
+        return Ok(BoundsOrEmpty::Empty);
     }
     let half = thickness.checked_div(int_ratio(2))?;
     let reach = if half < arm { arm } else { half };
@@ -208,7 +279,8 @@ pub fn cross_extent(centre: Point, arm: Ratio, thickness: Ratio) -> Option<Bound
     let max_x = centre.x.checked_add(reach)?;
     let min_y = centre.y.checked_sub(reach)?;
     let max_y = centre.y.checked_add(reach)?;
-    Bounds::new(min_x, min_y, max_x, max_y)
+    Ok(Bounds::new(min_x, min_y, max_x, max_y)
+        .map_or(BoundsOrEmpty::Empty, BoundsOrEmpty::Covering))
 }
 
 #[cfg(test)]
@@ -216,7 +288,7 @@ mod tests {
     use super::super::coverage::pixel_centre;
     use super::*;
     use crate::color::Rgb8;
-    use crate::frame::Frame;
+    use crate::frame::{Frame, PixelCoord};
     use crate::raster::{draw_cross, draw_line, fill_disc, fill_polygon, fill_rect};
     use crate::testutil::{black_8x8, make_ratio};
     use crate::units::{Dimensions, Height, Width};
@@ -235,10 +307,8 @@ mod tests {
         let mut found = Vec::new();
         for y in 0..height {
             for x in 0..width {
-                if frame.pixel(x, y) != Some(ground) {
-                    if let Some(centre) = pixel_centre(x, y) {
-                        found.push(centre);
-                    }
+                if frame.pixel(PixelCoord::new(x, y)) != Some(ground) {
+                    found.push(pixel_centre(x, y));
                 }
             }
         }
@@ -284,22 +354,18 @@ mod tests {
         assert_eq!(overlap.max_x, a_max_x, "overlap must end at 4");
         let two = make_ratio(2, 1).unwrap();
         let expected = two.checked_mul(two).unwrap();
-        assert_eq!(
-            overlap.area(),
-            Some(expected),
-            "2x2 overlap must have area 4"
-        );
+        assert_eq!(overlap.area(), Ok(expected), "2x2 overlap must have area 4");
         let sixteen = make_ratio(16, 1).unwrap();
-        assert_eq!(first.area(), Some(sixteen), "4x4 box must have area 16");
+        assert_eq!(first.area(), Ok(sixteen), "4x4 box must have area 16");
         let far_min = make_ratio(10, 1).unwrap();
         let far_max = make_ratio(12, 1).unwrap();
         let far = Bounds::new(far_min, far_min, far_max, far_max).unwrap();
         assert!(
-            first.intersect(far).is_none(),
+            first.intersect(far).is_err(),
             "disjoint boxes must not intersect"
         );
         assert!(
-            Bounds::new(a_max_x, a_min_y, a_min_x, a_max_y).is_none(),
+            Bounds::new(a_max_x, a_min_y, a_min_x, a_max_y).is_err(),
             "an inverted box must be rejected"
         );
     }
@@ -314,8 +380,12 @@ mod tests {
         let cy = make_ratio(16, 1).unwrap();
         let radius = make_ratio(5, 1).unwrap();
         let centre = Point::new(cx, cy);
-        fill_disc(&mut frame, centre, radius, paint);
-        let bounds = disc_extent(centre, radius).unwrap();
+        fill_disc(&mut frame, centre, radius, paint)
+            .expect("drawing a test fixture must not overflow");
+        let bounds = match disc_extent(centre, radius).unwrap() {
+            BoundsOrEmpty::Covering(b) => b,
+            BoundsOrEmpty::Empty => panic!("disc extent should not be empty"),
+        };
         assert_inside(bounds, &frame, ground, "disc");
         assert!(
             !painted_centres(&frame, ground).is_empty(),
@@ -323,7 +393,7 @@ mod tests {
         );
         let zero = make_ratio(0, 1).unwrap();
         assert!(
-            disc_extent(centre, zero).is_none(),
+            matches!(disc_extent(centre, zero).unwrap(), BoundsOrEmpty::Empty),
             "a zero radius must have no extent"
         );
     }
@@ -343,8 +413,11 @@ mod tests {
             Point::new(sixteen, twenty),
         ];
         let slice = &vertices[0..3];
-        fill_polygon(&mut frame, slice, paint);
-        let bounds = polygon_extent(slice).unwrap();
+        fill_polygon(&mut frame, slice, paint).expect("drawing a test fixture must not overflow");
+        let bounds = match polygon_extent(slice).unwrap() {
+            BoundsOrEmpty::Covering(b) => b,
+            BoundsOrEmpty::Empty => panic!("polygon extent should not be empty"),
+        };
         assert_inside(bounds, &frame, ground, "polygon");
         assert!(
             !painted_centres(&frame, ground).is_empty(),
@@ -352,7 +425,7 @@ mod tests {
         );
         let pair = &vertices[0..2];
         assert!(
-            polygon_extent(pair).is_none(),
+            matches!(polygon_extent(pair).unwrap(), BoundsOrEmpty::Empty),
             "two vertices must have no extent"
         );
     }
@@ -367,11 +440,15 @@ mod tests {
         let twenty = make_ratio(20, 1).unwrap();
         let lower = Point::new(ten, ten);
         let upper = Point::new(twenty, twenty);
-        fill_rect(&mut frame, lower, upper, paint);
-        let bounds = rect_extent(lower, upper).unwrap();
+        fill_rect(&mut frame, lower, upper, paint)
+            .expect("drawing a test fixture must not overflow");
+        let bounds = match rect_extent(lower, upper).unwrap() {
+            BoundsOrEmpty::Covering(b) => b,
+            BoundsOrEmpty::Empty => panic!("rect extent should not be empty"),
+        };
         assert_inside(bounds, &frame, ground, "rect");
         assert!(
-            rect_extent(upper, lower).is_none(),
+            matches!(rect_extent(upper, lower).unwrap(), BoundsOrEmpty::Empty),
             "an inverted rectangle must have no extent"
         );
     }
@@ -387,8 +464,11 @@ mod tests {
         let sixteen = make_ratio(16, 1).unwrap();
         let start = Point::new(ten, sixteen);
         let end = Point::new(twenty_two, sixteen);
-        draw_line(&mut frame, start, end, paint);
-        let bounds = line_extent(start, end).unwrap();
+        draw_line(&mut frame, start, end, paint).expect("drawing a test fixture must not overflow");
+        let bounds = match line_extent(start, end).unwrap() {
+            BoundsOrEmpty::Covering(b) => b,
+            BoundsOrEmpty::Empty => panic!("line extent should not be empty"),
+        };
         assert_inside(bounds, &frame, ground, "line");
         assert!(
             !painted_centres(&frame, ground).is_empty(),
@@ -406,8 +486,12 @@ mod tests {
         let arm = make_ratio(6, 1).unwrap();
         let thick = make_ratio(2, 1).unwrap();
         let centre = Point::new(sixteen, sixteen);
-        draw_cross(&mut frame, centre, arm, thick, paint);
-        let bounds = cross_extent(centre, arm, thick).unwrap();
+        draw_cross(&mut frame, centre, arm, thick, paint)
+            .expect("drawing a test fixture must not overflow");
+        let bounds = match cross_extent(centre, arm, thick).unwrap() {
+            BoundsOrEmpty::Covering(b) => b,
+            BoundsOrEmpty::Empty => panic!("cross extent should not be empty"),
+        };
         assert_inside(bounds, &frame, ground, "cross");
         assert!(
             !painted_centres(&frame, ground).is_empty(),
@@ -415,7 +499,10 @@ mod tests {
         );
         let neg = make_ratio(-1, 1).unwrap();
         assert!(
-            cross_extent(centre, neg, thick).is_none(),
+            matches!(
+                cross_extent(centre, neg, thick).unwrap(),
+                BoundsOrEmpty::Empty
+            ),
             "a negative arm must have no extent"
         );
     }
@@ -428,14 +515,15 @@ mod tests {
         let ten = make_ratio(10, 1).unwrap();
         let four = make_ratio(4, 1).unwrap();
         let three = make_ratio(3, 1).unwrap();
-        fill_disc(&mut frame, Point::new(four, four), ten, paint);
+        fill_disc(&mut frame, Point::new(four, four), ten, paint)
+            .expect("drawing a test fixture must not overflow");
         assert_eq!(
-            frame.pixel(0, 0),
+            frame.pixel(PixelCoord::new(0, 0)),
             Some(paint),
             "a huge disc must cover the corner pixel"
         );
         assert_eq!(
-            frame.pixel(7, 7),
+            frame.pixel(PixelCoord::new(7, 7)),
             Some(paint),
             "a huge disc must cover the far corner pixel"
         );
@@ -446,9 +534,9 @@ mod tests {
             Point::new(neg_two, ten),
         ];
         let huge = &corners[0..4];
-        fill_polygon(&mut frame, huge, paint);
+        fill_polygon(&mut frame, huge, paint).expect("drawing a test fixture must not overflow");
         assert_eq!(
-            frame.pixel(7, 7),
+            frame.pixel(PixelCoord::new(7, 7)),
             Some(paint),
             "a huge polygon must cover the far corner pixel"
         );
@@ -457,20 +545,22 @@ mod tests {
             Point::new(neg_two, neg_two),
             Point::new(ten, ten),
             paint,
-        );
+        )
+        .expect("drawing a test fixture must not overflow");
         assert_eq!(
-            frame.pixel(4, 4),
+            frame.pixel(PixelCoord::new(4, 4)),
             Some(paint),
             "a straddling line must cover the centre pixel"
         );
-        draw_cross(&mut frame, Point::new(four, four), ten, three, paint);
+        draw_cross(&mut frame, Point::new(four, four), ten, three, paint)
+            .expect("drawing a test fixture must not overflow");
         assert_eq!(
-            frame.pixel(4, 0),
+            frame.pixel(PixelCoord::new(4, 0)),
             Some(paint),
             "a straddling cross must cover the top-middle pixel"
         );
         assert_eq!(
-            frame.pixel(0, 0),
+            frame.pixel(PixelCoord::new(0, 0)),
             Some(paint),
             "a straddling cross must cover the corner through the disc"
         );

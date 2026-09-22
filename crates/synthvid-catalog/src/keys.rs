@@ -7,7 +7,7 @@
 //! panic in a library crate. There is nothing left to check, because there is
 //! nothing else a caller can pass.
 
-use crate::writer::JsonKey;
+use crate::json_names::JsonKey;
 
 /// A key in a manifest document.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
@@ -184,7 +184,7 @@ mod tests {
         for k in ManifestKey::ALL {
             let s = k.as_str();
             assert!(
-                JsonKey::new(s).is_some(),
+                JsonKey::new(s).is_ok(),
                 "manifest key {s:?} does not match the key alphabet"
             );
             assert_eq!(

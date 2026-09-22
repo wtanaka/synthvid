@@ -14,6 +14,9 @@ use std::collections::BTreeMap;
 
 use synthvid_scene::Ratio;
 
+// Re-export JSON name validation types for public API compatibility
+pub use crate::json_names::{JsonEntryName, JsonKey};
+
 /// Represents a value stored in a JSON object or array.
 ///
 /// By storing objects and arrays directly instead of as pre-serialized strings,
@@ -28,67 +31,6 @@ enum JsonValue {
     Object(JsonObject),
     /// A JSON array that will be serialized inline.
     Array(JsonArray),
-}
-/// A validated string that matches `[a-z_]+` for use as a JSON object key.
-///
-/// The constructor ensures only lowercase letters and underscores are present,
-/// making all output valid ASCII. Escape sequences cannot be written.
-#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
-pub struct JsonKey(String);
-
-impl JsonKey {
-    /// Creates a validated key matching `[a-z_]+`.
-    ///
-    /// Returns `None` if any character is outside the allowed set.
-    #[must_use]
-    pub fn new(s: impl AsRef<str>) -> Option<Self> {
-        let s = s.as_ref();
-        (!s.is_empty() && s.bytes().all(|b| b.is_ascii_lowercase() || b == b'_'))
-            .then(|| Self(s.to_owned()))
-    }
-
-    /// Builds a key from text already known to match the alphabet.
-    ///
-    /// Crate-private, and reachable only through the closed set in `keys`.
-    /// A public infallible constructor would be the same hole as a public
-    /// raw-value setter: it would let a caller assert validity the type is
-    /// supposed to establish.
-    pub(crate) fn from_known(s: &'static str) -> Self {
-        Self(s.to_owned())
-    }
-
-    /// Returns the validated key as a string slice.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-/// A validated string that matches `[a-z0-9-]+` for use as a catalog entry name.
-///
-/// The constructor ensures only lowercase letters, digits, and hyphens are
-/// present, making all output valid ASCII. Escape sequences cannot be written.
-#[derive(Clone, Debug, Eq, PartialEq, Hash)]
-pub struct JsonEntryName(String);
-
-impl JsonEntryName {
-    /// Creates a validated entry name matching `[a-z0-9-]+`.
-    ///
-    /// Returns `None` if any character is outside the allowed set.
-    #[must_use]
-    pub fn new(s: impl AsRef<str>) -> Option<Self> {
-        let s = s.as_ref();
-        (!s.is_empty()
-            && s.bytes()
-                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-'))
-        .then(|| Self(s.to_owned()))
-    }
-
-    /// Returns the validated entry name as a string slice.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
 }
 /// A builder for canonical JSON objects.
 ///
@@ -312,49 +254,12 @@ mod tests {
 
     /// Builds an exact rational for a test fixture.
     fn make_ratio(n: i64, d: i64) -> Ratio {
-        Ratio::new(n, NonZeroI64::new(d).unwrap()).unwrap()
+        Ratio::new(n, NonZeroI64::new(d).unwrap()).ok().unwrap()
     }
     use super::*;
 
     fn make_key(s: &str) -> JsonKey {
         JsonKey::new(s).expect("test key must be valid")
-    }
-
-    fn make_entry_name(s: &str) -> JsonEntryName {
-        JsonEntryName::new(s).expect("test entry name must be valid")
-    }
-
-    #[test]
-    fn test_json_key_valid() {
-        assert_eq!(make_key("background").as_str(), "background");
-        assert_eq!(make_key("frame_count").as_str(), "frame_count");
-        assert_eq!(make_key("a").as_str(), "a");
-        assert_eq!(make_key("_").as_str(), "_");
-    }
-
-    #[test]
-    fn test_json_key_invalid() {
-        assert!(JsonKey::new("Background").is_none(), "uppercase rejected");
-        assert!(JsonKey::new("frame-count").is_none(), "hyphen rejected");
-        assert!(JsonKey::new("").is_none(), "empty rejected");
-        assert!(JsonKey::new("123").is_none(), "digit in key rejected");
-    }
-
-    #[test]
-    fn test_json_entry_name_valid() {
-        assert_eq!(make_entry_name("example").as_str(), "example");
-        assert_eq!(make_entry_name("test-1").as_str(), "test-1");
-        assert_eq!(make_entry_name("a0").as_str(), "a0");
-    }
-
-    #[test]
-    fn test_json_entry_name_invalid() {
-        assert!(JsonEntryName::new("Test").is_none(), "uppercase rejected");
-        assert!(
-            JsonEntryName::new("test_name").is_none(),
-            "underscore rejected"
-        );
-        assert!(JsonEntryName::new("").is_none(), "empty rejected");
     }
 
     #[test]

@@ -63,6 +63,11 @@ pub enum RenderError {
         /// Frame whose camera placement overflowed exact arithmetic.
         frame: FrameIndex,
     },
+    /// The background for that frame could not be drawn in exact arithmetic.
+    BackgroundOverflow {
+        /// Frame whose background extent overflowed exact arithmetic.
+        frame: FrameIndex,
+    },
     /// That object's placement for that frame could not be evaluated exactly.
     ObjectOverflow {
         /// Frame whose object placement overflowed exact arithmetic.
@@ -83,6 +88,10 @@ impl fmt::Display for RenderError {
             Self::CameraOverflow { frame } => write!(
                 f,
                 "camera placement for frame {frame:?} overflows exact arithmetic"
+            ),
+            Self::BackgroundOverflow { frame } => write!(
+                f,
+                "background for frame {frame:?} overflows exact arithmetic"
             ),
             Self::ObjectOverflow { frame, object } => write!(
                 f,
@@ -123,58 +132,58 @@ struct CameraFrame {
 /// overflows exact arithmetic.
 fn camera_frame(camera: &Camera, frame: FrameIndex) -> Result<CameraFrame, RenderError> {
     let overflow = || RenderError::CameraOverflow { frame };
-    let centre = position_at(&camera.motion, frame);
-    let Some(angle) = rotation_at(&camera.rotation, frame) else {
-        return Err(overflow());
-    };
-    let Some(magnification) = zoom_at(&camera.zoom, frame) else {
-        return Err(overflow());
-    };
+    let centre = position_at(&camera.motion, frame).map_err(|_| overflow())?;
+    let angle = rotation_at(&camera.rotation, frame).map_err(|_| overflow())?;
+    let magnification = zoom_at(&camera.zoom, frame).map_err(|_| overflow())?;
     let zoom = magnification.get();
     let angle_value = angle.get();
-    let Some(turn) = angle_value.checked_neg() else {
+    let Ok(turn) = angle_value.checked_neg() else {
         return Err(overflow());
     };
-    let cos = cos_turns(turn);
-    let sin = sin_turns(turn);
-    let Some(neg_sin) = sin.checked_neg() else {
+    let Ok(cos) = cos_turns(turn) else {
         return Err(overflow());
     };
-    let Some(a) = zoom.checked_mul(cos) else {
+    let Ok(sin) = sin_turns(turn) else {
         return Err(overflow());
     };
-    let Some(b) = zoom.checked_mul(neg_sin) else {
+    let Ok(neg_sin) = sin.checked_neg() else {
         return Err(overflow());
     };
-    let Some(c) = zoom.checked_mul(sin) else {
+    let Ok(a) = zoom.checked_mul(cos) else {
         return Err(overflow());
     };
-    let Some(ax) = a.checked_mul(centre.x) else {
+    let Ok(b) = zoom.checked_mul(neg_sin) else {
         return Err(overflow());
     };
-    let Some(bx) = b.checked_mul(centre.y) else {
+    let Ok(c) = zoom.checked_mul(sin) else {
         return Err(overflow());
     };
-    let Some(sum_x) = ax.checked_add(bx) else {
+    let Ok(ax) = a.checked_mul(centre.x) else {
         return Err(overflow());
     };
-    let Some(tx) = sum_x.checked_neg() else {
+    let Ok(bx) = b.checked_mul(centre.y) else {
         return Err(overflow());
     };
-    let Some(cx) = c.checked_mul(centre.x) else {
+    let Ok(sum_x) = ax.checked_add(bx) else {
         return Err(overflow());
     };
-    let Some(dx) = a.checked_mul(centre.y) else {
+    let Ok(tx) = sum_x.checked_neg() else {
         return Err(overflow());
     };
-    let Some(sum_y) = cx.checked_add(dx) else {
+    let Ok(cx) = c.checked_mul(centre.x) else {
         return Err(overflow());
     };
-    let Some(ty) = sum_y.checked_neg() else {
+    let Ok(dx) = a.checked_mul(centre.y) else {
+        return Err(overflow());
+    };
+    let Ok(sum_y) = cx.checked_add(dx) else {
+        return Err(overflow());
+    };
+    let Ok(ty) = sum_y.checked_neg() else {
         return Err(overflow());
     };
     let candidate = Similarity::new(a, b, tx, ty);
-    if candidate.to_affine().is_none() {
+    if candidate.to_affine().is_err() {
         return Err(overflow());
     }
     Ok(CameraFrame {
@@ -196,9 +205,7 @@ fn camera_frame(camera: &Camera, frame: FrameIndex) -> Result<CameraFrame, Rende
 /// [`RenderError::CameraOverflow`] and [`RenderError::ObjectOverflow`] from
 /// [`render_into`].
 pub fn render_frame(scene: &Scene, frame: FrameIndex) -> Result<Frame, RenderError> {
-    let Some(mut fresh) = Frame::zeroed(scene.dimensions) else {
-        return Err(RenderError::BufferTooLarge);
-    };
+    let mut fresh = Frame::zeroed(scene.dimensions).map_err(|_| RenderError::BufferTooLarge)?;
     render_into(scene, frame, &mut fresh)?;
     Ok(fresh)
 }
@@ -224,7 +231,8 @@ pub fn render_into(scene: &Scene, frame: FrameIndex, out: &mut Frame) -> Result<
             actual: out.dimensions(),
         });
     }
-    paint_background(out, scene.background);
+    paint_background(out, scene.background)
+        .map_err(|_| RenderError::BackgroundOverflow { frame })?;
     let camera = camera_frame(&scene.camera, frame)?;
     for (index, object) in scene.objects.iter().enumerate() {
         if object.visible.contains(frame) {
@@ -235,7 +243,11 @@ pub fn render_into(scene: &Scene, frame: FrameIndex, out: &mut Frame) -> Result<
                 });
             };
             let object_index = ObjectIndex::new(index_u32);
-            let at = position_at(&object.motion, frame);
+            let at =
+                position_at(&object.motion, frame).map_err(|_| RenderError::ObjectOverflow {
+                    frame,
+                    object: object_index,
+                })?;
             draw_object(
                 out,
                 &object.shape,
@@ -255,6 +267,7 @@ mod tests {
     use super::*;
     use crate::camera::{Magnification, Rotation, Turns, Zoom};
     use crate::color::Rgb8;
+    use crate::frame::PixelCoord;
     use crate::geom::Point;
     use crate::scene::{Background, FrameSpan, Motion, Object, Shape};
     use crate::testutil::make_ratio;
@@ -298,9 +311,9 @@ mod tests {
 
     /// Builds a disc object fixed at integer `(x, y)` with the given radius.
     fn fixed_disc(x: i64, y: i64, radius: i64, fill: Rgb8, span: FrameSpan) -> Object {
-        let px = Ratio::from_integer(x).unwrap();
-        let py = Ratio::from_integer(y).unwrap();
-        let radius_ratio = Ratio::from_integer(radius).unwrap();
+        let px = Ratio::from_integer(x);
+        let py = Ratio::from_integer(y);
+        let radius_ratio = Ratio::from_integer(radius);
         Object::new(
             Shape::Disc {
                 radius: radius_ratio,
@@ -410,12 +423,12 @@ mod tests {
         let first = render_frame(&first_wins, FrameIndex::new(0)).unwrap();
         let second = render_frame(&second_wins, FrameIndex::new(0)).unwrap();
         assert_eq!(
-            first.pixel(4, 4),
+            first.pixel(PixelCoord::new(4, 4)),
             Some(red),
             "the later declaration must win the shared pixel"
         );
         assert_eq!(
-            second.pixel(4, 4),
+            second.pixel(PixelCoord::new(4, 4)),
             Some(blue),
             "swapping the order must swap the winning colour"
         );
@@ -522,12 +535,12 @@ mod tests {
         let scene = small_scene(Background::Solid(black), vec![object]);
         let frame = render_frame(&scene, FrameIndex::new(0)).unwrap();
         assert_eq!(
-            frame.pixel(2, 2),
+            frame.pixel(PixelCoord::new(2, 2)),
             Some(red),
             "a disc at (2.5, 2.5) must cover pixel (2, 2)"
         );
         assert_eq!(
-            frame.pixel(0, 0),
+            frame.pixel(PixelCoord::new(0, 0)),
             Some(black),
             "a disc at (2.5, 2.5) must not reach pixel (0, 0)"
         );
@@ -570,12 +583,12 @@ mod tests {
         );
         let frame = render_frame(&scene, FrameIndex::new(0)).unwrap();
         assert_eq!(
-            frame.pixel(0, 2),
+            frame.pixel(PixelCoord::new(0, 2)),
             Some(red),
             "moving the camera by (2, 0) must shift the disc left by two pixels"
         );
         assert_eq!(
-            frame.pixel(2, 2),
+            frame.pixel(PixelCoord::new(2, 2)),
             Some(black),
             "the disc must vacate the pixel it covered before the shift"
         );
