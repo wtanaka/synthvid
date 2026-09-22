@@ -19,6 +19,7 @@ for check in \
     check-lints-intact.sh \
     check-no-external-deps.sh \
     check-forbidden-tokens.sh \
+    check-budgets-ratchet.sh \
     check-suppressions.sh \
     check-test-hygiene.sh \
     check-type-safety.sh \

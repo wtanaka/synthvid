@@ -10,6 +10,7 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
+  BUDGET_BASE: origin/main
 
 # Every cargo invocation below builds --release and --locked. --release:
 # this workspace's own type-safety rules (checked arithmetic everywhere, no
@@ -36,7 +37,12 @@ jobs:
             runner: ubuntu-24.04-arm
 
     steps:
+      # fetch-depth: 0 pulls full history for every branch, so origin/main
+      # (the base check-budgets-ratchet.sh diffs against) is resolvable even
+      # when this run is building a different branch or a pull request.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Install the toolchain
         run: |
