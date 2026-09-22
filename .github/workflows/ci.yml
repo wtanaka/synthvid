@@ -10,6 +10,7 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
+  BUDGET_BASE: origin/main
 
 jobs:
   # Both architectures run the identical job. Cross-architecture reproducibility
@@ -30,7 +31,12 @@ jobs:
 
     steps:
       # Consider pinning these to a commit SHA once the repository is settled.
+      # fetch-depth: 0 pulls full history for every branch, so origin/main
+      # (the base check-budgets-ratchet.sh diffs against) is resolvable even
+      # when this run is building a different branch or a pull request.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Install the toolchain
         run: |
