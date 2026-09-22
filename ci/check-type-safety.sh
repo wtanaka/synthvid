@@ -134,6 +134,69 @@ if [ "$fallback_count" -gt "$fallback_budget" ]; then
     status=1
 fi
 
+# An arithmetic suppression must point at a proof the compiler checks.
+#
+# `#[expect(clippy::arithmetic_side_effects, reason = "...")]` is the
+# only way left to write arithmetic that is total by construction,
+# because the lint is syntactic and no amount of widening satisfies
+# it. That makes the reason string load-bearing, and a prose reason is
+# exactly the thing that reads as convincing while being subtly wrong
+# on a target nobody built for.
+#
+# So the reason may not stand alone. It must name at least one
+# constant that exists in the same file, and that constant must carry
+# the bound:
+#
+#     const _MAX_PIXEL_INDEX: u32 = 65_535 * 65_535 + 65_535;
+#
+# Arithmetic that overflows in a `const` is a compile error, evaluated
+# for the target actually being built. So the constant is checked by
+# the compiler, and this rule only has to check that the suppression
+# points at one. If the bound is ever falsified the crate stops
+# building rather than addressing the wrong byte.
+#
+# Held at zero. A suppression whose reason names no constant, or names
+# one that does not exist, is refused.
+unproved=""
+for d in $pure; do
+    found=$(find "$d" -name '*.rs' -type f | sort | while read -r f; do
+        awk -v f="$f" '
+            FNR == NR {
+                if ($0 ~ /^[[:space:]]*const _[A-Z0-9_]+/) {
+                    line = $0
+                    sub(/^[[:space:]]*const /, "", line)
+                    sub(/[^A-Za-z0-9_].*$/, "", line)
+                    declared[line] = 1
+                }
+                next
+            }
+            /#\[expect\(/ { inblock = 1; blk = ""; start = FNR }
+            inblock { blk = blk " " $0 }
+            inblock && /\)\]/ {
+                inblock = 0
+                if (blk ~ /arithmetic_side_effects/) {
+                    ok = 0
+                    tmp = blk
+                    while (match(tmp, /_[A-Z][A-Z0-9_]+/)) {
+                        name = substr(tmp, RSTART, RLENGTH)
+                        if (name in declared) { ok = 1 }
+                        tmp = substr(tmp, RSTART + RLENGTH)
+                    }
+                    if (ok == 0) { print f ":" start ": arithmetic suppression names no constant declared in this file" }
+                }
+            }
+        ' "$f" "$f"
+    done)
+    unproved="$unproved$found"
+done
+if [ -n "$unproved" ]; then
+    echo "check-type-safety: an arithmetic suppression is not backed by a compile-time proof" >&2
+    printf '%s\n' "$unproved" | sed 's/^/  /' >&2
+    echo "  Add a const whose arithmetic overflows if the bound is false, and" >&2
+    echo "  name it in the reason. A prose reason alone is not accepted." >&2
+    status=1
+fi
+
 # An arithmetic failure renamed as something else.
 #
 # The arithmetic lint forces `checked_*`, which yields an `Option` the
