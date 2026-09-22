@@ -97,11 +97,40 @@ if [ -n "$strs" ]; then
     status=1
 fi
 
+# Aborting and substituting are different defects and are counted apart.
+# `unwrap`/`expect`/`panic` stop the process, which is loud; there are none and
+# there should stay none. `unwrap_or` and friends keep going with a value
+# nobody asked for, which is silent which agents tend to use because
+# the lint table denies `arithmetic_side_effects` and the shortest
+# route from a forced `checked_*` is to discard the `None`.
 aborts=$(scan '\b(assert|assert_eq|assert_ne|panic|unreachable|todo|unimplemented)![[:space:]]*\(|\.(unwrap|expect)[[:space:]]*\(' || true)
 if [ -n "$aborts" ]; then
     echo "check-type-safety: a library crate can abort at runtime" >&2
     printf '%s\n' "$aborts" | sed 's/^/  /' >&2
     echo "  Make the state unrepresentable, or return an error." >&2
+    status=1
+fi
+
+fallback_budget_file="ci/silent-fallback-budget.txt"
+if [ ! -f "$fallback_budget_file" ]; then
+    echo "check-type-safety: $fallback_budget_file not found" >&2
+    exit 1
+fi
+fallback_budget=$(tr -dc '0-9' < "$fallback_budget_file")
+if [ -z "$fallback_budget" ]; then
+    echo "check-type-safety: $fallback_budget_file must contain a number" >&2
+    exit 1
+fi
+
+fallbacks=$(scan '\.(unwrap_or|unwrap_or_default|unwrap_or_else)[[:space:]]*\(' || true)
+fallback_count=$(printf '%s' "$fallbacks" | grep -c . || true)
+
+if [ "$fallback_count" -gt "$fallback_budget" ]; then
+    echo "check-type-safety: $fallback_count silent fallbacks exceeds the budget of $fallback_budget" >&2
+    printf '%s\n' "$fallbacks" | sed 's/^/  /' >&2
+    echo "  A checked_* returning None is information; discarding it to carry on" >&2
+    echo "  with a substituted value is the defect. Propagate the None, or make" >&2
+    echo "  the failure unrepresentable. Never raise this budget." >&2
     status=1
 fi
 
@@ -130,4 +159,4 @@ if [ "$status" -ne 0 ]; then
     exit 1
 fi
 
-echo "check-type-safety: ok ($count of $budget bare fields)"
+echo "check-type-safety: ok ($count of $budget bare fields, $fallback_count of $fallback_budget silent fallbacks)"
