@@ -404,6 +404,39 @@ if [ "$conflated_count" -gt "$conflated_budget" ]; then
     status=1
 fi
 
+# A failure that can be dropped without the compiler objecting.
+#
+#   pub fn -> Option<()>   `Result` is `#[must_use]`; `Option` is not. A public
+#                          function returning `Option<()>` is using it purely as
+#                          a success/failure signal, and a caller that writes
+#                          `draw(..);` discards that signal and compiles clean.
+#                          Five drawing functions were converted from `()` to
+#                          `Option<()>` and every existing caller kept compiling
+#                          with the failure dropped -- the mistake only became
+#                          visible once they returned `Result`.
+#
+#   let _ =                Discards a result explicitly. In test code the
+#                          test-hygiene guard already refuses this; library code
+#                          had six, each one a pixel write whose failure was
+#                          thrown away.
+#
+#   is_some_and,           Turns a failure into a decision. `pixel_centre(x, y)
+#   unwrap_or(true/false)  .is_some_and(|p| covers(p))` reads a `None` as "this
+#                          pixel is not covered", so an overflow painted a frame
+#                          with the shape missing rather than reporting anything.
+#
+# All three are held at zero. None of them is a judgement call: each has a
+# mechanical replacement -- return `Result`, propagate with `?`, or match the
+# failure explicitly.
+droppable=$(scan 'pub (const )?fn [^;]*-> Option<\(\)>|let _ = |\.is_some_and\(|\.unwrap_or\((true|false)\)' || true)
+if [ -n "$droppable" ]; then
+    echo "check-type-safety: a failure here can be dropped silently" >&2
+    printf '%s\n' "$droppable" | sed 's/^/  /' >&2
+    echo "  Return Result rather than Option<()>, propagate with ?, or match the" >&2
+    echo "  failure. Never let it become a default." >&2
+    status=1
+fi
+
 fields=$(scan '^[[:space:]]*pub [a-z_]+:[[:space:]]*(u8|u16|u32|u64|usize|i8|i16|i32|i64|isize|f32|f64|bool|String|&str)[[:space:]]*,?[[:space:]]*$' || true)
 count=$(printf '%s' "$fields" | grep -c . || true)
 
