@@ -13,7 +13,7 @@ use crate::color::Rgb8;
 use crate::frame::Frame;
 use crate::geom::Point;
 use crate::raster::{fill_disc, fill_polygon};
-use crate::ratio::{int_ratio, Ratio};
+use crate::ratio::{int_ratio, Overflow, Ratio};
 use crate::scene::Shape;
 use crate::units::{FrameIndex, ObjectIndex};
 
@@ -21,14 +21,18 @@ use super::{CameraFrame, RenderError};
 
 /// Returns the four corners of an axis-aligned rectangle.
 ///
-/// The corners run clockwise from the top-left `(left, top)`. Returns `None`
+/// The corners run clockwise from the top-left `(left, top)`. Returns `Err(Overflow)`
 /// on overflow; the caller reports [`RenderError::ObjectOverflow`].
-fn rect_corners(centre: Point, half_width: Ratio, half_height: Ratio) -> Option<[Point; 4]> {
+fn rect_corners(
+    centre: Point,
+    half_width: Ratio,
+    half_height: Ratio,
+) -> Result<[Point; 4], Overflow> {
     let left = centre.x.checked_sub(half_width)?;
     let right = centre.x.checked_add(half_width)?;
     let top = centre.y.checked_sub(half_height)?;
     let bottom = centre.y.checked_add(half_height)?;
-    Some([
+    Ok([
         Point::new(left, top),
         Point::new(right, top),
         Point::new(right, bottom),
@@ -52,7 +56,7 @@ fn draw_mapped_polygon(
 ) -> Result<(), RenderError> {
     let mut mapped = Vec::with_capacity(scene.len());
     for vertex in scene {
-        let Some(screen) = camera.transform.apply(*vertex) else {
+        let Ok(screen) = camera.transform.apply(*vertex) else {
             return Err(RenderError::ObjectOverflow {
                 frame: frame_index,
                 object,
@@ -60,23 +64,26 @@ fn draw_mapped_polygon(
         };
         mapped.push(screen);
     }
-    fill_polygon(frame, &mapped, colour);
+    fill_polygon(frame, &mapped, colour).map_err(|_| RenderError::ObjectOverflow {
+        frame: frame_index,
+        object,
+    })?;
     Ok(())
 }
 
 /// Shifts polygon vertices from shape space to scene space.
 ///
 /// Shape vertices are offsets from the object position, so each scene vertex
-/// is `at + vertex`. Returns `None` on overflow; the caller reports
+/// is `at + vertex`. Returns `Err(Overflow)` on overflow; the caller reports
 /// [`RenderError::ObjectOverflow`].
-fn shifted_vertices(at: Point, vertices: &[Point]) -> Option<Vec<Point>> {
+fn shifted_vertices(at: Point, vertices: &[Point]) -> Result<Vec<Point>, Overflow> {
     let mut scene = Vec::with_capacity(vertices.len());
     for vertex in vertices {
         let x = at.x.checked_add(vertex.x)?;
         let y = at.y.checked_add(vertex.y)?;
         scene.push(Point::new(x, y));
     }
-    Some(scene)
+    Ok(scene)
 }
 
 /// Draws a cross shape through the camera transform.
@@ -111,16 +118,12 @@ fn draw_cross_shape(
         frame: frame_index,
         object,
     };
-    let Some(half) = thickness.checked_div(int_ratio(2)) else {
+    let Ok(half) = thickness.checked_div(int_ratio(2)) else {
         return Err(overflow());
     };
-    let Some(flat) = rect_corners(at, arm, half) else {
-        return Err(overflow());
-    };
+    let flat = rect_corners(at, arm, half).map_err(|_| overflow())?;
     draw_mapped_polygon(frame, &flat, camera, colour, frame_index, object)?;
-    let Some(tall) = rect_corners(at, half, arm) else {
-        return Err(overflow());
-    };
+    let tall = rect_corners(at, half, arm).map_err(|_| overflow())?;
     draw_mapped_polygon(frame, &tall, camera, colour, frame_index, object)?;
     Ok(())
 }
@@ -149,29 +152,25 @@ pub(super) fn draw_object(
     };
     match shape {
         Shape::Disc { radius } => {
-            let Some(centre) = camera.transform.apply(at) else {
+            let Ok(centre) = camera.transform.apply(at) else {
                 return Err(overflow());
             };
-            let Some(scaled) = radius.checked_mul(camera.zoom) else {
+            let Ok(scaled) = radius.checked_mul(camera.zoom) else {
                 return Err(overflow());
             };
-            fill_disc(frame, centre, scaled, colour);
+            fill_disc(frame, centre, scaled, colour).map_err(|_| overflow())?;
             Ok(())
         }
         Shape::Rect {
             half_width,
             half_height,
         } => {
-            let Some(corners) = rect_corners(at, *half_width, *half_height) else {
-                return Err(overflow());
-            };
+            let corners = rect_corners(at, *half_width, *half_height).map_err(|_| overflow())?;
             draw_mapped_polygon(frame, &corners, camera, colour, frame_index, object)?;
             Ok(())
         }
         Shape::Polygon { vertices } => {
-            let Some(scene) = shifted_vertices(at, vertices) else {
-                return Err(overflow());
-            };
+            let scene = shifted_vertices(at, vertices).map_err(|_| overflow())?;
             draw_mapped_polygon(frame, &scene, camera, colour, frame_index, object)?;
             Ok(())
         }
@@ -193,6 +192,7 @@ pub(super) fn draw_object(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::frame::PixelCoord;
     use crate::geom::Similarity;
     use crate::testutil::make_ratio;
     use crate::units::{Dimensions, Height, Width};
@@ -247,7 +247,7 @@ mod tests {
             let mut painted = false;
             for y in 0..8_u16 {
                 for x in 0..8_u16 {
-                    if frame.pixel(x, y) != Some(black) {
+                    if frame.pixel(PixelCoord::new(x, y)) != Some(black) {
                         painted = true;
                     }
                 }
@@ -283,7 +283,8 @@ mod tests {
         let h = Height::new(8).unwrap();
         let mut poly_frame = Frame::zeroed(Dimensions::new(w, h)).unwrap();
         poly_frame.fill(Rgb8::new(0, 0, 0));
-        fill_polygon(&mut poly_frame, &corners, red);
+        fill_polygon(&mut poly_frame, &corners, red)
+            .expect("drawing a test fixture must not overflow");
         assert_eq!(
             rect_frame.data(),
             poly_frame.data(),

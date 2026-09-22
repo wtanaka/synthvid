@@ -6,7 +6,7 @@
 
 use core::num::NonZeroI64;
 
-use crate::ratio::{int_ratio, Ratio};
+use crate::ratio::Ratio;
 use crate::units::Seed;
 
 /// A small, fully specified 64-bit counter-based pseudo-random number generator.
@@ -49,18 +49,16 @@ impl Rng {
     ///
     /// Uses rejection sampling with a power-of-two bitmask to eliminate modulo bias.
     /// Returns 0 if `bound <= 1`.
-    pub fn next_bounded(&mut self, bound: u64) -> u64 {
+    pub const fn next_bounded(&mut self, bound: u64) -> u64 {
         if bound <= 1 {
             return 0;
         }
-        let bits = 64_u32
-            .checked_sub((bound.wrapping_sub(1)).leading_zeros())
-            .unwrap_or(64);
-        let mask = if bits >= 64 {
-            u64::MAX
-        } else {
-            (1_u64.checked_shl(bits).unwrap_or(0)).wrapping_sub(1)
-        };
+        // `bound > 1` here, so `bound - 1 >= 1` and its leading-zero count is at
+        // most 63. Shifting `u64::MAX` right by that count leaves exactly the low
+        // bits needed to represent `bound - 1`, which is the rejection mask. The
+        // shift distance is never 64, so this cannot overflow and needs no
+        // fallback.
+        let mask = u64::MAX >> (bound.wrapping_sub(1)).leading_zeros();
         loop {
             let candidate = self.next_u64() & mask;
             if candidate < bound {
@@ -73,14 +71,16 @@ impl Rng {
     ///
     /// The rational is formed by sampling a 62-bit numerator and placing it over a
     /// denominator of 2^62, then reducing to lowest terms via [`Ratio::new`].
+    /// Returns `None` only if arithmetic overflows (which cannot occur for valid inputs).
     #[must_use]
-    pub fn next_ratio_unit(&mut self) -> Ratio {
+    pub fn next_ratio_unit(&mut self) -> Option<Ratio> {
         let raw = self.next_u64();
-        // Shift right by 2 to obtain 62 bits, fitting strictly within positive i64 bounds.
-        let numer = i64::try_from(raw >> 2).unwrap_or_default();
-        // 2^62 = 0x4000_0000_0000_0000 fits in positive i64.
-        let denom = NonZeroI64::new(0x4000_0000_0000_0000).unwrap_or(NonZeroI64::MIN);
-        Ratio::new(numer, denom).unwrap_or_else(|| int_ratio(0))
+        // Shift right by 2 to obtain 62 bits, which fits strictly within positive i64 bounds.
+        let numer = i64::try_from(raw >> 2).ok()?;
+        // 2^62 = 0x4000_0000_0000_0000 is a known constant that's always valid for NonZeroI64.
+        let denom = NonZeroI64::new(0x4000_0000_0000_0000)?;
+        // numer is in range [0, 2^62), denom is 2^62; Ratio::new always succeeds.
+        Ratio::new(numer, denom).ok()
     }
 }
 
@@ -92,6 +92,53 @@ impl From<Seed> for Rng {
 
 #[cfg(test)]
 mod tests {
+
+    /// The rejection mask was reformulated to drop a dead fallback. This pins
+    /// the new form to the old one across every bit width and the boundaries
+    /// either side of each, so the reformulation cannot have changed a draw.
+    #[test]
+    fn rejection_mask_matches_the_previous_formulation() {
+        fn previous(bound: u64) -> u64 {
+            let bits = 64_u32
+                .checked_sub((bound.wrapping_sub(1)).leading_zeros())
+                .expect("leading_zeros never exceeds 64");
+            if bits >= 64 {
+                u64::MAX
+            } else {
+                (1_u64 << bits).wrapping_sub(1)
+            }
+        }
+        fn current(bound: u64) -> u64 {
+            u64::MAX >> (bound.wrapping_sub(1)).leading_zeros()
+        }
+
+        let mut bounds = vec![2_u64, 3, 4, 5, 255, 256, 257, u64::MAX, u64::MAX - 1];
+        for shift in 1_u32..64 {
+            let p = 1_u64 << shift;
+            bounds.push(p);
+            bounds.push(p + 1);
+            bounds.push(p - 1);
+        }
+        for bound in bounds {
+            if bound <= 1 {
+                continue;
+            }
+            assert_eq!(previous(bound), current(bound), "mask for bound {bound}");
+        }
+    }
+
+    /// Every draw must land inside the requested bound, including at the
+    /// power-of-two boundaries where the mask changes width.
+    #[test]
+    fn next_bounded_stays_within_its_bound() {
+        let mut rng = Rng::from_seed(Seed::new(0x1234_5678_9abc_def0));
+        for bound in [2_u64, 3, 7, 8, 9, 255, 256, 1000, u64::MAX] {
+            for _ in 0..64 {
+                let drawn = rng.next_bounded(bound);
+                assert!(drawn < bound, "draw {drawn} not below bound {bound}");
+            }
+        }
+    }
     use super::*;
 
     #[test]
@@ -215,11 +262,11 @@ mod tests {
     #[test]
     fn test_rng_ratio_unit() {
         let mut rng = Rng::from_seed(Seed::new(123));
-        let one = Ratio::from_integer(1).unwrap();
-        let zero = Ratio::from_integer(0).unwrap();
+        let one = Ratio::from_integer(1);
+        let zero = Ratio::from_integer(0);
 
         for _ in 0..1000 {
-            let r = rng.next_ratio_unit();
+            let r = rng.next_ratio_unit().unwrap();
             assert!(r >= zero, "unit ratio must be non-negative");
             assert!(r < one, "unit ratio must be strictly less than 1");
             assert!(r.numer() >= 0, "unit ratio numerator must be non-negative");
@@ -234,8 +281,8 @@ mod tests {
         let mut rng_b = Rng::from_seed(Seed::new(777));
         for _ in 0..100 {
             assert_eq!(
-                rng_a.next_ratio_unit(),
-                rng_b.next_ratio_unit(),
+                rng_a.next_ratio_unit().unwrap(),
+                rng_b.next_ratio_unit().unwrap(),
                 "identical seeds must yield identical ratio unit sequence"
             );
         }

@@ -10,9 +10,11 @@
 //! architectures, so a state that cannot occur in a scene must not become
 //! expressible merely by being copied into one of these structs.
 
+use crate::json_names::{JsonEntryName, JsonKey};
 use crate::keys::ManifestKey;
 use crate::names::{BackgroundName, ShapeName};
-use crate::writer::{JsonArray, JsonEntryName, JsonKey, JsonObject};
+use crate::writer::{JsonArray, JsonObject};
+use core::fmt;
 use core::num::NonZeroI64;
 use synthvid_scene::{
     Affine, Bounds, Dimensions, FrameCount, FrameRate, FrameSpan, ObjectIndex, Ratio,
@@ -54,6 +56,23 @@ impl ManifestRatio {
     }
 }
 
+/// Error returned when attempting to construct an invalid [`OnScreen`].
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum OnScreenError {
+    /// On-screen fraction must be within [0, 1].
+    OutOfRange,
+}
+
+impl fmt::Display for OnScreenError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::OutOfRange => write!(f, "on-screen fraction must be within [0, 1]"),
+        }
+    }
+}
+
+impl core::error::Error for OnScreenError {}
+
 /// The fraction of an object's bounding box that lies inside the frame.
 ///
 /// Strictly within `[0, 1]`. It is its own type because `1` and `0` are the
@@ -66,13 +85,15 @@ pub struct OnScreen(ManifestRatio);
 impl OnScreen {
     /// Creates a visible fraction, rejecting anything outside `[0, 1]`.
     ///
-    /// Returns `None` when `value` is negative or greater than one, or when
-    /// the comparison bounds cannot be represented.
-    #[must_use]
-    pub fn new(value: Ratio) -> Option<Self> {
-        let zero = Ratio::from_integer(0)?;
-        let one = Ratio::from_integer(1)?;
-        (value >= zero && value <= one).then(|| Self(ManifestRatio::from_ratio(value)))
+    /// # Errors
+    ///
+    /// Returns `Err(OnScreenError::OutOfRange)` when `value` is negative or greater than one.
+    pub fn new(value: Ratio) -> Result<Self, OnScreenError> {
+        let zero = Ratio::from_integer(0);
+        let one = Ratio::from_integer(1);
+        (value >= zero && value <= one)
+            .then(|| Self(ManifestRatio::from_ratio(value)))
+            .ok_or(OnScreenError::OutOfRange)
     }
 
     /// Serializes as a JSON rational object.
@@ -390,7 +411,7 @@ impl Manifest {
         objects: Vec<ManifestObjectDecl>,
         frames: Vec<ManifestFrame>,
     ) -> Option<Self> {
-        let frame_count = FrameCount::new(u32::try_from(frames.len()).ok()?)?;
+        let frame_count = FrameCount::new(u32::try_from(frames.len()).ok()?).ok()?;
         Some(Self {
             header,
             frames,
@@ -467,7 +488,7 @@ mod tests {
 
     /// Builds an exact rational for a test fixture.
     fn r(n: i64, d: i64) -> Ratio {
-        Ratio::new(n, NonZeroI64::new(d).unwrap()).unwrap()
+        Ratio::new(n, NonZeroI64::new(d).unwrap()).ok().unwrap()
     }
 
     fn identity_camera() -> ManifestAffine {
@@ -621,11 +642,11 @@ mod tests {
     /// rejected rather than recorded.
     #[test]
     fn test_on_screen_rejects_values_outside_unit_interval() {
-        assert!(OnScreen::new(r(0, 1)).is_some(), "zero is on the boundary");
-        assert!(OnScreen::new(r(1, 1)).is_some(), "one is on the boundary");
-        assert!(OnScreen::new(r(1, 2)).is_some(), "a half is inside");
-        assert!(OnScreen::new(r(-1, 2)).is_none(), "negative is rejected");
-        assert!(OnScreen::new(r(3, 2)).is_none(), "above one is rejected");
+        assert!(OnScreen::new(r(0, 1)).is_ok(), "zero is on the boundary");
+        assert!(OnScreen::new(r(1, 1)).is_ok(), "one is on the boundary");
+        assert!(OnScreen::new(r(1, 2)).is_ok(), "a half is inside");
+        assert!(OnScreen::new(r(-1, 2)).is_err(), "negative is rejected");
+        assert!(OnScreen::new(r(3, 2)).is_err(), "above one is rejected");
     }
 
     /// A duplicate key cannot survive into the output.

@@ -50,22 +50,26 @@ pub mod units;
 #[cfg(test)]
 pub mod testutil;
 
-pub use crate::camera::{rotation_at, zoom_at, Camera, Magnification, Rotation, Turns, Zoom};
+pub use crate::camera::{
+    rotation_at, zoom_at, Camera, Magnification, MagnificationError, Rotation, Turns, Zoom,
+};
 pub use crate::color::{required_buffer_len, Rgb8};
-pub use crate::frame::Frame;
+pub use crate::frame::{Frame, FrameError};
 pub use crate::geom::{Affine, Point, Similarity, Vector};
 pub use crate::motion::position_at;
 pub use crate::raster::{
     cross_extent, disc_extent, draw_cross, draw_line, fill_disc, fill_polygon, fill_rect,
-    line_extent, polygon_extent, rect_extent, Bounds,
+    line_extent, polygon_extent, rect_extent, Bounds, BoundsError, BoundsOrEmpty,
 };
-pub use crate::ratio::Ratio;
+pub use crate::ratio::{Overflow, Ratio};
 pub use crate::render::{render_frame, render_into, RenderError};
 pub use crate::rng::Rng;
 pub use crate::scene::{
-    Background, Direction, FrameSpan, Motion, Object, Scale, ScaleError, Scene, Shape,
+    Background, Direction, FrameSpan, FrameSpanError, Motion, Object, Scale, ScaleError, Scene,
+    Shape,
 };
 pub use crate::trig::{cos_turns, sin_turns};
 pub use crate::units::{
-    Dimensions, FrameCount, FrameIndex, FrameRate, FrameRateError, Height, ObjectIndex, Seed, Width,
+    Dimensions, FrameCount, FrameCountError, FrameIndex, FrameRate, FrameRateError, Height,
+    HeightError, ObjectIndex, Seed, Width, WidthError,
 };
