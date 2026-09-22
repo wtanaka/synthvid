@@ -155,8 +155,68 @@ if [ "$count" -gt "$budget" ]; then
     status=1
 fi
 
+# Detect functions with adjacent parameters of the same bare primitive type.
+#
+# A function taking two or more adjacent parameters of the same
+# primitive type invites silent transposition:
+# write_sof_component(out, h_factor: u8, v_factor: u8) compiles with
+# the arguments swapped and produces a valid file with a wrong image.
+transposable_params_budget_file="ci/transposable-params-budget.txt"
+
+if [ ! -f "$transposable_params_budget_file" ]; then
+    echo "check-type-safety: $transposable_params_budget_file not found" >&2
+    exit 1
+fi
+transposable_budget=$(tr -dc '0-9' < "$transposable_params_budget_file")
+if [ -z "$transposable_budget" ]; then
+    echo "check-type-safety: $transposable_params_budget_file must contain a number" >&2
+    exit 1
+fi
+
+# Find functions with adjacent same-type parameters.
+# We search for each primitive type T in the form "name: T", appearing twice
+# adjacently within a function signature.
+#
+# To avoid shell syntax issues, we grep for each type in separate passes,
+# then combine and deduplicate the results.
+transposable=$(
+    for d in $pure; do
+        find "$d" -name '*.rs' -type f | sort | while read -r f; do
+            cut=$(grep -n '#\[cfg(test)\]' "$f" | head -1 | cut -d: -f1)
+            # Grep for each primitive type pattern separately to avoid variable expansion issues.
+            # Each pattern matches: fn ... (... : TYPE ... , ... : TYPE ...)
+            (
+                grep -n "fn.*([^)]*: u8[^)]*,[^)]*: u8" "$f" 2>/dev/null || true
+                grep -n "fn.*([^)]*: u16[^)]*,[^)]*: u16" "$f" 2>/dev/null || true
+                grep -n "fn.*([^)]*: u32[^)]*,[^)]*: u32" "$f" 2>/dev/null || true
+                grep -n "fn.*([^)]*: u64[^)]*,[^)]*: u64" "$f" 2>/dev/null || true
+                grep -n "fn.*([^)]*: usize[^)]*,[^)]*: usize" "$f" 2>/dev/null || true
+                grep -n "fn.*([^)]*: i8[^)]*,[^)]*: i8" "$f" 2>/dev/null || true
+                grep -n "fn.*([^)]*: i16[^)]*,[^)]*: i16" "$f" 2>/dev/null || true
+                grep -n "fn.*([^)]*: i32[^)]*,[^)]*: i32" "$f" 2>/dev/null || true
+                grep -n "fn.*([^)]*: i64[^)]*,[^)]*: i64" "$f" 2>/dev/null || true
+                grep -n "fn.*([^)]*: isize[^)]*,[^)]*: isize" "$f" 2>/dev/null || true
+                grep -n "fn.*([^)]*: f32[^)]*,[^)]*: f32" "$f" 2>/dev/null || true
+                grep -n "fn.*([^)]*: f64[^)]*,[^)]*: f64" "$f" 2>/dev/null || true
+                grep -n "fn.*([^)]*: bool[^)]*,[^)]*: bool" "$f" 2>/dev/null || true
+            ) | awk -F: -v c="${cut:-2147483647}" -v f="$f" \
+                '$1 + 0 < c + 0 { print f ":" $1 }'
+        done
+    done | sort -u
+)
+
+transposable_count=$(printf '%s' "$transposable" | grep -c . || true)
+
+if [ "$transposable_count" -gt "$transposable_budget" ]; then
+    echo "check-type-safety: $transposable_count functions with adjacent same-type parameters exceeds the budget of $transposable_budget" >&2
+    printf '%s\n' "$transposable" | sed 's/^/  /' >&2
+    echo "  Consider using a newtype to bundle related parameters. The budget" >&2
+    echo "  includes legitimate constructors and ratchets down over time." >&2
+    status=1
+fi
+
 if [ "$status" -ne 0 ]; then
     exit 1
 fi
 
-echo "check-type-safety: ok ($count of $budget bare fields, $fallback_count of $fallback_budget silent fallbacks)"
+echo "check-type-safety: ok ($count of $budget bare fields, $fallback_count of $fallback_budget silent fallbacks, $transposable_count of $transposable_budget transposable-param functions)"
