@@ -7,19 +7,25 @@ pub mod ac_encoding;
 pub mod avi;
 pub mod avi_helpers;
 pub mod bitstream;
+pub mod capacity;
 pub mod color;
 pub mod config;
 pub mod dct;
 pub mod huffman;
+pub mod iso;
+pub mod iso_helpers;
 pub mod jpeg;
 pub mod jpeg_markers;
 pub mod quant;
+pub mod sample_table;
 
 pub use crate::avi::{encode_avi, AviCodec, AviError};
 pub use crate::bitstream::BitCount;
+pub use crate::capacity::raw_frames_fit_classic_container;
 pub use crate::color::YCbCr;
 pub use crate::config::{ChromaSampling, Quality};
 pub use crate::huffman::Component;
+pub use crate::iso::{encode_iso, IsoCodec, IsoError, TrackMatrix};
 pub use crate::jpeg::encode_jpeg;
 
 #[cfg(test)]
