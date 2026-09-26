@@ -3,12 +3,17 @@
 # did not write it. An external tool is permitted here because this verifies
 # output; it is never used to produce output.
 #
-# Files carrying a deliberate defect are skipped: failing to decode is the
-# point of those, and which failure a given decoder produces is not something
-# this project specifies.
+# Only the entries the catalogue names `nodef` are checked. Every other entry
+# carries a deliberate defect: failing to decode is the point of those, and
+# which failure a given decoder produces is not something this project
+# specifies.
 set -eu
 
-corpus="${1:-./corpus}"
+if [ "$#" -ne 1 ]; then
+    echo "usage: check-externally-decodable.sh CORPUS_DIR" >&2
+    exit 2
+fi
+corpus="$1"
 
 if [ ! -d "$corpus" ]; then
     echo "check-externally-decodable: $corpus not found" >&2
@@ -26,7 +31,8 @@ status=0
 for f in "$corpus"/*.avi "$corpus"/*.mp4; do
     [ -e "$f" ] || continue
     case "$(basename "$f")" in
-        *defect*) continue ;;
+        *-nodef-media.*) ;;
+        *) continue ;;
     esac
     if ! ffprobe -v error -show_entries stream=width,height,nb_frames \
             -of default=noprint_wrappers=1 "$f" >/dev/null 2>&1; then

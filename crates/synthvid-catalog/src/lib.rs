@@ -8,6 +8,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod cover;
 pub mod json_names;
 pub mod keys;
 pub mod manifest;

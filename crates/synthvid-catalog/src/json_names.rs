@@ -106,6 +106,16 @@ impl JsonEntryName {
         .ok_or(JsonEntryNameError::InvalidAlphabet)
     }
 
+    /// Builds a name from text already known to match the alphabet.
+    ///
+    /// Crate-private, and reachable only through the closed set of axis-derived
+    /// name fragments. A caller who has assembled a string from known-valid
+    /// lowercase, digits, and hyphens-only fragments therefore cannot fail
+    /// validation, so there is no `Result` to unwrap and no panic path.
+    pub(crate) fn from_known(s: &str) -> Self {
+        Self(s.to_owned())
+    }
+
     /// Returns the validated entry name as a string slice.
     #[must_use]
     pub fn as_str(&self) -> &str {
