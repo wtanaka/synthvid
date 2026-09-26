@@ -11,12 +11,17 @@
 pub mod cover;
 pub mod json_names;
 pub mod keys;
+pub mod lockfile;
 pub mod manifest;
 pub mod names;
 pub mod sha256;
 pub mod writer;
 
 pub use keys::ManifestKey;
+pub use lockfile::{
+    generate_lockfile, parse_lockfile, verify, ContentLength, LockfileDifference, LockfileEntry,
+    LockfileName, LockfileNameError, ParseLockfileError,
+};
 pub use manifest::{
     FrameObjectState, Manifest, ManifestAffine, ManifestBounds, ManifestFrame, ManifestHeader,
     ManifestObjectDecl, ManifestPoint, ManifestRatio, OnScreen,
