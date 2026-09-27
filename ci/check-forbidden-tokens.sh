@@ -45,8 +45,15 @@ report "unordered collection (use BTreeMap or BTreeSet)" \
     "$(scan '\b(HashMap|HashSet|RandomState)\b' crates)"
 
 # Ambient inputs.
-report "clock or ambient input" \
-    "$(scan '\b(SystemTime|Instant|std::time|std::env|env::var)\b' crates)"
+#
+# std::env::args()/args_os() is the sole exception: a program's own argv is
+# explicit invocation input, not ambient state like an environment variable
+# or the clock, and synthvid-cli has no other way to read it. Every other
+# use of std::env (env::var, env::vars, and so on) stays banned everywhere,
+# including in synthvid-cli.
+report "clock or ambient input (std::env::args/args_os for argv is the sole exception)" \
+    "$( { scan '\b(SystemTime|Instant|std::time|env::var)\b' crates; \
+         scan '\bstd::env\b' crates | grep -vE '::args(_os)?\(' || true; } )"
 
 # Any external crate reference at all.
 report "external crate reference" \

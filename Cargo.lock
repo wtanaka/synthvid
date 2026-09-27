@@ -13,6 +13,11 @@ dependencies = [
 [[package]]
 name = "synthvid-cli"
 version = "0.1.0"
+dependencies = [
+ "synthvid-catalog",
+ "synthvid-encode",
+ "synthvid-scene",
+]
 
 [[package]]
 name = "synthvid-encode"

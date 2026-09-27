@@ -23,7 +23,7 @@ use super::{CameraFrame, RenderError};
 ///
 /// The corners run clockwise from the top-left `(left, top)`. Returns `Err(Overflow)`
 /// on overflow; the caller reports [`RenderError::ObjectOverflow`].
-fn rect_corners(
+pub(super) fn rect_corners(
     centre: Point,
     half_width: Ratio,
     half_height: Ratio,
@@ -76,7 +76,7 @@ fn draw_mapped_polygon(
 /// Shape vertices are offsets from the object position, so each scene vertex
 /// is `at + vertex`. Returns `Err(Overflow)` on overflow; the caller reports
 /// [`RenderError::ObjectOverflow`].
-fn shifted_vertices(at: Point, vertices: &[Point]) -> Result<Vec<Point>, Overflow> {
+pub(super) fn shifted_vertices(at: Point, vertices: &[Point]) -> Result<Vec<Point>, Overflow> {
     let mut scene = Vec::with_capacity(vertices.len());
     for vertex in vertices {
         let x = at.x.checked_add(vertex.x)?;

@@ -62,7 +62,7 @@ pub use crate::raster::{
     line_extent, polygon_extent, rect_extent, Bounds, BoundsError, BoundsOrEmpty,
 };
 pub use crate::ratio::{Overflow, Ratio};
-pub use crate::render::{render_frame, render_into, RenderError};
+pub use crate::render::{object_states, render_frame, render_into, ObjectState, RenderError};
 pub use crate::rng::Rng;
 pub use crate::scene::{
     Background, Direction, FrameSpan, FrameSpanError, Motion, Object, Scale, ScaleError, Scene,

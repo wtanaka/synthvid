@@ -10,5 +10,10 @@ readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
+[dependencies]
+synthvid-scene = { path = "../synthvid-scene" }
+synthvid-encode = { path = "../synthvid-encode" }
+synthvid-catalog = { path = "../synthvid-catalog" }
+
 [lints]
 workspace = true

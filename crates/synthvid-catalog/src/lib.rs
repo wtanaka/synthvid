@@ -9,14 +9,17 @@
 #![forbid(unsafe_code)]
 
 pub mod cover;
+pub mod generator;
 pub mod json_names;
 pub mod keys;
 pub mod lockfile;
 pub mod manifest;
 pub mod names;
+pub mod object_state;
 pub mod sha256;
 pub mod writer;
 
+pub use generator::{generate_entry, GeneratedEntry, GenerationError};
 pub use keys::ManifestKey;
 pub use lockfile::{
     generate_lockfile, parse_lockfile, verify, ContentLength, LockfileDifference, LockfileEntry,

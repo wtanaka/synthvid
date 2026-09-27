@@ -19,6 +19,7 @@
 //! in this module.
 
 mod background;
+mod placement;
 mod shape;
 
 use core::fmt;
@@ -33,6 +34,8 @@ use crate::trig::{cos_turns, sin_turns};
 use crate::units::{Dimensions, FrameIndex, ObjectIndex};
 
 use background::paint_background;
+use placement::{object_index, placement, Slot};
+pub use placement::{object_states, ObjectState};
 use shape::draw_object;
 
 /// Error returned when a frame cannot be rendered.
@@ -234,28 +237,21 @@ pub fn render_into(scene: &Scene, frame: FrameIndex, out: &mut Frame) -> Result<
     paint_background(out, scene.background)
         .map_err(|_| RenderError::BackgroundOverflow { frame })?;
     let camera = camera_frame(&scene.camera, frame)?;
-    for (index, object) in scene.objects.iter().enumerate() {
+    for (position, object) in scene.objects.iter().enumerate() {
         if object.visible.contains(frame) {
-            let Some(index_u32) = u32::try_from(index).ok() else {
-                return Err(RenderError::ObjectOverflow {
-                    frame,
-                    object: ObjectIndex::new(u32::MAX),
-                });
+            let slot = Slot {
+                frame,
+                object: object_index(frame, position)?,
             };
-            let object_index = ObjectIndex::new(index_u32);
-            let at =
-                position_at(&object.motion, frame).map_err(|_| RenderError::ObjectOverflow {
-                    frame,
-                    object: object_index,
-                })?;
+            let state = placement(object, &camera, slot)?;
             draw_object(
                 out,
                 &object.shape,
-                at,
+                state.centre_scene,
                 &camera,
                 object.fill,
                 frame,
-                object_index,
+                slot.object,
             )?;
         }
     }

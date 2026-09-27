@@ -83,9 +83,13 @@ jobs:
         if: hashFiles('catalog.lock') != ''
         run: cargo run --release --locked -p synthvid-cli -- generate --out ./corpus
 
+      # verify reads the lockfile from inside the corpus directory, and
+      # generate does not write one, so place the committed lockfile there.
       - name: Verify the corpus against the committed digests
         if: hashFiles('catalog.lock') != ''
-        run: cargo run --release --locked -p synthvid-cli -- verify --corpus ./corpus
+        run: |
+          cp catalog.lock ./corpus/catalog.lock
+          cargo run --release --locked -p synthvid-cli -- verify --corpus ./corpus
 
       # An external decoder is permitted for verification only; it is never
       # used to produce a file. This is what confirms the containers are
