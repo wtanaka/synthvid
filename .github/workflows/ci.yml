@@ -72,24 +72,19 @@ jobs:
           RUSTDOCFLAGS: -D warnings
 
       # Everything above this line tests the code. Everything below tests the
-      # claim the project exists to make.
-      #
-      # These steps are dormant until catalog.lock exists, because until the
-      # catalogue is declared there is no corpus to generate and "generate"
-      # would pass vacuously on a tool that does nothing. The moment that file
-      # lands they activate, and from then on they cannot be satisfied by a
-      # program that produces no output.
+      # claim the project exists to make: the corpus is regenerated from
+      # scratch and must match the committed digests byte for byte.
       - name: Generate the corpus
         if: hashFiles('catalog.lock') != ''
-        run: cargo run --release --locked -p synthvid-cli -- generate --out ./corpus
+        run: cargo run --release --locked -p synthvid-cli -- generate --out "$RUNNER_TEMP/corpus"
 
       # verify reads the lockfile from inside the corpus directory, and
       # generate does not write one, so place the committed lockfile there.
       - name: Verify the corpus against the committed digests
         if: hashFiles('catalog.lock') != ''
         run: |
-          cp catalog.lock ./corpus/catalog.lock
-          cargo run --release --locked -p synthvid-cli -- verify --corpus ./corpus
+          cp catalog.lock "$RUNNER_TEMP/corpus/catalog.lock"
+          cargo run --release --locked -p synthvid-cli -- verify --corpus "$RUNNER_TEMP/corpus"
 
       # An external decoder is permitted for verification only; it is never
       # used to produce a file. This is what confirms the containers are
@@ -100,4 +95,4 @@ jobs:
 
       - name: Confirm the corpus is externally decodable
         if: hashFiles('catalog.lock') != ''
-        run: sh ci/check-externally-decodable.sh ./corpus
+        run: sh ci/check-externally-decodable.sh "$RUNNER_TEMP/corpus"
