@@ -11,6 +11,13 @@ env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
 
+# Every cargo invocation below builds --release and --locked. --release:
+# this workspace's own type-safety rules (checked arithmetic everywhere, no
+# raw indexing) are expensive without optimization and nearly free with it,
+# and only ever building one profile also means only one profile's worth of
+# artifacts lands in the target directory. --locked: fail rather than
+# silently update Cargo.lock if it and Cargo.toml ever drift.
+
 jobs:
   # Both architectures run the identical job. Cross-architecture reproducibility
   # is proved transitively: each one regenerates the whole corpus from scratch
@@ -40,7 +47,7 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Lints
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --release --locked --all-targets --all-features -- -D warnings
 
       - name: Install external JPEG decoder tools
         run: |
@@ -51,10 +58,10 @@ jobs:
         run: sh ci/check-all.sh
 
       - name: Tests
-        run: cargo test --all
+        run: cargo test --release --locked --all
 
       - name: Documentation
-        run: cargo doc --no-deps --all
+        run: cargo doc --release --locked --no-deps --all
         env:
           RUSTDOCFLAGS: -D warnings
 
@@ -68,11 +75,11 @@ jobs:
       # program that produces no output.
       - name: Generate the corpus
         if: hashFiles('catalog.lock') != ''
-        run: cargo run --release -p synthvid-cli -- generate --out ./corpus
+        run: cargo run --release --locked -p synthvid-cli -- generate --out ./corpus
 
       - name: Verify the corpus against the committed digests
         if: hashFiles('catalog.lock') != ''
-        run: cargo run --release -p synthvid-cli -- verify --corpus ./corpus
+        run: cargo run --release --locked -p synthvid-cli -- verify --corpus ./corpus
 
       # An external decoder is permitted for verification only; it is never
       # used to produce a file. This is what confirms the containers are

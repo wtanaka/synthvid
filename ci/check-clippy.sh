@@ -1,11 +1,13 @@
 #!/bin/sh
 # Mirror the Lints step in ci.yml.
 #
-# CI runs `cargo clippy --all-targets --all-features -- -D warnings` with
-# `RUSTFLAGS="-D warnings"` in the environment. `--all-targets` matters: a
-# lint that fires only in test code (for example `clippy::unnecessary-sort-by`
-# inside a `#[cfg(test)]` module) is invisible to `cargo check` or
-# `cargo clippy` without it, so the flags here must stay identical to ci.yml.
+# CI runs `cargo clippy --release --locked --all-targets --all-features --
+# -D warnings` with `RUSTFLAGS="-D warnings"` in the environment.
+# `--all-targets` matters: a lint that fires only in test code (for example
+# `clippy::unnecessary-sort-by` inside a `#[cfg(test)]` module) is invisible
+# to `cargo check` or `cargo clippy` without it, so the flags here must stay
+# identical to ci.yml. `--release`/`--locked`: see `check-tests.sh`'s own
+# comment on both; the same reasoning applies here.
 #
 # The toolchain is pinned by `rust-toolchain.toml`, which rustup honours for
 # CI and for every local invocation alike, so the cargo run here is the cargo
@@ -38,13 +40,13 @@ rm -rf "$clippy_dir"
 
 set +e
 output=$(CARGO_TARGET_DIR="$clippy_dir" RUSTFLAGS="-D warnings" \
-    $cargo_cmd clippy --all-targets --all-features -- -D warnings 2>&1)
+    $cargo_cmd clippy --release --locked --all-targets --all-features -- -D warnings 2>&1)
 exit_code=$?
 set -e
 
 if [ $exit_code -ne 0 ]; then
     echo "$output" >&2
-    echo "check-clippy: cargo clippy --all-targets --all-features -- -D warnings failed" >&2
+    echo "check-clippy: cargo clippy --release --locked --all-targets --all-features -- -D warnings failed" >&2
     exit 1
 fi
 

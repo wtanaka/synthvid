@@ -1,8 +1,16 @@
 #!/bin/sh
 # Mirror the Tests step in ci.yml.
 #
-# CI runs `cargo test --all` with `RUSTFLAGS="-D warnings"` in the environment.
-# This guard replicates that behavior locally.
+# CI runs `cargo test --release --locked --all` with `RUSTFLAGS="-D warnings"`
+# in the environment. This guard replicates that behavior locally.
+# `--release`: this workspace's own type-safety rules (checked arithmetic
+# everywhere, no raw indexing) are expensive without optimization and nearly
+# free with it -- an unoptimized debug build measured tens of times slower
+# than release for this crate's JPEG path, which is also what the corpus
+# generate/verify steps below need to stay near the reproducibility job's own
+# time budget. `--locked`: fail rather than silently update `Cargo.lock` if it
+# and `Cargo.toml` ever drift, and avoid probing the (nonexistent, since this
+# workspace has no external dependencies) registry for a newer version.
 #
 # The toolchain is pinned by `rust-toolchain.toml`, which rustup honours for
 # CI and for every local invocation alike, so the cargo run here is the cargo
@@ -35,13 +43,13 @@ rm -rf "$test_dir"
 
 set +e
 output=$(CARGO_TARGET_DIR="$test_dir" RUSTFLAGS="-D warnings" \
-    $cargo_cmd test --all 2>&1)
+    $cargo_cmd test --release --locked --all 2>&1)
 exit_code=$?
 set -e
 
 if [ $exit_code -ne 0 ]; then
     echo "$output" >&2
-    echo "check-tests: cargo test --all failed" >&2
+    echo "check-tests: cargo test --release --locked --all failed" >&2
     exit 1
 fi
 

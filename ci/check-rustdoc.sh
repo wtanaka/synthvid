@@ -4,7 +4,8 @@
 # The workspace denies missing_docs, so a missing doc comment already fails
 # the build. This covers what that lint cannot: broken intra-doc links and
 # other rustdoc warnings. It mirrors the Documentation step in ci.yml, which
-# sets RUSTDOCFLAGS="-D warnings".
+# sets RUSTDOCFLAGS="-D warnings" and also runs `--release --locked`; see
+# `check-tests.sh`'s own comment on those two flags.
 #
 # The check runs in a target directory of its own, which is deleted first.
 # Both halves matter. Sharing the main target directory lets a `cargo check`
@@ -26,13 +27,13 @@ rm -rf "$doc_dir"
 
 set +e
 output=$(CARGO_TARGET_DIR="$doc_dir" RUSTDOCFLAGS="-D warnings" \
-    cargo doc --no-deps --all 2>&1)
+    cargo doc --release --locked --no-deps --all 2>&1)
 exit_code=$?
 set -e
 
 if [ $exit_code -ne 0 ]; then
     echo "$output" >&2
-    echo "check-rustdoc: cargo doc --no-deps --all failed" >&2
+    echo "check-rustdoc: cargo doc --release --locked --no-deps --all failed" >&2
     exit 1
 fi
 
