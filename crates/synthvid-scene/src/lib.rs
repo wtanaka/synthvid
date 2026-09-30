@@ -19,7 +19,7 @@
 //! | [`render`] | closed-form frame rendering                             |
 //! | [`units`]  | frame indices and counts, dimensions, frame rate, seed  |
 //! | [`rng`]    | deterministic pseudo-random number generation           |
-//! | [`color`]  | pixel colour, buffer sizing, channel blending           |
+//! | [`color`]  | pixel color, buffer sizing, channel blending            |
 //! | [`frame`]  | owned RGB pixel buffers with a checked length invariant |
 //! | [`trig`]   | platform-independent sine and cosine                    |
 //! | [`geom`]   | points, vectors, and exact affine transforms            |

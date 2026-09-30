@@ -1,6 +1,6 @@
 //! Exact rational arithmetic.
 //!
-//! [`Ratio`] is the numeric type every other module computes in: a normalised
+//! [`Ratio`] is the numeric type every other module computes in: a normalized
 //! `i64 / NonZeroI64` fraction whose operations are checked and exact, so a
 //! value never drifts between platforms or releases.
 
@@ -44,7 +44,7 @@ const fn gcd_u128(mut a: u128, mut b: u128) -> u128 {
     a
 }
 
-/// Normalises an absolute numerator and denominator with a sign flag into a canonical [`Ratio`].
+/// Normalizes an absolute numerator and denominator with a sign flag into a canonical [`Ratio`].
 ///
 /// # Errors
 ///
@@ -97,7 +97,7 @@ fn from_u128_parts(abs_num: u128, abs_den: u128, is_negative: bool) -> Result<Ra
     })
 }
 
-/// A normalised rational number over 64-bit signed integers.
+/// A normalized rational number over 64-bit signed integers.
 ///
 /// The denominator is guaranteed to be strictly positive ([`NonZeroI64`]) and
 /// any sign is carried entirely in the numerator. Ratios are always kept in
@@ -112,7 +112,7 @@ pub struct Ratio {
 }
 
 impl Ratio {
-    /// Creates a normalised rational from a numerator and a non-zero denominator.
+    /// Creates a normalized rational from a numerator and a non-zero denominator.
     ///
     /// Automatically reduces the rational to lowest terms and moves any sign to the numerator.
     ///
@@ -358,7 +358,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ratio_normalisation_equal_values() {
+    fn test_ratio_normalization_equal_values() {
         let d1 = NonZeroI64::new(1).unwrap();
         let d2 = NonZeroI64::new(2).unwrap();
         let d_neg2 = NonZeroI64::new(-2).unwrap();

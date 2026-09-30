@@ -18,10 +18,10 @@ use super::super::raster::fill_disc;
 /// Black ground painted before the deterministic discs of [`Background::Blobs`].
 const BLOB_GROUND: Rgb8 = Rgb8::new(0, 0, 0);
 
-/// Returns the checker colour at pixel `(x, y)`.
+/// Returns the checker color at pixel `(x, y)`.
 ///
 /// The frame is tiled with squares of side `side` pixels; the square at the
-/// origin takes `a`, and colours alternate like a chessboard. `side` is never
+/// origin takes `a`, and colors alternate like a chessboard. `side` is never
 /// zero by construction, so the divisions below always succeed.
 const fn checker_colour(x: u16, y: u16, side: u16, a: Rgb8, b: Rgb8) -> Rgb8 {
     let Some(qx) = x.checked_div(side) else {

@@ -2,7 +2,7 @@
 //!
 //! Every key this crate writes is one of these 33. Modelling them as an
 //! enum rather than validating a string at the point of use removes the only
-//! runtime failure the serialiser had: a hardcoded literal was checked against
+//! runtime failure the serializer had: a hardcoded literal was checked against
 //! the key alphabet and the check was unwrapped, so a typo in a literal was a
 //! panic in a library crate. There is nothing left to check, because there is
 //! nothing else a caller can pass.

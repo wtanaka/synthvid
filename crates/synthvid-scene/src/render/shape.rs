@@ -1,7 +1,7 @@
 //! Shape drawing for frame rendering.
 //!
-//! [`draw_object`] draws one [`Shape`] centred on a scene-space position
-//! through the camera placement of the parent module. Disc centres pass
+//! [`draw_object`] draws one [`Shape`] centered on a scene-space position
+//! through the camera placement of the parent module. Disc centers pass
 //! through the camera transform and radii scale by the magnification;
 //! rectangles, polygon vertices, and cross bars map corner by corner, so
 //! camera rotation turns them into rotated polygons rather than being

@@ -60,7 +60,7 @@ impl JsonObject {
 
     /// Inserts a rational key-value pair.
     ///
-    /// Takes a [`Ratio`], which is normalised with a strictly positive
+    /// Takes a [`Ratio`], which is normalized with a strictly positive
     /// denominator by its own constructor. Taking a loose numerator and
     /// denominator instead would let a caller write a zero denominator, a
     /// negative one, or an unreduced pair, none of which the format admits.
@@ -87,7 +87,7 @@ impl JsonObject {
         self.insert_raw(key, format!("\"{}\"", value.as_str()));
     }
 
-    /// Inserts an already-serialised JSON fragment.
+    /// Inserts an already-serialized JSON fragment.
     ///
     /// Deliberately not public. Every guarantee this type makes — no floats,
     /// no escape sequences, canonical form, valid JSON — is a guarantee about
@@ -174,7 +174,7 @@ impl JsonArray {
         Self { values: Vec::new() }
     }
 
-    /// Appends an already-serialised JSON fragment.
+    /// Appends an already-serialized JSON fragment.
     ///
     /// Deliberately not public, for the reason given on
     /// [`JsonObject::insert_raw`]: an unrestricted `String` in the public API

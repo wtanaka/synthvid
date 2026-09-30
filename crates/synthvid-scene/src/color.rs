@@ -1,6 +1,6 @@
-//! Pixel colour and buffer sizing.
+//! Pixel color and buffer sizing.
 //!
-//! [`Rgb8`] is the single colour representation used throughout the crate;
+//! [`Rgb8`] is the single color representation used throughout the crate;
 //! the free functions here size and blend the raw byte buffers that
 //! [`Frame`](crate::Frame) owns.
 

@@ -125,7 +125,7 @@ pub enum Zoom {
 /// Camera transform of a scene.
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct Camera {
-    /// Translation of the camera centre as a function of frame.
+    /// Translation of the camera center as a function of frame.
     pub motion: Motion,
     /// Rotation of the camera as a function of frame.
     pub rotation: Rotation,

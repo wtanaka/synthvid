@@ -12,7 +12,7 @@ use crate::ratio::Ratio;
 ///
 /// Scene units coincide with pixel units: the pixel with integer indices
 /// `(x, y)` covers the unit square `[x, x + 1)` by `[y, y + 1)` and its
-/// centre is at `(x + 1 / 2, y + 1 / 2)`. The origin `(0, 0)` is the top-left
+/// center is at `(x + 1 / 2, y + 1 / 2)`. The origin `(0, 0)` is the top-left
 /// corner of the frame and `y` grows downwards, matching frame row order.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub struct Point {

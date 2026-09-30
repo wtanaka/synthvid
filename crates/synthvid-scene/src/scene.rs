@@ -204,7 +204,7 @@ pub enum Motion {
         /// Base seed; the stream for frame N derives from this seed and N.
         seed: Seed,
     },
-    /// Abrupt behaviour changes at frame boundaries.
+    /// Abrupt behavior changes at frame boundaries.
     ///
     /// Entries must be sorted by frame index with strictly increasing keys.
     /// The motion in force at frame N is the entry with the greatest key less
@@ -219,29 +219,29 @@ pub enum Motion {
 /// producible.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub enum Background {
-    /// Uniform fill of a single colour.
+    /// Uniform fill of a single color.
     Solid(Rgb8),
-    /// Alternating squares of side `cell` pixels, colour `a` at the origin.
+    /// Alternating squares of side `cell` pixels, color `a` at the origin.
     Checker {
         /// Side length of one square in pixels, never zero.
         cell: NonZeroU16,
-        /// Colour of the square at the origin.
+        /// Color of the square at the origin.
         a: Rgb8,
-        /// Colour of the square adjacent to the origin.
+        /// Color of the square adjacent to the origin.
         b: Rgb8,
     },
     /// Linear interpolation from `from` to `to` along `direction`.
     Gradient {
-        /// Colour at the start edge.
+        /// Color at the start edge.
         from: Rgb8,
-        /// Colour at the far edge.
+        /// Color at the far edge.
         to: Rgb8,
         /// Axis the interpolation runs along.
         direction: Direction,
     },
     /// Deterministically placed discs over a black ground.
     ///
-    /// Centres, radii, and colours derive from `seed`, so the same seed
+    /// Centers, radii, and colors derive from `seed`, so the same seed
     /// yields the same discs on every platform. `count` is the number of
     /// discs; radii lie in `[min_radius, max_radius]`.
     Blobs {
@@ -258,9 +258,9 @@ pub enum Background {
     Grid {
         /// Distance between adjacent lines in pixels, never zero.
         spacing: NonZeroU16,
-        /// Colour of the lines.
+        /// Color of the lines.
         line: Rgb8,
-        /// Colour between the lines.
+        /// Color between the lines.
         ground: Rgb8,
     },
 }
@@ -299,7 +299,7 @@ pub enum Shape {
 pub struct Object {
     /// Geometry of the object, centred on its motion position.
     pub shape: Shape,
-    /// Fill colour of the object.
+    /// Fill color of the object.
     pub fill: Rgb8,
     /// Closed-form position as a function of frame.
     pub motion: Motion,

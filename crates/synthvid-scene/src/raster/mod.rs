@@ -1,7 +1,7 @@
-//! Rasterisation of geometry onto a frame.
+//! Rasterization of geometry onto a frame.
 //!
 //! The `fill_*` and `draw_*` entry points decide pixel coverage by testing
-//! exact pixel centres against exact geometry, and clip to the frame before
+//! exact pixel centers against exact geometry, and clip to the frame before
 //! iterating, so a shape far outside the frame costs nothing. The predicates
 //! that answer those questions live in the private `coverage` submodule.
 
@@ -22,7 +22,7 @@ use coverage::{
     PixelSpan,
 };
 
-/// Fills the pixels whose centres fall inside the disc.
+/// Fills the pixels whose centers fall inside the disc.
 ///
 /// The disc is `{ p : |p - centre|^2 <= radius^2 }`, tested with exact
 /// [`Ratio`] arithmetic. A non-positive radius draws nothing. The bounding
@@ -84,9 +84,9 @@ fn fill_disc_inner(
     Ok(())
 }
 
-/// Fills the pixels whose centres fall inside the polygon.
+/// Fills the pixels whose centers fall inside the polygon.
 ///
-/// See `point_in_polygon` for the documented, exact edge rule: centres on
+/// See `point_in_polygon` for the documented, exact edge rule: centers on
 /// an edge count as inside, otherwise the even-odd rule with a half-open
 /// vertex rule decides. Polygons with fewer than three vertices draw
 /// nothing. The vertex bounding box is clipped to the frame before any
@@ -190,7 +190,7 @@ fn fill_rect_inner(
 
 /// Draws a 1-unit-thick line segment from `start` to `end`.
 ///
-/// A pixel is drawn when its centre lies within `1 / 2` of the segment,
+/// A pixel is drawn when its center lies within `1 / 2` of the segment,
 /// tested with exact [`Ratio`] arithmetic (see `line_covers`). A
 /// zero-length segment draws the disc of radius `1 / 2` around the point.
 /// The segment bounding box expanded by half a unit is clipped to the frame
@@ -264,9 +264,9 @@ fn draw_line_inner(
     Ok(())
 }
 
-/// Draws an axis-aligned cross centred at `centre`.
+/// Draws an axis-aligned cross centered at `centre`.
 ///
-/// `arm` is the half-length from the centre to the tip of each bar along its
+/// `arm` is the half-length from the center to the tip of each bar along its
 /// axis; `thickness` is the full width of each bar. The cross is the union of
 /// the horizontal bar `[cx - arm, cx + arm]` by
 /// `[cy - thickness / 2, cy + thickness / 2]` and the vertical bar

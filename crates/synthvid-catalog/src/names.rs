@@ -2,25 +2,25 @@
 //!
 //! Each is an enum rather than a string because the set of legal values is
 //! finite and known. As a `String` the field admitted every value except the
-//! ones that are legal, and the serialiser interpolated it into the document
+//! ones that are legal, and the serializer interpolated it into the document
 //! without escaping, so a stray quote produced invalid JSON.
 
 /// Which backdrop a scene declared.
 ///
 /// A closed set of five, so it is an enum rather than a string. As a `String`
 /// the field admitted every value except the five that are legal, and the
-/// serialiser interpolated it unescaped.
+/// serializer interpolated it unescaped.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub enum BackgroundName {
-    /// A single flat colour.
+    /// A single flat color.
     Solid,
-    /// A two-colour chequerboard.
+    /// A two-color checkerboard.
     Checker,
-    /// A linear ramp between two colours.
+    /// A linear ramp between two colors.
     Gradient,
     /// Scattered discs, seeded from the scene.
     Blobs,
-    /// A ruled grid over a ground colour.
+    /// A ruled grid over a ground color.
     Grid,
 }
 

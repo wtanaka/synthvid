@@ -351,7 +351,7 @@ pub struct ManifestHeader {
     dimensions: Dimensions,
     /// Exact frame rate.
     frame_rate: FrameRate,
-    /// Catalogue entry name.
+    /// Catalog entry name.
     name: JsonEntryName,
     /// Scene units per world unit, if declared.
     scale: Option<ManifestRatio>,
@@ -566,7 +566,7 @@ mod tests {
     }
 
     /// The frozen manifest vector. These bytes are the specification; if this
-    /// test fails the serialiser changed and the serialiser is what to fix.
+    /// test fails the serializer changed and the serializer is what to fix.
     #[test]
     fn test_manifest_frozen_vector() {
         let expected = r#"{"background":"grid","dimensions":{"height":16,"width":16},"frame_count":1,"frame_rate":{"den":1,"num":30},"frames":[{"camera":{"a":{"den":1,"num":1},"b":{"den":1,"num":0},"c":{"den":1,"num":0},"d":{"den":1,"num":1},"tx":{"den":1,"num":0},"ty":{"den":1,"num":0}},"index":0,"objects":[{"bbox":{"max_x":{"den":1,"num":10},"max_y":{"den":1,"num":10},"min_x":{"den":1,"num":6},"min_y":{"den":1,"num":6}},"centre_screen":{"x":{"den":1,"num":8},"y":{"den":1,"num":8}},"index":0,"on_screen":{"den":1,"num":1}}]}],"name":"example","objects":[{"index":0,"shape":"disc","visible":{"end":1,"start":0}}],"schema_version":1}"#;

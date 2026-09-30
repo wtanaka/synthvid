@@ -1,8 +1,8 @@
-//! Exact coverage predicates and clipping used by the rasterisers.
+//! Exact coverage predicates and clipping used by the rasterizers.
 //!
 //! Nothing here touches a [`Frame`](crate::Frame). These are the pure
-//! geometric questions a rasteriser asks -- which pixel indices can a shape
-//! possibly touch, and does this exact pixel centre lie inside that shape --
+//! geometric questions a rasterizer asks -- which pixel indices can a shape
+//! possibly touch, and does this exact pixel center lie inside that shape --
 //! kept separate so the drawing entry points in the parent module stay short
 //! enough to read.
 
@@ -61,7 +61,7 @@ pub(super) fn clipped_pixel_range(lo: Ratio, hi: Ratio, limit: u16) -> Result<Pi
     })
 }
 
-/// Returns the exact centre of the pixel with the given indices.
+/// Returns the exact center of the pixel with the given indices.
 ///
 /// The center is `(x + 1 / 2, y + 1 / 2)` as [`Ratio`]s. A `u16` index cannot
 /// overflow the numerator, so this is total.
@@ -250,7 +250,7 @@ pub(super) fn dot_product(first: Vector, second: Vector) -> Result<Ratio, Overfl
     xx.checked_add(yy)
 }
 
-/// Returns the inclusive interval centred on a coordinate.
+/// Returns the inclusive interval centered on a coordinate.
 ///
 /// Computes `(centre - radius, centre + radius)`.
 ///
@@ -312,7 +312,7 @@ pub(super) fn closest_on_segment(
     )
 }
 
-/// Tests whether a pixel centre is inside the disc.
+/// Tests whether a pixel center is inside the disc.
 ///
 /// Uses the exact inequality `(cx - px)^2 + (cy - py)^2 <= r^2` in [`Ratio`]
 /// arithmetic.
@@ -330,7 +330,7 @@ pub(super) fn disc_covers(centre: Point, radius: Ratio, sample: Point) -> Result
     Ok(dist2 <= bound)
 }
 
-/// Tests whether a pixel centre is within half a unit of a segment.
+/// Tests whether a pixel center is within half a unit of a segment.
 ///
 /// This is the exact rule for [`draw_line`]: a 1-unit-thick line is the set
 /// of points whose Euclidean distance to the segment is at most `1 / 2`.

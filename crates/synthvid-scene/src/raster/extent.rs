@@ -1,4 +1,4 @@
-//! Extent boxes for the rasterisers.
+//! Extent boxes for the rasterizers.
 //!
 //! Each drawing entry point in the parent module is paired here with a pure
 //! function returning the exact rational box it would cover, without touching
@@ -55,7 +55,7 @@ pub enum BoundsOrEmpty {
 ///
 /// The box is the inclusive set `{ p : min_x <= p.x <= max_x,
 /// min_y <= p.y <= max_y }`, matching the inclusive edge rule of the
-/// rasterisers. [`Bounds::new`] rejects an empty box where either maximum
+/// rasterizers. [`Bounds::new`] rejects an empty box where either maximum
 /// lies strictly below its minimum; [`Bounds::intersect`] and
 /// [`Bounds::area`] treat such a box as empty as well, so a literal built by
 /// hand can never report a negative area.
@@ -173,7 +173,7 @@ pub fn disc_extent(centre: Point, radius: Ratio) -> Result<BoundsOrEmpty, Overfl
 /// Returns the box covered by [`fill_polygon`](super::fill_polygon).
 ///
 /// The box is the minimum and maximum vertex coordinates on each axis, which
-/// is tight for the inclusive edge rule: every covered centre lies on an
+/// is tight for the inclusive edge rule: every covered center lies on an
 /// edge or strictly inside, hence within the vertex ranges.
 ///
 /// # Errors
@@ -300,7 +300,7 @@ mod tests {
         Frame::zeroed(Dimensions::new(width, height)).unwrap()
     }
 
-    /// Collects the centres of all non-background pixels in a frame.
+    /// Collects the centers of all non-background pixels in a frame.
     fn painted_centres(frame: &Frame, ground: Rgb8) -> Vec<Point> {
         let width = frame.width().get().get();
         let height = frame.height().get().get();
@@ -315,7 +315,7 @@ mod tests {
         found
     }
 
-    /// Asserts every painted pixel centre lies inside `bounds`.
+    /// Asserts every painted pixel center lies inside `bounds`.
     fn assert_inside(bounds: Bounds, frame: &Frame, ground: Rgb8, label: &str) {
         for sample in painted_centres(frame, ground) {
             assert!(
@@ -550,7 +550,7 @@ mod tests {
         assert_eq!(
             frame.pixel(PixelCoord::new(4, 4)),
             Some(paint),
-            "a straddling line must cover the centre pixel"
+            "a straddling line must cover the center pixel"
         );
         draw_cross(&mut frame, Point::new(four, four), ten, three, paint)
             .expect("drawing a test fixture must not overflow");
