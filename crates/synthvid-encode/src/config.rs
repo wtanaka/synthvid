@@ -1,6 +1,20 @@
 //! JPEG encoding configuration types.
 
 /// Quality parameter for JPEG encoding (1-100).
+///
+/// A value outside `1..=100` cannot be built. The constructor returns `None`
+/// for out-of-range inputs; values are never clamped.
+///
+/// # Example
+///
+/// ```rust
+/// use synthvid_encode::Quality;
+///
+/// let valid = Quality::new(75).is_some();
+/// let zero = Quality::new(0).is_none();
+/// let over = Quality::new(101).is_none();
+/// (valid, zero, over);
+/// ```
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct Quality(u8);
 

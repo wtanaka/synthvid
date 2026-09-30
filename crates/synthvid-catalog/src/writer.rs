@@ -135,6 +135,22 @@ impl JsonObject {
     ///
     /// Returns a string with no whitespace outside string literals and keys
     /// sorted by UTF-8 byte value.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use synthvid_catalog::writer::{JsonKey, JsonObject};
+    ///
+    /// let mut obj = JsonObject::new();
+    /// match (JsonKey::new("b"), JsonKey::new("a")) {
+    ///     (Ok(b), Ok(a)) => {
+    ///         obj.insert_int(b, 2);
+    ///         obj.insert_int(a, 1);
+    ///     }
+    ///     _ => return,
+    /// }
+    /// obj.build();
+    /// ```
     #[must_use]
     pub fn build(&self) -> String {
         let mut result = String::new();

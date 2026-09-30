@@ -88,6 +88,17 @@ impl OnScreen {
     /// # Errors
     ///
     /// Returns `Err(OnScreenError::OutOfRange)` when `value` is negative or greater than one.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use synthvid_catalog::manifest::OnScreen;
+    /// use synthvid_scene::Ratio;
+    ///
+    /// let ok = OnScreen::new(Ratio::from_integer(1)).is_ok();
+    /// let bad = OnScreen::new(Ratio::from_integer(2)).is_err();
+    /// (ok, bad);
+    /// ```
     pub fn new(value: Ratio) -> Result<Self, OnScreenError> {
         let zero = Ratio::from_integer(0);
         let one = Ratio::from_integer(1);

@@ -337,10 +337,26 @@ fn define_axes() -> Result<cover_axes::AxisArrays, CatalogError> {
 
 /// Generates the catalog as a pairwise covering array over declared axes.
 ///
+/// Every pair of values from any two axes appears together in at least one
+/// entry. Entry names derive from the axis values; they are never
+/// hand-written.
+///
 /// # Errors
 ///
 /// Returns `CatalogError::ZeroDimension` if any dimension in the axis definitions is zero,
 /// or `CatalogError::InvalidFrameRate` if the absurd frame rate cannot be constructed.
+///
+/// # Example
+///
+/// ```rust
+/// use synthvid_catalog::cover::generate_catalogue;
+///
+/// let count = match generate_catalogue() {
+///     Ok(catalogue) => catalogue.len(),
+///     Err(_) => return,
+/// };
+/// count;
+/// ```
 pub fn generate_catalogue() -> Result<Vec<Entry>, CatalogError> {
     use cover_axes::{
         make_dimensions, BackgroundAxis, CodingAxis, ContainerAxis, FrameCountValue,

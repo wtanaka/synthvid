@@ -32,6 +32,28 @@
 //! `ci/check-module-size.sh` enforces both halves of this: it caps every
 //! source file's length, and rejects anything in this file but the
 //! declarations and re-exports below.
+//!
+//! # Example
+//!
+//! ```rust
+//! use synthvid_scene::{Ratio, cos_turns, sin_turns};
+//!
+//! let zero = Ratio::from_integer(0);
+//! let one = Ratio::from_integer(1);
+//! let sum = match zero.checked_add(one) {
+//!     Ok(value) => value,
+//!     Err(_) => return,
+//! };
+//! let sine = match sin_turns(zero) {
+//!     Ok(value) => value,
+//!     Err(_) => return,
+//! };
+//! let cosine = match cos_turns(zero) {
+//!     Ok(value) => value,
+//!     Err(_) => return,
+//! };
+//! (sum, sine, cosine);
+//! ```
 #![forbid(unsafe_code)]
 
 pub mod camera;

@@ -1,6 +1,47 @@
 //! Pixel coding and container writing.
 //!
-//! Every function here takes bytes or frames and returns bytes.
+//! Every function here takes bytes or frames and returns bytes. Nothing here
+//! touches the filesystem, the clock, or the environment; the same inputs
+//! produce the same bytes on every platform.
+//!
+//! # Layout
+//!
+//! | Module | Owns                                                |
+//! | ------ | --------------------------------------------------- |
+//! | `jpeg` | motion-JPEG frame coding (`encode_jpeg`)            |
+//! | `avi` | AVI container writing (`encode_avi`)                |
+//! | `iso` | ISO base media container writing (`encode_iso`)     |
+//! | `config` | JPEG coding parameters (`Quality`, `ChromaSampling`) |
+//! | `defects` | single-fault mutations (`apply`)                 |
+//! | `capacity` | classic-container size check                    |
+//! | `color` | RGB to YCbCr conversion                             |
+//!
+//! Lower-level helpers (`bitstream`, `dct`, `huffman`, `quant`,
+//! `sample_table`, `jpeg_markers`, `avi_helpers`, `iso_helpers`) are public
+//! modules so the layers above can share them, but most callers only need
+//! the re-exports below.
+//!
+//! # Example
+//!
+//! ```rust
+//! use synthvid_encode::{ChromaSampling, Quality, encode_jpeg};
+//! use synthvid_scene::{Dimensions, Frame, Height, Width};
+//!
+//! let dims = match (Width::new(16), Height::new(16)) {
+//!     (Ok(width), Ok(height)) => Dimensions::new(width, height),
+//!     _ => return,
+//! };
+//! let frame = match Frame::zeroed(dims) {
+//!     Ok(frame) => frame,
+//!     Err(_) => return,
+//! };
+//! let quality = match Quality::new(75) {
+//!     Some(quality) => quality,
+//!     None => return,
+//! };
+//! let bytes: Vec<u8> = encode_jpeg(&frame, quality, ChromaSampling::Yuv420);
+//! bytes.len();
+//! ```
 #![forbid(unsafe_code)]
 
 pub mod ac_encoding;

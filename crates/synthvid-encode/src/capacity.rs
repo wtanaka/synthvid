@@ -24,6 +24,19 @@ pub fn max_classic_container_payload() -> u64 {
 /// Reserves 16 bytes per frame for the surrounding per-frame overhead every
 /// classic container writer here adds (an AVI chunk header, or an ISO
 /// `stsz`/`stco` table entry), so this stays conservative rather than exact.
+///
+/// # Example
+///
+/// ```rust
+/// use synthvid_encode::raw_frames_fit_classic_container;
+/// use synthvid_scene::{Height, Width};
+///
+/// let fits = match (Width::new(16), Height::new(16)) {
+///     (Ok(width), Ok(height)) => raw_frames_fit_classic_container(width, height, 1),
+///     _ => return,
+/// };
+/// fits;
+/// ```
 #[must_use]
 pub fn raw_frames_fit_classic_container(width: Width, height: Height, frame_count: u32) -> bool {
     let pixel_bytes = u64::from(width.get().get()).saturating_mul(u64::from(height.get().get()));

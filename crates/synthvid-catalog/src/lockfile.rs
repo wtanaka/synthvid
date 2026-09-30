@@ -338,6 +338,22 @@ impl core::error::Error for ParseLockfileError {}
 ///
 /// Sorts entries by name, then serializes each to the line-oriented format.
 /// The result is a single string with each line ending in `\n`.
+///
+/// # Example
+///
+/// ```rust
+/// use synthvid_catalog::{
+///     ContentLength, LockfileEntry, LockfileName, generate_lockfile, sha256,
+/// };
+///
+/// let name = match LockfileName::new("b.json") {
+///     Ok(name) => name,
+///     Err(_) => return,
+/// };
+/// let entry = LockfileEntry::new(name, sha256(b"b"), ContentLength::new(1));
+/// let text = generate_lockfile(vec![entry]);
+/// text.len();
+/// ```
 #[must_use]
 pub fn generate_lockfile(mut entries: Vec<LockfileEntry>) -> String {
     entries.sort();
