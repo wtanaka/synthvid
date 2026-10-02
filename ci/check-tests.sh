@@ -4,12 +4,10 @@
 # CI runs `cargo test --all` with `RUSTFLAGS="-D warnings"` in the environment.
 # This guard replicates that behavior locally.
 #
-# CI also installs the stable toolchain on every run, so "passes CI" means
-# "passes the current stable toolchain". An older toolchain cannot emit warnings
-# introduced after it was cut, so running the ambient cargo when its default
-# toolchain is stale passes locally on code CI rejects -- a green run that
-# proves nothing. When rustup has a stable toolchain installed, run tests
-# through it; otherwise fall back to the cargo on PATH and say so loudly.
+# The toolchain is pinned by `rust-toolchain.toml`, which rustup honours for
+# CI and for every local invocation alike, so the cargo run here is the cargo
+# CI runs. When rustup is absent, fall back to the cargo on PATH and say so
+# loudly: it may not be the pinned version.
 #
 # The check runs in a target directory of its own, which is deleted first.
 # Both halves matter. Sharing the main target directory lets a `cargo check`,
@@ -27,12 +25,9 @@ if ! command -v cargo >/dev/null 2>&1; then
 fi
 
 cargo_cmd="cargo"
-if command -v rustup >/dev/null 2>&1 \
-    && rustup toolchain list 2>/dev/null | grep -q '^stable'; then
-    cargo_cmd="rustup run stable cargo"
-else
-    echo "check-tests: no stable toolchain under rustup;" >&2
-    echo "  using ambient cargo, which may be older than CI" >&2
+if ! command -v rustup >/dev/null 2>&1; then
+    echo "check-tests: rustup not found;" >&2
+    echo "  using ambient cargo, which may not be the pinned toolchain" >&2
 fi
 
 test_dir="${CARGO_TARGET_DIR:-target}/test-check"
