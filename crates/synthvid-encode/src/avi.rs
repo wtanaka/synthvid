@@ -37,6 +37,45 @@ pub enum AviCodec {
     MotionJpeg,
 }
 
+/// A chunk tag that no codec gives a stream-0 frame.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub(crate) struct NotFrameChunk;
+
+impl AviCodec {
+    /// Every codec.
+    const ALL: [Self; 2] = [Self::MotionJpeg, Self::UncompressedRgb];
+
+    /// The `movi` chunk tag for a stream-0 frame: `00dc` for a compressed
+    /// frame, `00db` for an uncompressed DIB.
+    const fn frame_chunk_tag(self) -> [u8; 4] {
+        match self {
+            Self::MotionJpeg => *b"00dc",
+            Self::UncompressedRgb => *b"00db",
+        }
+    }
+
+    /// The `movi` chunk id for a stream-0 frame.
+    const fn frame_chunk_id(self) -> ChunkId {
+        ChunkId::new(self.frame_chunk_tag())
+    }
+
+    /// The codec that gives a stream-0 frame the chunk tag `tag`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotFrameChunk`] when no codec uses the tag for a frame.
+    pub(crate) fn of_frame_chunk(tag: [u8; 4]) -> Result<Self, NotFrameChunk> {
+        Self::ALL
+            .into_iter()
+            .find(|codec| codec.frame_chunk_tag() == tag)
+            .ok_or(NotFrameChunk)
+    }
+}
+
+/// The boundary RIFF pads every chunk to: an odd-length chunk is followed by
+/// exactly one zero byte, which its size field does not count.
+pub(crate) const RIFF_CHUNK_ALIGNMENT: usize = 2;
+
 /// Encodes frames as an AVI container.
 ///
 /// # Arguments
@@ -119,25 +158,21 @@ pub fn encode_avi(
     let movi_size_pos = output.len();
     output.extend_from_slice(b"LIST");
     output.extend_from_slice(&[0, 0, 0, 0]); // Placeholder for LIST size
-    output.extend_from_slice(b"movi");
 
-    // Record the offset where movi data begins (after "movi" list type).
-    // idx1 offsets are relative to this point.
+    // idx1 offsets count from the "movi" list type, so the first frame is at 4.
     let movi_data_pos = output.len();
+    output.extend_from_slice(b"movi");
 
     let mut index_entries = Vec::new();
 
     // Write frame data
     for frame_data in frames {
-        let chunk_id = match codec {
-            AviCodec::MotionJpeg => b"00db",      // JPEG frame
-            AviCodec::UncompressedRgb => b"00dc", // Video frame
-        };
+        let chunk_id = codec.frame_chunk_id();
 
         // Validate frame data size
         validate_frame_size(frame_data, width, height, codec)?;
 
-        // Record index entry: offset is relative to movi data start
+        // Record index entry: offset is relative to the movi list type
         let offset = u32::try_from(
             output
                 .len()
@@ -149,26 +184,31 @@ pub fn encode_avi(
         index_entries.push(IndexEntry::new(
             ChunkOffset::new(offset),
             ChunkSize::new(frame_size),
-            ChunkId::new(*chunk_id),
+            chunk_id,
         ));
 
         // Write chunk header
-        output.extend_from_slice(chunk_id);
+        output.extend_from_slice(&chunk_id.get());
         output.extend_from_slice(&frame_size.to_le_bytes());
 
         // Write frame data
         output.extend_from_slice(frame_data);
 
-        // Pad to 4-byte boundary if necessary
-        let padding = frame_data.len() % 4;
-        // Total: padding is always one of {0, 1, 2, 3} from modulo 4, so all cases are covered.
-        let padding_bytes = match padding {
-            0 => 0,
-            1 => 3,
-            2 => 2,
-            _ => 1, // padding == 3
-        };
-        output.extend_from_slice(&vec![0; padding_bytes]);
+        // Pad an odd-length chunk with one byte, as RIFF requires.
+        let padded_len = frame_data
+            .len()
+            .checked_next_multiple_of(RIFF_CHUNK_ALIGNMENT)
+            .ok_or(AviError::SizeOverflow)?;
+        let padding_bytes = padded_len
+            .checked_sub(frame_data.len())
+            .ok_or(AviError::SizeOverflow)?;
+        output.resize(
+            output
+                .len()
+                .checked_add(padding_bytes)
+                .ok_or(AviError::SizeOverflow)?,
+            0,
+        );
     }
 
     // Update movi LIST size
@@ -442,229 +482,6 @@ fn update_chunk_size(output: &mut [u8], pos: usize, size: u32) {
         }
     }
 }
-
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use core::num::NonZeroU16;
-    use synthvid_scene::Ratio;
-
-    fn make_width(w: u16) -> Width {
-        Width::from_nonzero(NonZeroU16::new(w).unwrap())
-    }
-
-    fn make_height(h: u16) -> Height {
-        Height::from_nonzero(NonZeroU16::new(h).unwrap())
-    }
-
-    fn make_frame_rate(num: i64, den: i64) -> FrameRate {
-        let ratio = Ratio::new(num, core::num::NonZeroI64::new(den).unwrap()).unwrap();
-        FrameRate::from_ratio(ratio).unwrap()
-    }
-
-    #[test]
-    fn test_encode_uncompressed_rgb() {
-        let width = make_width(320);
-        let height = make_height(240);
-        let frame_rate = make_frame_rate(30, 1);
-
-        // Create a dummy RGB frame (320*240*3 bytes for uncompressed RGB)
-        let frame_size = 320 * 240 * 3;
-        let frame = vec![0u8; frame_size];
-
-        let result = encode_avi(
-            frame_rate,
-            &[frame],
-            width,
-            height,
-            AviCodec::UncompressedRgb,
-        );
-        assert!(result.is_ok());
-
-        let avi_data = result.unwrap();
-        // Check RIFF header
-        assert_eq!(&avi_data[0..4], b"RIFF");
-        // Check AVI identifier
-        assert_eq!(&avi_data[8..12], b"AVI ");
-    }
-
-    #[test]
-    fn test_encode_motion_jpeg() {
-        let width = make_width(320);
-        let height = make_height(240);
-        let frame_rate = make_frame_rate(30, 1);
-
-        // Create dummy JPEG frames (just minimal JPEG headers)
-        let jpeg_frame = vec![0xFF, 0xD8, 0xFF, 0xD9]; // Minimal JPEG SOI/EOI
-        let frames = vec![jpeg_frame.clone(), jpeg_frame];
-
-        let result = encode_avi(frame_rate, &frames, width, height, AviCodec::MotionJpeg);
-        assert!(result.is_ok());
-
-        let avi_data = result.unwrap();
-        // Check RIFF header
-        assert_eq!(&avi_data[0..4], b"RIFF");
-        // Check AVI identifier
-        assert_eq!(&avi_data[8..12], b"AVI ");
-    }
-
-    #[test]
-    fn test_encode_avi_no_frames() {
-        let width = make_width(320);
-        let height = make_height(240);
-        let frame_rate = make_frame_rate(30, 1);
-
-        let result = encode_avi(frame_rate, &[], width, height, AviCodec::UncompressedRgb);
-        assert_eq!(result, Err(AviError::NoFrames));
-    }
-
-    #[test]
-    fn test_encode_avi_frame_rate_with_denominator() {
-        let width = make_width(320);
-        let height = make_height(240);
-        // 30000/1001 frame rate (NTSC)
-        let frame_rate = make_frame_rate(30000, 1001);
-
-        let frame = vec![0u8; 320 * 240 * 3];
-        let result = encode_avi(
-            frame_rate,
-            &[frame],
-            width,
-            height,
-            AviCodec::UncompressedRgb,
-        );
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_encode_avi_uncompressed_rgb_has_dc_chunk_id() {
-        let width = make_width(320);
-        let height = make_height(240);
-        let frame_rate = make_frame_rate(30, 1);
-        let frame = vec![0u8; 320 * 240 * 3];
-        let avi_data = encode_avi(
-            frame_rate,
-            &[frame],
-            width,
-            height,
-            AviCodec::UncompressedRgb,
-        )
-        .expect("encoding should succeed");
-
-        // movi LIST starts after RIFF(12) + hdrl LIST + avih(56+8) + strl LIST + strh(56+8) + strf(40+8)
-        // Find "movi" in the output
-        let movi_pos = avi_data
-            .windows(4)
-            .position(|w| w == b"movi")
-            .expect("movi LIST");
-        // First chunk in movi should be "00dc" for uncompressed RGB
-        // After "movi" (4 bytes) comes the first chunk
-        let list_type_pos = movi_pos + 4;
-        // After "movi" (4 bytes) comes the first chunk
-        assert_eq!(&avi_data[list_type_pos..list_type_pos + 4], b"00dc");
-    }
-
-    #[test]
-    fn test_encode_avi_motion_jpeg_has_db_chunk_id() {
-        let width = make_width(320);
-        let height = make_height(240);
-        let frame_rate = make_frame_rate(30, 1);
-        let jpeg_frame = vec![0xFF, 0xD8, 0xFF, 0xD9];
-        let avi_data = encode_avi(
-            frame_rate,
-            &[jpeg_frame.clone(), jpeg_frame],
-            width,
-            height,
-            AviCodec::MotionJpeg,
-        )
-        .expect("encoding should succeed");
-
-        let list_type_pos = avi_data.windows(4).position(|w| w == b"movi").unwrap() + 4;
-        // First chunk in movi should be "00db" for motion-JPEG
-        assert_eq!(&avi_data[list_type_pos..list_type_pos + 4], b"00db");
-    }
-
-    #[test]
-    fn test_encode_avi_idx1_entries_match_codec() {
-        // Uncompressed RGB: idx1 should use 00dc
-        let width = make_width(320);
-        let height = make_height(240);
-        let frame_rate = make_frame_rate(30, 1);
-        let frame = vec![0u8; 320 * 240 * 3];
-        let avi_data = encode_avi(
-            frame_rate,
-            &[frame],
-            width,
-            height,
-            AviCodec::UncompressedRgb,
-        )
-        .expect("encoding should succeed");
-
-        // Find idx1 chunk
-        let idx1_pos = avi_data
-            .windows(4)
-            .position(|w| w == b"idx1")
-            .expect("idx1 chunk");
-        // idx1 data starts after "idx1" + size (8 bytes)
-        let idx1_data = &avi_data[idx1_pos + 8..];
-        // First 4 bytes of each index entry should be 00dc
-        assert_eq!(&idx1_data[0..4], b"00dc");
-
-        // Motion-JPEG: idx1 should use 00db
-        let jpeg_frame = vec![0xFF, 0xD8, 0xFF, 0xD9];
-        let avi_data_mjpeg = encode_avi(
-            frame_rate,
-            &[jpeg_frame.clone(), jpeg_frame],
-            width,
-            height,
-            AviCodec::MotionJpeg,
-        )
-        .expect("encoding should succeed");
-
-        let idx1_pos_mjpeg = avi_data_mjpeg
-            .windows(4)
-            .position(|w| w == b"idx1")
-            .expect("idx1 chunk");
-        let idx1_data_mjpeg = &avi_data_mjpeg[idx1_pos_mjpeg + 8..];
-        assert_eq!(&idx1_data_mjpeg[0..4], b"00db");
-    }
-
-    #[test]
-    fn test_encode_avi_rejects_mismatched_uncompressed_rgb_size() {
-        let width = make_width(32);
-        let height = make_height(16);
-        let frame_rate = make_frame_rate(25, 1);
-        let result = encode_avi(
-            frame_rate,
-            &[vec![0u8; 10]],
-            width,
-            height,
-            AviCodec::UncompressedRgb,
-        );
-        assert_eq!(result, Err(AviError::InvalidDimensions));
-    }
-
-    #[test]
-    fn test_encode_avi_accepts_correctly_sized_uncompressed_rgb() {
-        let width = make_width(32);
-        let height = make_height(16);
-        let frame_rate = make_frame_rate(25, 1);
-        let result = encode_avi(
-            frame_rate,
-            &[vec![0u8; 32 * 16 * 3]],
-            width,
-            height,
-            AviCodec::UncompressedRgb,
-        );
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_encode_avi_rejects_empty_motion_jpeg_frame() {
-        let width = make_width(320);
-        let height = make_height(240);
-        let frame_rate = make_frame_rate(30, 1);
-        let result = encode_avi(frame_rate, &[vec![]], width, height, AviCodec::MotionJpeg);
-        assert_eq!(result, Err(AviError::InvalidDimensions));
-    }
-}
+#[path = "avi_tests.rs"]
+mod tests;

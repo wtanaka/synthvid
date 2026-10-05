@@ -1,5 +1,5 @@
 use std::process::{Command, Stdio};
-use synthvid_catalog::writer::{JsonArray, JsonKey, JsonObject};
+use synthvid_video::writer::{JsonArray, JsonKey, JsonObject};
 
 use crate::support::is_command_available;
 

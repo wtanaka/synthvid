@@ -19,6 +19,9 @@
 pub struct Quality(u8);
 
 impl Quality {
+    /// Quality 75, the libjpeg default and the value the catalogue encodes at.
+    pub const Q75: Self = Self(75);
+
     /// Creates a new Quality parameter.
     ///
     /// # Arguments

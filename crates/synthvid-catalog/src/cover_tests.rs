@@ -5,6 +5,7 @@ mod tests {
     use super::super::*;
     use std::collections::BTreeSet;
     use synthvid_encode::defects::Defect;
+    use synthvid_scene::{Dimensions, Height, Width};
 
     #[test]
     fn test_entry_names_are_unique() {
@@ -109,8 +110,8 @@ mod tests {
         let catalogue = generate_catalogue().unwrap();
 
         // Check that all discriminants are present
-        let mut found_truncate_at = false;
-        let mut found_truncate_box = false;
+        let mut found_truncate_before = false;
+        let mut found_truncate_within = false;
         let mut found_zero_length = false;
         let mut found_oversized_len = false;
         let mut found_undersized_len = false;
@@ -128,8 +129,8 @@ mod tests {
         for entry in &catalogue {
             match &entry.defect {
                 None => found_none = true,
-                Some(Defect::TruncateAt(_)) => found_truncate_at = true,
-                Some(Defect::TruncateBox(_)) => found_truncate_box = true,
+                Some(Defect::TruncateBefore(_)) => found_truncate_before = true,
+                Some(Defect::TruncateWithin { .. }) => found_truncate_within = true,
                 Some(Defect::ZeroLengthPayload(_)) => found_zero_length = true,
                 Some(Defect::OversizedBoxLength(_)) => found_oversized_len = true,
                 Some(Defect::UndersizedBoxLength(_)) => found_undersized_len = true,
@@ -146,8 +147,8 @@ mod tests {
         }
 
         assert!(found_none, "must include no-defect entries");
-        assert!(found_truncate_at, "must include TruncateAt");
-        assert!(found_truncate_box, "must include TruncateBox");
+        assert!(found_truncate_before, "must include TruncateBefore");
+        assert!(found_truncate_within, "must include TruncateWithin");
         assert!(found_zero_length, "must include ZeroLengthPayload");
         assert!(found_oversized_len, "must include OversizedBoxLength");
         assert!(found_undersized_len, "must include UndersizedBoxLength");
@@ -230,9 +231,22 @@ mod tests {
             FrameCountValue::new(20000),
         ];
 
-        // Every dimension should pair with every frame count
+        // Every dimension should pair with every frame count that fits the
+        // volume cap; the others would render gigabytes.
         for dim in &dimensions {
             for fc in &frame_counts {
+                let pixel_frames = u64::from(dim.width.get().get())
+                    * u64::from(dim.height.get().get())
+                    * u64::from(fc.get());
+                if pixel_frames > 10_000_000 {
+                    assert!(
+                        !catalogue
+                            .iter()
+                            .any(|e| e.dimensions == *dim && e.frame_count == *fc),
+                        "catalog must not hold the oversized pair ({dim:?}, {fc:?})"
+                    );
+                    continue;
+                }
                 let found = catalogue
                     .iter()
                     .any(|e| e.dimensions == *dim && e.frame_count == *fc);
@@ -311,18 +325,76 @@ mod tests {
     }
 
     #[test]
-    fn test_no_entry_pairs_avi_with_iso_only_defect() {
+    fn test_no_entry_pairs_a_container_with_the_other_formats_defect() {
         let catalogue = generate_catalogue().unwrap();
         for entry in &catalogue {
-            if entry.container == ContainerAxis::Avi {
-                if let Some(defect) = &entry.defect {
-                    assert!(
-                        !cover_axes::defect_requires_iso_boxes(defect),
-                        "entry {} pairs an AVI container with an ISO-only-box defect: {:?}",
+            if let Some(defect) = &entry.defect {
+                if let Some(kind) = cover_axes::defect_container_kind(defect) {
+                    assert_eq!(
+                        kind,
+                        cover_axes::container_kind(entry.container),
+                        "entry {} pairs a container with a defect addressed in the other format: {:?}",
                         entry.manifest_name().as_str(),
                         defect
                     );
                 }
+            }
+        }
+    }
+
+    /// Every distinct container, coding and defect the catalogue combines,
+    /// each as a small entry: the defect's address and the encoding it meets
+    /// are what decide whether it applies, not the picture size.
+    fn small_entry_per_defect_combination() -> Vec<Entry> {
+        let size = Dimensions::new(Width::new(16).unwrap(), Height::new(16).unwrap());
+        let mut seen: Vec<(ContainerAxis, CodingAxis, Defect)> = Vec::new();
+        let mut small = Vec::new();
+        for mut entry in generate_catalogue().unwrap() {
+            let Some(defect) = entry.defect.clone() else {
+                continue;
+            };
+            let combination = (entry.container, entry.coding, defect);
+            if seen.contains(&combination) {
+                continue;
+            }
+            seen.push(combination);
+            entry.dimensions = size;
+            entry.frame_count = FrameCountValue::new(3);
+            small.push(entry);
+        }
+        small
+    }
+
+    #[test]
+    fn test_every_defect_applies_to_every_container_and_coding_it_is_paired_with() {
+        for entry in small_entry_per_defect_combination() {
+            let generated = crate::generator::generate_entry(&entry);
+            assert!(
+                generated.is_ok(),
+                "{:?} on {:?} {:?} fails to apply: {:?}",
+                entry.defect,
+                entry.container,
+                entry.coding,
+                generated.err()
+            );
+        }
+    }
+
+    #[test]
+    fn test_both_formats_get_both_truncations() {
+        use synthvid_encode::defects::ContainerKind;
+        let catalogue = generate_catalogue().unwrap();
+        for kind in [ContainerKind::Iso, ContainerKind::Avi] {
+            for want_before in [true, false] {
+                assert!(
+                    catalogue.iter().any(|e| match &e.defect {
+                        Some(Defect::TruncateBefore(a)) => want_before && a.kind() == kind,
+                        Some(Defect::TruncateWithin { address, .. }) =>
+                            !want_before && address.kind() == kind,
+                        _ => false,
+                    }),
+                    "no {kind:?} entry with truncate-before={want_before}"
+                );
             }
         }
     }

@@ -2,6 +2,9 @@
 //!
 //! This crate performs no input or output. It takes values and returns values.
 //!
+//! The crate is pre-release (version `0.0.x`): its public API may change in any
+//! release without notice.
+//!
 //! # Layout
 //!
 //! This file is a façade. It declares the modules and re-exports their public

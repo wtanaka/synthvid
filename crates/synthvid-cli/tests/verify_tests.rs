@@ -28,7 +28,7 @@ fn test_verify_only_tiny_entry_succeeds() {
     let output = Command::new(synthvid_bin())
         .arg("verify")
         .arg("--only")
-        .arg("0016x0016-1-30fps-gradient-disc-fixed-raw-iso-rot180-scaled-zero-fps")
+        .arg("0016x0016-1-30fps-solid-disc-fixed-raw-iso-identity-scaled-nodef")
         .arg("--lock")
         .arg(&lock_path)
         .output()
@@ -42,7 +42,7 @@ fn test_verify_only_tiny_entry_succeeds() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("ok 0016x0016-1-30fps-gradient-disc-fixed-raw-iso-rot180-scaled-zero-fps"),
+        stdout.contains("ok 0016x0016-1-30fps-solid-disc-fixed-raw-iso-identity-scaled-nodef"),
         "stdout should contain 'ok <entry>' for matching entry; got: {stdout}"
     );
 }
@@ -81,7 +81,7 @@ fn test_verify_corpus_with_only_is_usage_error() {
         .arg("--corpus")
         .arg("/tmp/nonexistent")
         .arg("--only")
-        .arg("0016x0016-1-30fps-gradient-disc-fixed-raw-iso-rot180-scaled-zero-fps")
+        .arg("0016x0016-1-30fps-solid-disc-fixed-raw-iso-identity-scaled-nodef")
         .output()
         .expect("failed to run synthvid-cli");
 
@@ -110,7 +110,7 @@ fn test_verify_digest_mismatch_detection() {
         .lines()
         .map(|line| {
             if line.starts_with(
-                "0016x0016-1-30fps-gradient-disc-fixed-raw-iso-rot180-scaled-zero-fps.json ",
+                "0016x0016-1-30fps-solid-disc-fixed-raw-iso-identity-scaled-nodef.json ",
             ) {
                 // Replace the digest with a fake one
                 let parts: Vec<&str> = line.split(' ').collect();
@@ -134,7 +134,7 @@ fn test_verify_digest_mismatch_detection() {
     let output = Command::new(synthvid_bin())
         .arg("verify")
         .arg("--only")
-        .arg("0016x0016-1-30fps-gradient-disc-fixed-raw-iso-rot180-scaled-zero-fps")
+        .arg("0016x0016-1-30fps-solid-disc-fixed-raw-iso-identity-scaled-nodef")
         .arg("--lock")
         .arg(&temp_lock)
         .output()
@@ -150,7 +150,7 @@ fn test_verify_digest_mismatch_detection() {
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("digest mismatch in 0016x0016-1-30fps-gradient-disc-fixed-raw-iso-rot180-scaled-zero-fps.json"),
+        stderr.contains("digest mismatch in 0016x0016-1-30fps-solid-disc-fixed-raw-iso-identity-scaled-nodef.json"),
         "stderr should contain digest mismatch error; got: {stderr}"
     );
 }
@@ -159,7 +159,7 @@ fn test_verify_digest_mismatch_detection() {
 fn test_verify_only_ignores_unselected_lockfile_entries() {
     // A lockfile entry for an entry that was not selected, and that the catalogue does not
     // produce, must not be reported as missing when `--only` selects a different entry.
-    let tiny = "0016x0016-1-30fps-gradient-disc-fixed-raw-iso-rot180-scaled-zero-fps";
+    let tiny = "0016x0016-1-30fps-solid-disc-fixed-raw-iso-identity-scaled-nodef";
     let lock_content =
         fs::read_to_string(catalog_lock_path()).expect("failed to read catalog.lock");
     let bogus_digest = "1".repeat(64);

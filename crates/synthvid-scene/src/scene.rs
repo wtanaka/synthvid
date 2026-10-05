@@ -338,7 +338,9 @@ impl Object {
 /// Plain data: dimensions, rate, length, an optional physical [`Scale`], a
 /// [`Background`], a [`Camera`], and the [`Object`]s drawn in declaration
 /// order. Later concerns evaluate motion and draw pixels; this type only
-/// holds what they evaluate.
+/// holds what they evaluate. A Scene describes sensible content and nothing
+/// here validates that; output that is deliberately nonsensical belongs in the
+/// video description, not the scene.
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct Scene {
     /// Frame dimensions in pixels.

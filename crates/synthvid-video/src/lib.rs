@@ -1,0 +1,43 @@
+//! A video specification, its rendering, and the manifest that records what was drawn.
+//!
+//! A [`VideoSpec`] is a `Scene` together with the choices that turn it into a file: its
+//! encoding, its container, and an optional defect. [`render()`](fn@render) turns one into a manifest and
+//! a media file. Manifests are OLPC Canonical JSON: UTF-8, no whitespace outside string
+//! literals, object keys sorted by byte value, rationals as `{"den":D,"num":N}` with `den`
+//! first, and no floating-point numbers anywhere. A manifest records what was drawn in each
+//! frame: objects' bounding boxes, centers in screen and world space, visibility, and the
+//! camera transform. A manifest's digest is stable across platforms and architectures within
+//! one release. The crate is pre-release (version `0.0.x`): its public API, the manifest
+//! format and the digests may change in any release without notice.
+//!
+//! # Layout
+//!
+//! | Module | Owns                                                      |
+//! | ------ | --------------------------------------------------------- |
+//! | `video_spec` | the video specification and its encoding and container |
+//! | `render` | rendering one specification (`render`)                    |
+//! | `manifest` | manifest document definition                            |
+//! | `writer` | the canonical JSON writer manifests are built with       |
+//! | `object_state` | the per-frame state of every object, for the manifest |
+//! | `keys`, `json_names`, `names` | closed key and name sets            |
+
+#![forbid(unsafe_code)]
+
+pub mod json_names;
+pub mod keys;
+pub mod manifest;
+pub mod names;
+pub mod object_state;
+pub mod render;
+pub mod video_spec;
+pub mod writer;
+
+pub use keys::ManifestKey;
+pub use manifest::{
+    FrameObjectState, Manifest, ManifestAffine, ManifestBounds, ManifestFrame, ManifestHeader,
+    ManifestObjectDecl, ManifestPoint, ManifestRatio, OnScreen,
+};
+pub use names::{BackgroundName, ShapeName};
+pub use render::{render, CameraStep, GeneratedEntry, GenerationError, ObjectStep};
+pub use video_spec::{Container, DisplayRotation, Encoding, VideoSpec};
+pub use writer::{JsonArray, JsonEntryName, JsonKey, JsonObject};

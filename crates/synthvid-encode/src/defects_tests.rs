@@ -55,74 +55,10 @@ fn test_boxpath_builder() {
 }
 
 #[test]
-fn test_byteoffset_new() {
-    let off = ByteOffset::new(42);
-    assert_eq!(off.get(), 42);
-}
-
-#[test]
 fn test_axis_enum() {
     let w = Axis::Width;
     let h = Axis::Height;
     assert_ne!(w, h);
-}
-
-// TruncateAt tests
-#[test]
-fn test_truncate_at_zero() {
-    let defect = Defect::TruncateAt(ByteOffset::new(0));
-    let input = vec![1, 2, 3, 4, 5];
-    let result = apply(&defect, &input).expect("truncate");
-    assert_eq!(result.len(), 0);
-}
-
-#[test]
-fn test_truncate_at_middle() {
-    let defect = Defect::TruncateAt(ByteOffset::new(3));
-    let input = vec![1, 2, 3, 4, 5];
-    let result = apply(&defect, &input).expect("truncate");
-    assert_eq!(result, vec![1, 2, 3]);
-}
-
-#[test]
-fn test_truncate_at_past_end() {
-    let defect = Defect::TruncateAt(ByteOffset::new(100));
-    let input = vec![1, 2, 3];
-    let err = apply(&defect, &input).expect_err("should fail");
-    assert_eq!(err, DefectError::OffsetOutOfRange);
-}
-
-// TruncateBox tests
-#[test]
-fn test_truncate_box_iso_changes_bytes() {
-    let input = make_iso_base();
-    let path = BoxPath::root().child(BoxTag::new(*b"ftyp"));
-    let defect = Defect::TruncateBox(path);
-    let result = apply(&defect, &input).expect("apply defect");
-    assert_ne!(result, input, "defect should change bytes");
-    assert!(
-        result.len() < input.len(),
-        "truncated file should be smaller"
-    );
-}
-
-#[test]
-fn test_truncate_box_iso_reproducible() {
-    let input = make_iso_base();
-    let path = BoxPath::root().child(BoxTag::new(*b"ftyp"));
-    let defect = Defect::TruncateBox(path);
-    let result1 = apply(&defect, &input).expect("apply defect");
-    let result2 = apply(&defect, &input).expect("apply defect");
-    assert_eq!(result1, result2, "defect must be reproducible");
-}
-
-#[test]
-fn test_truncate_box_iso_missing_box_errors() {
-    let input = vec![0u8; 100];
-    let path = BoxPath::root().child(BoxTag::new(*b"ftyp"));
-    let defect = Defect::TruncateBox(path);
-    let err = apply(&defect, &input).expect_err("should fail");
-    assert_eq!(err, DefectError::IncompatibleFileType);
 }
 
 // ZeroLengthPayload tests

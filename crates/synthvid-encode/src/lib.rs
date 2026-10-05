@@ -2,7 +2,11 @@
 //!
 //! Every function here takes bytes or frames and returns bytes. Nothing here
 //! touches the filesystem, the clock, or the environment; the same inputs
-//! produce the same bytes on every platform.
+//! produce the same bytes on every platform within one release.
+//!
+//! The crate is pre-release (version `0.0.x`): its public API, including how a
+//! defect is addressed, and the bytes it writes may change in any release
+//! without notice.
 //!
 //! # Layout
 //!
@@ -66,7 +70,9 @@ pub use crate::bitstream::BitCount;
 pub use crate::capacity::raw_frames_fit_classic_container;
 pub use crate::color::YCbCr;
 pub use crate::config::{ChromaSampling, Quality};
-pub use crate::defects::{apply, Axis, BoxPath, BoxTag, ByteOffset, Defect, DefectError};
+pub use crate::defects::{
+    apply, Axis, BoxAddress, BoxPath, BoxStep, BoxTag, ContainerKind, Defect, DefectError,
+};
 pub use crate::huffman::Component;
 pub use crate::iso::{encode_iso, IsoCodec, IsoError, TrackMatrix};
 pub use crate::jpeg::encode_jpeg;

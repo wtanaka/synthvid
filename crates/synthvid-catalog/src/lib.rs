@@ -1,24 +1,21 @@
-//! The declared corpus, its manifests, and their digests.
+//! The declared corpus and its digests.
 //!
-//! This crate serializes rendered scenes to OLPC Canonical JSON manifests:
-//! UTF-8, no whitespace outside string literals, object keys sorted by byte
-//! value, rationals as `{"den":D,"num":N}` with `den` first, and no
-//! floating-point numbers anywhere. Manifests record what was drawn in each
-//! frame: objects' bounding boxes, centers in screen and world space,
-//! visibility, and the camera transform. A manifest's digest is stable across
-//! platforms, architectures, and time.
+//! The catalogue is a pairwise covering array over declared axes. [`cover::Entry`] is one
+//! point of it; [`cover::Entry::to_video_spec`] turns an entry into a `synthvid_video::VideoSpec`,
+//! and [`generate_entry`] renders it. The lockfile lists the SHA-256 digest and length of every
+//! file the catalogue produces, so any change to the corpus shows up as a change to that file.
+//! The crate is pre-release (version `0.0.x`): its public API, the catalogue and
+//! the digests may change in any release without notice.
 //!
 //! # Layout
 //!
 //! | Module | Owns                                                   |
 //! | ------ | ------------------------------------------------------ |
 //! | `cover` | the pairwise covering array over the declared axes    |
-//! | `generator` | rendering plus encoding one entry (`generate_entry`) |
-//! | `manifest` | manifest document definition                         |
-//! | `writer` | the canonical JSON writer manifests are built with    |
+//! | `scene_builder` | the scene each entry describes                |
+//! | `generator` | generating one entry (`generate_entry`)           |
 //! | `sha256` | the in-crate hash (`sha256`, `Sha256`, `Digest`)      |
 //! | `lockfile` | the digest list (`generate_lockfile`, `parse_lockfile`, `verify`) |
-//! | `keys`, `json_names`, `names` | closed key and name sets          |
 //!
 //! # Example
 //!
@@ -40,25 +37,17 @@
 
 pub mod cover;
 pub mod generator;
-pub mod json_names;
-pub mod keys;
 pub mod lockfile;
-pub mod manifest;
-pub mod names;
-pub mod object_state;
+pub mod scene_builder;
 pub mod sha256;
-pub mod writer;
 
-pub use generator::{generate_entry, GeneratedEntry, GenerationError};
-pub use keys::ManifestKey;
+pub use generator::{generate_entry, EntryError};
 pub use lockfile::{
     generate_lockfile, parse_lockfile, verify, ContentLength, LockfileDifference, LockfileEntry,
     LockfileName, LockfileNameError, ParseLockfileError,
 };
-pub use manifest::{
-    FrameObjectState, Manifest, ManifestAffine, ManifestBounds, ManifestFrame, ManifestHeader,
-    ManifestObjectDecl, ManifestPoint, ManifestRatio, OnScreen,
-};
-pub use names::{BackgroundName, ShapeName};
+pub use scene_builder::SceneBuildError;
 pub use sha256::{sha256, DIGEST_SIZE};
-pub use writer::{JsonArray, JsonEntryName, JsonKey, JsonObject};
+
+mod object_state_tests;
+mod video_spec_tests;

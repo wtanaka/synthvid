@@ -8,6 +8,7 @@ version = "0.0.1-alpha.0"
 dependencies = [
  "synthvid-encode",
  "synthvid-scene",
+ "synthvid-video",
 ]
 
 [[package]]
@@ -17,6 +18,7 @@ dependencies = [
  "synthvid-catalog",
  "synthvid-encode",
  "synthvid-scene",
+ "synthvid-video",
 ]
 
 [[package]]
@@ -34,7 +36,15 @@ version = "0.0.1-alpha.0"
 name = "synthvid-validate"
 version = "0.0.1-alpha.0"
 dependencies = [
- "synthvid-catalog",
+ "synthvid-encode",
+ "synthvid-scene",
+ "synthvid-video",
+]
+
+[[package]]
+name = "synthvid-video"
+version = "0.0.1-alpha.0"
+dependencies = [
  "synthvid-encode",
  "synthvid-scene",
 ]

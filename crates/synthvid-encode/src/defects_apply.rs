@@ -1,6 +1,8 @@
 //! Implementation of per-defect application functions.
 
-use super::{defects_box, Axis, BoxPath, BoxTag, ByteOffset, DefectError};
+use super::defects_layout::Layout;
+use super::{defects_box, Axis, BoxAddress, BoxPath, BoxTag, DefectError};
+use core::num::NonZeroU32;
 use defects_box::{
     extract_4_bytes, find_avi_box, find_avi_box_with_ancestors, find_iso_box,
     find_iso_box_with_ancestors, is_avi_format, is_iso_format, write_u32, ContainerBytes,
@@ -10,51 +12,42 @@ use defects_box::{
 // Re-export apply_reordered_boxes from the reorder module
 pub(super) use super::defects_reorder::apply_reordered_boxes;
 
-/// Apply `TruncateAt` defect
-pub(super) fn apply_truncate_at(
-    offset: ByteOffset,
+/// Apply `TruncateBefore` defect
+pub(super) fn apply_truncate_before(
+    address: &BoxAddress,
     input: ContainerBytes<'_>,
 ) -> Result<Vec<u8>, DefectError> {
-    let off = offset.get();
-    if off > input.len() {
-        return Err(DefectError::OffsetOutOfRange);
-    }
-    Ok(input
-        .as_slice()
-        .get(..off)
-        .ok_or(DefectError::OffsetOutOfRange)?
-        .to_vec())
+    let (start, _) = Layout::of(input)?.span(address)?;
+    cut_at(input, start)
 }
 
-/// Apply `TruncateBox` defect
-pub(super) fn apply_truncate_box(
-    path: &BoxPath,
+/// Apply `TruncateWithin` defect
+pub(super) fn apply_truncate_within(
+    address: &BoxAddress,
+    offset: NonZeroU32,
     input: ContainerBytes<'_>,
 ) -> Result<Vec<u8>, DefectError> {
-    let is_iso = is_iso_format(input)?;
-    if is_iso {
-        let box_info = find_iso_box(input, path)?;
-        // buffer indexing requires a raw usize; this is the single point where
-        // the offset re-enters raw-usize space
-        let start_pos = box_info.payload_start.get();
-        Ok(input
-            .as_slice()
-            .get(..start_pos)
-            .ok_or(DefectError::InvalidBoxStructure)?
-            .to_vec())
-    } else if is_avi_format(input) {
-        let box_info = find_avi_box(input, path)?;
-        // buffer indexing requires a raw usize; this is the single point where
-        // the offset re-enters raw-usize space
-        let start_pos = box_info.payload_start.get();
-        Ok(input
-            .as_slice()
-            .get(..start_pos)
-            .ok_or(DefectError::InvalidBoxStructure)?
-            .to_vec())
-    } else {
-        Err(DefectError::IncompatibleFileType)
+    let (start, end) = Layout::of(input)?.span(address)?;
+    let owned = end.checked_sub(start).ok_or(DefectError::SizeOverflow)?;
+    let into = usize::try_from(offset.get()).map_err(|_| DefectError::OffsetOutOfRange)?;
+    if into >= owned {
+        return Err(DefectError::OffsetOutOfRange);
     }
+    cut_at(
+        input,
+        start.checked_add(into).ok_or(DefectError::SizeOverflow)?,
+    )
+}
+
+/// Keeps the first `len` bytes. The one place a cut position re-enters raw
+/// `usize` space.
+fn cut_at(input: ContainerBytes<'_>, len: usize) -> Result<Vec<u8>, DefectError> {
+    input
+        .as_slice()
+        .get(..len)
+        .map_or(Err(DefectError::OffsetOutOfRange), |prefix| {
+            Ok(prefix.to_vec())
+        })
 }
 
 /// Apply `ZeroLengthPayload` defect

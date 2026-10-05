@@ -5,6 +5,9 @@
 //! digest logic lives in the library crates; this crate only parses
 //! arguments, reads and writes files, and prints.
 //!
+//! The crate is pre-release (version `0.0.x`): its commands and options may
+//! change in any release without notice.
+//!
 //! # Commands
 //!
 //! - `generate --out DIR [--only NAME]... [--dry-run]`: render every

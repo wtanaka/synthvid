@@ -1,0 +1,7 @@
+f04ee8b3fe86722bc6fc5572cdea946cb9abaf7fb5de6218254c7d066822fe1a  crates/synthvid-scene/src/rng.rs
+b6155f6338fe4e5f8f8c4c2b50f0e433c96f17d74f012d7f6c8c8c089149f759  crates/synthvid-scene/src/trig.rs
+f0fb39f9f3db9f6d099d269e4d68602628a008ffedb2702a1b7c614a685c9fe1  crates/synthvid-catalog/src/sha256.rs
+bbe58a3f805244fc59cff3d20c6aeea68f69b3cf2587c9333c14e5b87ae9d9a0  crates/synthvid-video/src/manifest.rs
+203f86b49210026b6bf54e20a2c79fa3ec013c5510dc5149335e87feff8b4b02  crates/synthvid-catalog/src/video_spec_tests.rs
+1663423e45908c99706e0135c9c2ffa4574ab0b9417f671a6eb364b27edb0a5e  crates/synthvid-encode/src/iso.rs
+d457b4df4b3394d30154c8df70373f71550115d2ea95210cd70df84468fe064c  crates/synthvid-validate/src/tests.rs

@@ -139,7 +139,7 @@ impl JsonObject {
     /// # Example
     ///
     /// ```rust
-    /// use synthvid_catalog::writer::{JsonKey, JsonObject};
+    /// use synthvid_video::writer::{JsonKey, JsonObject};
     ///
     /// let mut obj = JsonObject::new();
     /// match (JsonKey::new("b"), JsonKey::new("a")) {

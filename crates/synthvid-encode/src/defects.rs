@@ -46,16 +46,22 @@ impl fmt::Display for BoxTag {
 mod defects_apply;
 #[path = "defects_box.rs"]
 mod defects_box;
+#[path = "defects_frames.rs"]
+mod defects_frames;
+#[path = "defects_layout.rs"]
+mod defects_layout;
 #[path = "defects_reorder.rs"]
 mod defects_reorder;
 
 use defects_apply::{
     apply_absurd_frame_rate, apply_declared_count_mismatch, apply_duplicate_box,
     apply_non_monotonic_timestamps, apply_offset_past_end, apply_oversized_box_length,
-    apply_reordered_boxes, apply_truncate_at, apply_truncate_box, apply_undersized_box_length,
-    apply_unknown_box, apply_zero_dimension, apply_zero_frame_rate, apply_zero_length_payload,
+    apply_reordered_boxes, apply_truncate_before, apply_truncate_within,
+    apply_undersized_box_length, apply_unknown_box, apply_zero_dimension, apply_zero_frame_rate,
+    apply_zero_length_payload,
 };
 use defects_box::ContainerBytes;
+pub use defects_layout::{BoxAddress, BoxStep, ContainerKind};
 
 /// A path through a box tree from file root, e.g. `["moov", "trak", "tkhd"]`.
 ///
@@ -117,25 +123,6 @@ impl fmt::Display for BoxPath {
     }
 }
 
-/// A byte offset within a file.
-///
-/// Wraps a `usize` for memory addressing, valid by construction.
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Ord, PartialOrd)]
-pub struct ByteOffset(usize);
-
-impl ByteOffset {
-    /// Creates a byte offset.
-    #[must_use]
-    pub const fn new(value: usize) -> Self {
-        Self(value)
-    }
-
-    /// Gets the byte offset value.
-    pub(crate) const fn get(self) -> usize {
-        self.0
-    }
-}
-
 /// Dimensions axis: width or height.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum Axis {
@@ -148,17 +135,42 @@ pub enum Axis {
 /// A defect to introduce into a container.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum Defect {
-    /// Truncate the file at a specific byte offset.
-    TruncateAt(ByteOffset),
-    /// Truncate the file right after the box at this path.
-    TruncateBox(BoxPath),
+    /// Cut the file so it ends just before the first byte of this box. For a
+    /// frame that is the first byte of its data.
+    ///
+    /// Together with `TruncateWithin`, this names every cut position of a file
+    /// exactly once: a cut is either at the start of a box or strictly inside
+    /// the bytes a box owns.
+    TruncateBefore(BoxAddress),
+    /// Cut the file `offset` bytes into the bytes this box owns.
+    ///
+    /// A box owns the bytes from its first byte up to the next box's first
+    /// byte, so a container owns its header and a leaf owns everything it
+    /// holds, including any padding. An offset of zero is `TruncateBefore`, so
+    /// it cannot be written here.
+    ///
+    /// A frame is addressed by its number below `mdat` in ISO and below
+    /// `movi` in AVI, so the same frame is named whatever codec wrote it. A
+    /// frame's region starts at its first data byte in both formats, so an
+    /// offset within the frame's data counts the same bytes in either. The
+    /// region runs on to the next one, so in AVI it also holds the chunk's pad
+    /// byte and the next chunk's 8-byte header: an offset past the end of the
+    /// data is valid there and out of range in ISO. The byte an offset reaches
+    /// still depends on how the codec encodes that frame.
+    TruncateWithin {
+        /// The box whose bytes are cut.
+        address: BoxAddress,
+        /// How many bytes into the box's own bytes to cut; at least one.
+        offset: core::num::NonZeroU32,
+    },
     /// Make the payload of a box zero-length by writing size=8.
     ZeroLengthPayload(BoxPath),
     /// Write an oversized box length (size + 256).
     OversizedBoxLength(BoxPath),
     /// Write an undersized box length (size - 1).
     UndersizedBoxLength(BoxPath),
-    /// Write an offset that points past the end of the file.
+    /// Rewrite the first entry of a chunk offset table so it points past the
+    /// end of the file. The path names the table: `stco` in ISO, `idx1` in AVI.
     OffsetPastEnd(BoxPath),
     /// Write the same box tag twice (box duplication).
     DuplicateBox(BoxPath),
@@ -191,6 +203,8 @@ pub enum Defect {
 pub enum DefectError {
     /// Box not found at the given path.
     BoxNotFound(BoxPath),
+    /// No box has this address in the file.
+    AddressNotFound,
     /// Offset points past the end of the file.
     OffsetOutOfRange,
     /// Invalid box structure or format.
@@ -205,6 +219,7 @@ impl fmt::Display for DefectError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::BoxNotFound(path) => write!(f, "box not found at {path}"),
+            Self::AddressNotFound => write!(f, "no box has this address"),
             Self::OffsetOutOfRange => write!(f, "offset points past end of file"),
             Self::InvalidBoxStructure => write!(f, "invalid box structure"),
             Self::IncompatibleFileType => write!(f, "incompatible file type"),
@@ -227,8 +242,10 @@ impl core::error::Error for DefectError {}
 pub fn apply(defect: &Defect, input: &[u8]) -> Result<Vec<u8>, DefectError> {
     let container = ContainerBytes::new(input);
     match defect {
-        Defect::TruncateAt(offset) => apply_truncate_at(*offset, container),
-        Defect::TruncateBox(path) => apply_truncate_box(path, container),
+        Defect::TruncateBefore(address) => apply_truncate_before(address, container),
+        Defect::TruncateWithin { address, offset } => {
+            apply_truncate_within(address, *offset, container)
+        }
         Defect::ZeroLengthPayload(path) => apply_zero_length_payload(path, container),
         Defect::OversizedBoxLength(path) => apply_oversized_box_length(path, container),
         Defect::UndersizedBoxLength(path) => apply_undersized_box_length(path, container),
@@ -253,3 +270,7 @@ mod tests;
 #[cfg(test)]
 #[path = "defects_tests2.rs"]
 mod tests2;
+
+#[cfg(test)]
+#[path = "defects_truncate_tests.rs"]
+mod truncate_tests;

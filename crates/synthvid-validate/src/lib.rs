@@ -12,6 +12,9 @@
 //! External decoders are verification only; they never produce a file.
 //! Tests skip gracefully when a tool is absent and report which oracle ran
 //! when one is present.
+//!
+//! The crate is pre-release (version `0.0.x`): its public API may change in any
+//! release without notice.
 
 #![deny(missing_docs)]
 

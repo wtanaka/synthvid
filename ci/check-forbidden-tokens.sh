@@ -38,7 +38,7 @@ report "platform transcendental maths (use the in-crate implementation)" \
 # compute in integers and exact rationals; there is nothing here a
 # float may legitimately do.
 report "floating point (compute in integers or exact rationals)" \
-    "$(scan '\bf32\b|\bf64\b' crates/synthvid-scene crates/synthvid-catalog crates/synthvid-encode)"
+    "$(scan '\bf32\b|\bf64\b' crates/synthvid-scene crates/synthvid-catalog crates/synthvid-encode crates/synthvid-video)"
 
 # Iteration order is randomised per process.
 report "unordered collection (use BTreeMap or BTreeSet)" \

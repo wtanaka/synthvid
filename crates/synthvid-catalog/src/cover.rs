@@ -17,11 +17,13 @@ mod cover_greedy;
 #[path = "cover_tests.rs"]
 mod cover_tests;
 
-use crate::json_names::JsonEntryName;
+use crate::scene_builder::SceneBuildError;
 use core::fmt::Write as FmtWrite;
 use std::fmt;
 use synthvid_encode::defects::Defect;
 use synthvid_scene::Dimensions;
+use synthvid_video::json_names::JsonEntryName;
+use synthvid_video::{Container, DisplayRotation, Encoding, VideoSpec};
 
 /// Error type for catalog generation.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -32,6 +34,10 @@ pub enum CatalogError {
     InvalidFrameRate,
     /// A resolved axis index was out of range.
     AxisIndexOutOfRange,
+    /// No entry can hold both values of a required pair, or an axis has no
+    /// value compatible with the values already chosen. Some compatibility
+    /// rule rules out a pair without excluding it from the pairs required.
+    UnsatisfiableObligation,
 }
 
 impl fmt::Display for CatalogError {
@@ -40,6 +46,9 @@ impl fmt::Display for CatalogError {
             Self::ZeroDimension => write!(f, "dimension value was zero"),
             Self::InvalidFrameRate => write!(f, "frame rate was invalid"),
             Self::AxisIndexOutOfRange => write!(f, "resolved axis index was out of range"),
+            Self::UnsatisfiableObligation => {
+                write!(f, "a required pair of axis values cannot be combined")
+            }
         }
     }
 }
@@ -83,6 +92,27 @@ pub struct Entry {
     pub defect: Option<Defect>,
 }
 
+/// The name an entry's manifest and media files share, assembled from the entry's axis values.
+///
+/// Only [`Entry::manifest_name`] builds one. [`Entry::to_video_spec`] passes it through
+/// `JsonEntryName::new`, so a manifest never carries a name that was not checked.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ManifestName(String);
+
+impl ManifestName {
+    /// The name as text.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl core::fmt::Display for ManifestName {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
 impl Entry {
     /// Generates the manifest name for this entry.
     ///
@@ -90,7 +120,7 @@ impl Entry {
     /// identical axes produce identical names; different axes produce
     /// different names.
     #[must_use]
-    pub fn manifest_name(&self) -> JsonEntryName {
+    pub fn manifest_name(&self) -> ManifestName {
         let mut name = String::new();
         write!(
             name,
@@ -120,9 +150,7 @@ impl Entry {
         name.push('-');
         name.push_str(Self::defect_str(self.defect.as_ref()));
 
-        // All components consist only of lowercase letters, digits, and hyphens,
-        // so this cannot fail. The regex `[a-z0-9-]+` is guaranteed to match.
-        JsonEntryName::from_known(&name)
+        ManifestName(name)
     }
 
     /// Generates the media file name for this entry.
@@ -229,6 +257,50 @@ impl Entry {
     fn defect_str(def: Option<&Defect>) -> &'static str {
         def.as_ref()
             .map_or("nodef", |d| cover_axes::defect_variant_str(d))
+    }
+
+    /// Converts this entry to a `VideoSpec` with explicit parameters.
+    ///
+    /// # Errors
+    ///
+    /// Returns a `SceneBuildError` if scene construction fails.
+    pub fn to_video_spec(&self) -> Result<VideoSpec, SceneBuildError> {
+        use crate::generator::build_scene;
+
+        let scene = build_scene(self)?;
+
+        let encoding = match self.coding {
+            CodingAxis::Raw => Encoding::Raw,
+            CodingAxis::MotionJpeg => Encoding::Mjpeg {
+                quality: synthvid_encode::Quality::Q75,
+                chroma: synthvid_encode::ChromaSampling::Yuv420,
+            },
+        };
+
+        let rotation = match self.track_matrix {
+            TrackMatrixAxis::Identity => DisplayRotation::Identity,
+            TrackMatrixAxis::Rotate90 => DisplayRotation::Rot90,
+            TrackMatrixAxis::Rotate180 => DisplayRotation::Rot180,
+            TrackMatrixAxis::Rotate270 => DisplayRotation::Rot270,
+        };
+
+        // The catalogue crosses every container with every rotation, but only
+        // ISO can record one; the AVI entries keep the axis in their name alone.
+        let container = match self.container {
+            ContainerAxis::Iso => Container::Iso { rotation },
+            ContainerAxis::Avi => Container::Avi,
+        };
+
+        let name = JsonEntryName::new(self.manifest_name().as_str())
+            .map_err(SceneBuildError::EntryName)?;
+
+        Ok(VideoSpec::new(
+            name,
+            scene,
+            encoding,
+            container,
+            self.defect.clone(),
+        ))
     }
 }
 
@@ -344,7 +416,9 @@ fn define_axes() -> Result<cover_axes::AxisArrays, CatalogError> {
 /// # Errors
 ///
 /// Returns `CatalogError::ZeroDimension` if any dimension in the axis definitions is zero,
-/// or `CatalogError::InvalidFrameRate` if the absurd frame rate cannot be constructed.
+/// or `CatalogError::InvalidFrameRate` if the absurd frame rate cannot be constructed,
+/// or `CatalogError::UnsatisfiableObligation` if a required pair of values cannot
+/// be combined in any entry.
 ///
 /// # Example
 ///
@@ -374,8 +448,13 @@ pub fn generate_catalogue() -> Result<Vec<Entry>, CatalogError> {
     while let Some(&first_obligation) = obligations.iter().next() {
         // Build an entry satisfying this obligation
         let selection =
-            cover_greedy::build_entry_for_obligation(first_obligation, &obligations, &axes);
+            cover_greedy::build_entry_for_obligation(first_obligation, &obligations, &axes)?;
         let entry = entry_from_selection(&axes, &selection)?;
+        // Every pass removes at least the obligation it started from, so the
+        // loop ends.
+        if !cover_greedy::entry_covers_obligation(&entry, first_obligation, &axes) {
+            return Err(CatalogError::UnsatisfiableObligation);
+        }
 
         // Remove all obligations covered by this entry
         obligations.retain(|&ob| !cover_greedy::entry_covers_obligation(&entry, ob, &axes));
@@ -487,4 +566,42 @@ pub(super) fn sample_entry_for_test() -> Entry {
         scale: ScaleAxis::NoScale,
         defect: None,
     }
+}
+
+/// Builds a catalogue-shaped entry for a test: the dimensions and frame count
+/// of the first catalogue entry whose name starts with `prefix`, then `edit`.
+///
+/// The covering array chooses which combinations the catalogue holds, so a
+/// test that needs one particular combination builds it rather than hoping
+/// the catalogue still contains it.
+#[cfg(test)]
+pub(crate) fn entry_like(prefix: &str, edit: impl FnOnce(&mut Entry)) -> Entry {
+    let mut entry = generate_catalogue()
+        .expect("failed to generate catalogue")
+        .into_iter()
+        .find(|e| e.manifest_name().as_str().starts_with(prefix))
+        .expect("no catalogue entry has this size");
+    edit(&mut entry);
+    entry
+}
+
+#[cfg(test)]
+/// The AVI entry the truncation digest is pinned on: motion-JPEG frames in
+/// an AVI cut just before the `movi` list.
+pub(crate) fn avi_truncated_entry() -> Entry {
+    use synthvid_encode::defects::{BoxAddress, BoxStep, BoxTag, ContainerKind};
+    entry_like("0016x0016-10-", |e| {
+        e.frame_rate = FrameRateValue::Sixty;
+        e.background = BackgroundAxis::Checker;
+        e.shape = ShapeAxis::Rect;
+        e.motion = MotionAxis::Linear;
+        e.coding = CodingAxis::MotionJpeg;
+        e.container = ContainerAxis::Avi;
+        e.track_matrix = TrackMatrixAxis::Rotate90;
+        e.scale = ScaleAxis::NoScale;
+        e.defect = Some(Defect::TruncateBefore(
+            BoxAddress::top(ContainerKind::Avi, BoxStep::first(BoxTag::new(*b"RIFF")))
+                .child(BoxStep::first(BoxTag::new(*b"movi"))),
+        ));
+    })
 }

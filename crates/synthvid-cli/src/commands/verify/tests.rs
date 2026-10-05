@@ -4,7 +4,8 @@ use super::super::entry_name::RequestedName;
 use super::super::verify_args::{parse_verify_args, Flag, UsageError};
 use super::*;
 use core::cell::RefCell;
-use synthvid_catalog::{sha256, ContentLength, GenerationError};
+use synthvid_catalog::{sha256, ContentLength, EntryError};
+use synthvid_video::GenerationError;
 
 fn lockfile_name(text: &str) -> LockfileName {
     LockfileName::new(text).unwrap()
@@ -158,9 +159,9 @@ fn test_mismatch_survives_a_later_generation_failure() {
         &EntrySelection::All,
         |entry| match EntryName::of_entry(entry) {
             name if name == names[0] => Ok(digests_for(entry, b"changed")),
-            name if name == names[1] => Err(EntryDigestError::Generation(
+            name if name == names[1] => Err(EntryDigestError::Generation(EntryError::Render(
                 GenerationError::ManifestConstruction,
-            )),
+            ))),
             _ => Ok(digests_for(entry, b"expected")),
         },
         &mut progress,
@@ -300,8 +301,9 @@ fn test_first_duplicate_name_finds_a_repeated_lockfile_name() {
 
 #[test]
 fn test_error_chain_shows_each_cause_once() {
-    let error = EntryDigestError::Generation(GenerationError::ManifestConstruction);
-    let inner = GenerationError::ManifestConstruction.to_string();
+    let error =
+        EntryDigestError::Generation(EntryError::Render(GenerationError::ManifestConstruction));
+    let inner = EntryError::Render(GenerationError::ManifestConstruction).to_string();
     let chain = error_chain(&error);
     assert!(chain.starts_with("entry generation failed: "), "{chain}");
     assert_eq!(chain.matches(inner.as_str()).count(), 1, "{chain}");

@@ -1,6 +1,7 @@
 //! Internal box/chunk parsing helpers for ISO and AVI formats.
 
 use super::{BoxPath, BoxTag, DefectError};
+use crate::avi::RIFF_CHUNK_ALIGNMENT;
 
 /// The absolute file offset of a box's own header (where its 4-byte
 /// size field begins). Distinguished from `PayloadStart`/`PayloadEnd`
@@ -317,10 +318,6 @@ pub(super) fn parse_avi_chunk(
     let size = u32::from_le_bytes(size_bytes);
     let size_usize = usize::try_from(size).map_err(|_| DefectError::InvalidBoxStructure)?;
 
-    if size_usize < 8 {
-        return Err(DefectError::InvalidBoxStructure);
-    }
-
     let chunk_end = off
         .checked_add(size_usize.checked_add(8).ok_or(DefectError::SizeOverflow)?)
         .ok_or(DefectError::SizeOverflow)?;
@@ -357,7 +354,20 @@ pub(super) fn parse_avi_chunk(
     })
 }
 
+/// ISO boxes whose payload is a sequence of boxes and nothing else.
+///
+/// The one list both the layout walker and the path lookups descend by, so an
+/// address that resolves in one resolves in the other.
+pub(super) const ISO_CONTAINERS: [[u8; 4]; 7] = [
+    *b"moov", *b"trak", *b"mdia", *b"minf", *b"dinf", *b"edts", *b"stbl",
+];
+
 /// Finds a box by path in an ISO container, returns its byte range.
+///
+/// # Errors
+///
+/// Returns `BoxNotFound` when the path names a box the file lacks, or passes
+/// through a box that is not one of [`ISO_CONTAINERS`].
 pub(super) fn find_iso_box(
     input: ContainerBytes<'_>,
     path: &BoxPath,
@@ -396,6 +406,9 @@ pub(super) fn find_iso_box(
                     return Ok(box_info);
                 }
                 // Found an intermediate box, descend into it
+                if !ISO_CONTAINERS.contains(&box_info.tag.get()) {
+                    return Err(DefectError::BoxNotFound(path.clone()));
+                }
                 container_start = box_info.payload_start.as_absolute();
                 container_end = box_info.payload_end.get();
                 found = true;
@@ -465,22 +478,14 @@ pub(super) fn find_avi_box(
             }
 
             // Move to next chunk at this level
-            // AVI chunks are padded to 4-byte boundaries
+            // An odd-length chunk is followed by one pad byte.
             let chunk_total = chunk
                 .payload_end
                 .get()
                 .checked_sub(chunk.payload_start.get())
                 .ok_or(DefectError::SizeOverflow)?;
-            // Round up chunk_total to the next even number
-            // Round up chunk_total to the next even number. Since chunk_total is from
-            // checked_sub on two usize values from within the input buffer, it's always safe.
             let padded_chunk_size = chunk_total
-                .checked_add(1)
-                .and_then(|x| {
-                    // Safe: x is always positive (result of checked_add(1)), so division by 2 is valid
-                    let div_result = x >> 1; // Equivalent to x / 2
-                    div_result.checked_mul(2)
-                })
+                .checked_next_multiple_of(RIFF_CHUNK_ALIGNMENT)
                 .ok_or(DefectError::SizeOverflow)?;
             offset = AbsoluteOffset::new(
                 chunk
@@ -500,6 +505,11 @@ pub(super) fn find_avi_box(
 }
 
 /// Finds a box by path in an ISO container and returns its box info plus ancestor size field offsets.
+///
+/// # Errors
+///
+/// Returns `BoxNotFound` when the path names a box the file lacks, or passes
+/// through a box that is not one of [`ISO_CONTAINERS`].
 pub(super) fn find_iso_box_with_ancestors(
     input: ContainerBytes<'_>,
     path: &BoxPath,
@@ -545,6 +555,9 @@ pub(super) fn find_iso_box_with_ancestors(
                     });
                 }
                 // Found an intermediate box, descend into it
+                if !ISO_CONTAINERS.contains(&box_info.tag.get()) {
+                    return Err(DefectError::BoxNotFound(path.clone()));
+                }
                 // Record this box's size field offset for later patching
                 ancestor_size_offsets.push(offset);
                 container_start = box_info.payload_start.as_absolute();
@@ -636,21 +649,14 @@ pub(super) fn find_avi_box_with_ancestors(
             }
 
             // Move to next chunk at this level
-            // AVI chunks are padded to 4-byte boundaries
+            // An odd-length chunk is followed by one pad byte.
             let chunk_total = chunk
                 .payload_end
                 .get()
                 .checked_sub(chunk.payload_start.get())
                 .ok_or(DefectError::SizeOverflow)?;
-            // Round up chunk_total to the next even number. Since chunk_total is from
-            // checked_sub on two usize values from within the input buffer, it's always safe.
             let padded_chunk_size = chunk_total
-                .checked_add(1)
-                .and_then(|x| {
-                    // Safe: x is always positive (result of checked_add(1)), so division by 2 is valid
-                    let div_result = x >> 1; // Equivalent to x / 2
-                    div_result.checked_mul(2)
-                })
+                .checked_next_multiple_of(RIFF_CHUNK_ALIGNMENT)
                 .ok_or(DefectError::SizeOverflow)?;
             offset = AbsoluteOffset::new(
                 chunk

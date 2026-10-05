@@ -1,11 +1,12 @@
 //! Axis definitions and helpers for catalog generation.
 
 use crate::cover::CatalogError;
-use synthvid_encode::defects::{Axis, BoxPath, BoxTag, ByteOffset, Defect};
-use synthvid_scene::{Dimensions, Height, Width};
+use core::num::NonZeroU32;
+use synthvid_encode::defects::{Axis, BoxAddress, BoxPath, BoxStep, BoxTag, ContainerKind, Defect};
+use synthvid_scene::{Dimensions, FrameIndex, Height, Width};
 
-/// The 15 declared defect slots (index 0 is always `None`, meaning "no defect").
-pub(super) type DefectSlots = [Option<Defect>; 15];
+/// The 17 declared defect slots (index 0 is always `None`, meaning "no defect").
+pub(super) type DefectSlots = [Option<Defect>; 17];
 
 /// Frame count axis.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
@@ -174,8 +175,8 @@ pub(super) fn make_dimensions(size: RawSize) -> Result<Dimensions, CatalogError>
 /// Matches on the enum variant only, ignoring payload differences.
 pub(super) const fn defect_variant_str(d: &Defect) -> &'static str {
     match d {
-        Defect::TruncateAt(_) => "trunc-at",
-        Defect::TruncateBox(_) => "trunc-box",
+        Defect::TruncateBefore(_) => "trunc-before",
+        Defect::TruncateWithin { .. } => "trunc-within",
         Defect::ZeroLengthPayload(_) => "zero-pay",
         Defect::OversizedBoxLength(_) => "over-len",
         Defect::UndersizedBoxLength(_) => "under-len",
@@ -191,20 +192,38 @@ pub(super) const fn defect_variant_str(d: &Defect) -> &'static str {
     }
 }
 
-/// Returns true if a defect targets an ISO base-media box path and therefore
-/// cannot be applied to a non-ISO (e.g. AVI/RIFF) container.
-pub(super) const fn defect_requires_iso_boxes(d: &Defect) -> bool {
-    matches!(
-        d,
-        Defect::TruncateBox(_)
-            | Defect::ZeroLengthPayload(_)
-            | Defect::OversizedBoxLength(_)
-            | Defect::UndersizedBoxLength(_)
-            | Defect::OffsetPastEnd(_)
-            | Defect::DuplicateBox(_)
-            | Defect::ReorderedBoxes(_, _)
-            | Defect::NonMonotonicTimestamps
-    )
+/// The container format a defect can only be applied to, or `None` when it
+/// applies to either.
+///
+/// An address is written for one format, and the defects that name boxes by
+/// path are written for ISO, so such a defect cannot meet the other format.
+#[must_use]
+pub(super) const fn defect_container_kind(d: &Defect) -> Option<ContainerKind> {
+    match d {
+        Defect::TruncateBefore(address) | Defect::TruncateWithin { address, .. } => {
+            Some(address.kind())
+        }
+        Defect::ZeroLengthPayload(_)
+        | Defect::OversizedBoxLength(_)
+        | Defect::UndersizedBoxLength(_)
+        | Defect::OffsetPastEnd(_)
+        | Defect::DuplicateBox(_)
+        | Defect::ReorderedBoxes(_, _)
+        | Defect::NonMonotonicTimestamps => Some(ContainerKind::Iso),
+        Defect::UnknownBox { .. }
+        | Defect::ZeroFrameRate
+        | Defect::ZeroDimension(_)
+        | Defect::AbsurdFrameRate(_)
+        | Defect::DeclaredCountMismatch { .. } => None,
+    }
+}
+
+/// The container format a container axis value produces.
+pub(super) const fn container_kind(c: ContainerAxis) -> ContainerKind {
+    match c {
+        ContainerAxis::Iso => ContainerKind::Iso,
+        ContainerAxis::Avi => ContainerKind::Avi,
+    }
 }
 
 /// Returns true if the container at `container_index` and the defect at
@@ -216,12 +235,13 @@ pub(super) fn container_defect_compatible(
     container_index: usize,
     defect_index: usize,
 ) -> bool {
-    let is_avi = axes.containers.get(container_index) == Some(&ContainerAxis::Avi);
-    if !is_avi {
+    let Some(container) = axes.containers.get(container_index) else {
         return true;
-    }
+    };
     match axes.defects.get(defect_index) {
-        Some(Some(d)) => !defect_requires_iso_boxes(d),
+        Some(Some(d)) => {
+            defect_container_kind(d).is_none_or(|kind| kind == container_kind(*container))
+        }
         _ => true,
     }
 }
@@ -257,6 +277,42 @@ pub(super) fn raw_avi_size_compatible(
     synthvid_encode::raw_frames_fit_classic_container(dims.width, dims.height, frame_count.get())
 }
 
+/// The most pixels, summed over all frames, one catalogue entry may hold.
+///
+/// Pairwise coverage asks for every size beside every frame count, which
+/// alone renders a 1920 by 1080 video of 20000 frames: over a hundred
+/// gigabytes raw. Nothing about a size or a frame count needs the other to be
+/// large, so pairs above this are left out. The cap keeps the largest raw
+/// entry near 30 MB.
+const MAX_PIXEL_FRAMES: u64 = 10_000_000;
+
+/// Returns true if the dimensions at `dimensions_index` and the frame count at
+/// `frame_count_index` (indices into `axes.dimensions` / `axes.frame_counts`)
+/// stay within [`MAX_PIXEL_FRAMES`]. Out-of-range indices are treated as
+/// compatible (nothing to rule out).
+pub(super) fn volume_compatible(
+    axes: &AxisArrays,
+    dimensions_index: usize,
+    frame_count_index: usize,
+) -> bool {
+    let Some(dims) = axes.dimensions.get(dimensions_index) else {
+        return true;
+    };
+    let Some(frame_count) = axes.frame_counts.get(frame_count_index) else {
+        return true;
+    };
+    // 16-bit width times 16-bit height times a 32-bit count is below 2^64, so
+    // the product cannot overflow a u64.
+    let total: u64 = [
+        u64::from(dims.width.get().get()),
+        u64::from(dims.height.get().get()),
+        u64::from(frame_count.get()),
+    ]
+    .into_iter()
+    .product();
+    total <= MAX_PIXEL_FRAMES
+}
+
 /// Build an `AbsurdFrameRate` defect, propagating any errors.
 pub(super) fn build_absurd_frame_rate_defect() -> Result<Defect, CatalogError> {
     // Create a frame rate of 1_000_001 / 1
@@ -271,14 +327,57 @@ pub(super) fn build_absurd_frame_rate_defect() -> Result<Defect, CatalogError> {
     Ok(Defect::AbsurdFrameRate(frame_rate))
 }
 
+/// How far into a box's own bytes a `TruncateWithin` cuts.
+///
+/// Every catalogue frame is at least 16 by 16 pixels, so the boxes cut are
+/// longer than this.
+const fn truncation_offset() -> NonZeroU32 {
+    NonZeroU32::MIN.saturating_add(99)
+}
+
+/// The address of an ISO box: a top-level box and the boxes below it, naming
+/// the first sibling carrying each tag.
+fn iso_address(top: [u8; 4], below: &[[u8; 4]]) -> BoxAddress {
+    descend(
+        BoxAddress::top(ContainerKind::Iso, BoxStep::first(BoxTag::new(top))),
+        below,
+    )
+}
+
+/// The address of an AVI chunk below the `RIFF` root.
+fn avi_address(below: &[[u8; 4]]) -> BoxAddress {
+    descend(
+        BoxAddress::top(ContainerKind::Avi, BoxStep::first(BoxTag::new(*b"RIFF"))),
+        below,
+    )
+}
+
+/// The address of the first frame in an AVI file, whichever codec wrote it.
+fn avi_first_frame_address() -> BoxAddress {
+    avi_address(&[*b"movi"]).child(BoxStep::frame(FrameIndex::new(0)))
+}
+
+/// Extends an address by one step per tag, each naming the first sibling.
+fn descend(address: BoxAddress, below: &[[u8; 4]]) -> BoxAddress {
+    below.iter().fold(address, |address, tag| {
+        address.child(BoxStep::first(BoxTag::new(*tag)))
+    })
+}
+
 /// All possible defect instances for the catalog.
 pub(super) fn all_defects() -> Result<DefectSlots, CatalogError> {
     Ok([
         None,
-        Some(Defect::TruncateAt(ByteOffset::new(1000))),
-        Some(Defect::TruncateBox(
-            BoxPath::root().child(BoxTag::new(*b"moov")),
-        )),
+        Some(Defect::TruncateBefore(iso_address(*b"moov", &[]))),
+        Some(Defect::TruncateWithin {
+            address: iso_address(*b"mdat", &[]).child(BoxStep::frame(FrameIndex::new(0))),
+            offset: truncation_offset(),
+        }),
+        Some(Defect::TruncateBefore(avi_address(&[*b"movi"]))),
+        Some(Defect::TruncateWithin {
+            address: avi_first_frame_address(),
+            offset: truncation_offset(),
+        }),
         Some(Defect::ZeroLengthPayload(
             BoxPath::root().child(BoxTag::new(*b"mdat")),
         )),
@@ -289,7 +388,9 @@ pub(super) fn all_defects() -> Result<DefectSlots, CatalogError> {
             BoxPath::root().child(BoxTag::new(*b"moov")),
         )),
         Some(Defect::OffsetPastEnd(
-            BoxPath::root().child(BoxTag::new(*b"mdat")),
+            [*b"moov", *b"trak", *b"mdia", *b"minf", *b"stbl", *b"stco"]
+                .into_iter()
+                .fold(BoxPath::root(), |path, tag| path.child(BoxTag::new(tag))),
         )),
         Some(Defect::DuplicateBox(
             BoxPath::root()
@@ -388,27 +489,5 @@ pub(super) const fn get_scale_index(sc: ScaleAxis) -> usize {
     match sc {
         ScaleAxis::WithScale => 0,
         ScaleAxis::NoScale => 1,
-    }
-}
-
-/// Gets the index for a defect value.
-#[must_use]
-pub(super) const fn get_defect_index(def: Option<&Defect>) -> usize {
-    match def {
-        None => 0,
-        Some(Defect::TruncateAt(_)) => 1,
-        Some(Defect::TruncateBox(_)) => 2,
-        Some(Defect::ZeroLengthPayload(_)) => 3,
-        Some(Defect::OversizedBoxLength(_)) => 4,
-        Some(Defect::UndersizedBoxLength(_)) => 5,
-        Some(Defect::OffsetPastEnd(_)) => 6,
-        Some(Defect::DuplicateBox(_)) => 7,
-        Some(Defect::UnknownBox { .. }) => 8,
-        Some(Defect::ZeroFrameRate) => 9,
-        Some(Defect::ZeroDimension(_)) => 10,
-        Some(Defect::AbsurdFrameRate(_)) => 11,
-        Some(Defect::NonMonotonicTimestamps) => 12,
-        Some(Defect::DeclaredCountMismatch { .. }) => 13,
-        Some(Defect::ReorderedBoxes(_, _)) => 14,
     }
 }

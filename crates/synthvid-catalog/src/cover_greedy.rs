@@ -1,6 +1,7 @@
 //! Greedy pairwise covering array algorithm for catalog generation.
 
 use super::cover_axes::AxisArrays;
+use super::CatalogError;
 use std::collections::BTreeSet;
 
 /// Represents resolved axis values for an entry: the index into each axis's values.
@@ -30,22 +31,119 @@ pub(super) struct AxisSelection {
     pub(super) defect: usize,
 }
 
+/// One axis of the covering array, in the order pairs are enumerated.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub(super) enum CoverAxis {
+    /// Frame dimensions.
+    Dimensions,
+    /// Number of frames.
+    FrameCount,
+    /// Frame rate.
+    FrameRate,
+    /// Background type.
+    Background,
+    /// Shape type.
+    Shape,
+    /// Motion type.
+    Motion,
+    /// Pixel encoding.
+    Coding,
+    /// Container format.
+    Container,
+    /// Display matrix transformation.
+    TrackMatrix,
+    /// Physical scale declaration.
+    Scale,
+    /// Optional defect.
+    Defect,
+}
+
+impl CoverAxis {
+    /// Every axis, in enumeration order.
+    pub(super) const ALL: [Self; 11] = [
+        Self::Dimensions,
+        Self::FrameCount,
+        Self::FrameRate,
+        Self::Background,
+        Self::Shape,
+        Self::Motion,
+        Self::Coding,
+        Self::Container,
+        Self::TrackMatrix,
+        Self::Scale,
+        Self::Defect,
+    ];
+
+    /// How many values this axis has.
+    const fn value_count(self, axes: &AxisArrays) -> usize {
+        match self {
+            Self::Dimensions => axes.dimensions.len(),
+            Self::FrameCount => axes.frame_counts.len(),
+            Self::FrameRate => axes.frame_rates.len(),
+            Self::Background => axes.backgrounds.len(),
+            Self::Shape => axes.shapes.len(),
+            Self::Motion => axes.motions.len(),
+            Self::Coding => axes.codings.len(),
+            Self::Container => axes.containers.len(),
+            Self::TrackMatrix => axes.track_matrices.len(),
+            Self::Scale => axes.scales.len(),
+            Self::Defect => axes.defects.len(),
+        }
+    }
+}
+
+impl AxisSelection {
+    /// The index chosen on `axis`.
+    const fn get(&self, axis: CoverAxis) -> usize {
+        match axis {
+            CoverAxis::Dimensions => self.dimensions,
+            CoverAxis::FrameCount => self.frame_count,
+            CoverAxis::FrameRate => self.frame_rate,
+            CoverAxis::Background => self.background,
+            CoverAxis::Shape => self.shape,
+            CoverAxis::Motion => self.motion,
+            CoverAxis::Coding => self.coding,
+            CoverAxis::Container => self.container,
+            CoverAxis::TrackMatrix => self.track_matrix,
+            CoverAxis::Scale => self.scale,
+            CoverAxis::Defect => self.defect,
+        }
+    }
+
+    /// Chooses `index` on `axis`.
+    const fn set(&mut self, axis: CoverAxis, index: usize) {
+        match axis {
+            CoverAxis::Dimensions => self.dimensions = index,
+            CoverAxis::FrameCount => self.frame_count = index,
+            CoverAxis::FrameRate => self.frame_rate = index,
+            CoverAxis::Background => self.background = index,
+            CoverAxis::Shape => self.shape = index,
+            CoverAxis::Motion => self.motion = index,
+            CoverAxis::Coding => self.coding = index,
+            CoverAxis::Container => self.container = index,
+            CoverAxis::TrackMatrix => self.track_matrix = index,
+            CoverAxis::Scale => self.scale = index,
+            CoverAxis::Defect => self.defect = index,
+        }
+    }
+}
+
 /// Pairwise obligation: a pair of distinct axes and the indices of one value from each.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub(super) struct PairObligation {
-    /// First axis index
-    axis_a: usize,
+    /// First axis
+    axis_a: CoverAxis,
     /// Value index in first axis
     value_a: usize,
-    /// Second axis index
-    axis_b: usize,
+    /// Second axis
+    axis_b: CoverAxis,
     /// Value index in second axis
     value_b: usize,
 }
 
 impl PairObligation {
-    /// Gets the first axis index.
-    pub(super) const fn axis_a(&self) -> usize {
+    /// Gets the first axis.
+    pub(super) const fn axis_a(&self) -> CoverAxis {
         self.axis_a
     }
 
@@ -54,52 +152,14 @@ impl PairObligation {
         self.value_a
     }
 
-    /// Gets the second axis index.
-    pub(super) const fn axis_b(&self) -> usize {
+    /// Gets the second axis.
+    pub(super) const fn axis_b(&self) -> CoverAxis {
         self.axis_b
     }
 
     /// Gets the second value index.
     pub(super) const fn value_b(&self) -> usize {
         self.value_b
-    }
-}
-
-/// Helper to get or set an `AxisSelection` field by axis number.
-#[must_use]
-const fn axis_value_mut(sel: &mut AxisSelection, axis_num: usize) -> Option<&mut usize> {
-    match axis_num {
-        0 => Some(&mut sel.dimensions),
-        1 => Some(&mut sel.frame_count),
-        2 => Some(&mut sel.frame_rate),
-        3 => Some(&mut sel.background),
-        4 => Some(&mut sel.shape),
-        5 => Some(&mut sel.motion),
-        6 => Some(&mut sel.coding),
-        7 => Some(&mut sel.container),
-        8 => Some(&mut sel.track_matrix),
-        9 => Some(&mut sel.scale),
-        10 => Some(&mut sel.defect),
-        _ => None,
-    }
-}
-
-/// Helper to get an `AxisSelection` field by axis number.
-#[must_use]
-const fn axis_value(sel: &AxisSelection, axis_num: usize) -> Option<usize> {
-    match axis_num {
-        0 => Some(sel.dimensions),
-        1 => Some(sel.frame_count),
-        2 => Some(sel.frame_rate),
-        3 => Some(sel.background),
-        4 => Some(sel.shape),
-        5 => Some(sel.motion),
-        6 => Some(sel.coding),
-        7 => Some(sel.container),
-        8 => Some(sel.track_matrix),
-        9 => Some(sel.scale),
-        10 => Some(sel.defect),
-        _ => None,
     }
 }
 
@@ -113,90 +173,82 @@ pub(super) fn entry_covers_obligation(
         get_entry_axis_value(entry, obligation.axis_a(), axes),
         get_entry_axis_value(entry, obligation.axis_b(), axes),
     ) {
-        (Some(val_a), Some(val_b)) => {
-            val_a == obligation.value_a() && val_b == obligation.value_b()
-        }
+        (Ok(val_a), Ok(val_b)) => val_a == obligation.value_a() && val_b == obligation.value_b(),
         _ => false,
     }
 }
 
-/// Gets the axis-index value for an entry given an axis number.
-/// Axis order (0-indexed):
-/// 0: `dimensions`, 1: `frame_count`, 2: `frame_rate`, 3: `background`,
-/// 4: `shape`, 5: `motion`, 6: `coding`, 7: `container`, 8: `track_matrix`,
-/// 9: `scale`, 10: `defect`
+/// Gets the axis-index value for an entry on the axis `column`: the position of
+/// the entry's value within that axis's value list.
 ///
-/// Returns `Some(index)` where index is the position of the entry's value within
-/// that axis's value list. Returns `None` if the value cannot be found (which
-/// should not happen if the entry was constructed from the same `AxisArrays`).
+/// # Errors
+///
+/// Returns `CatalogError::AxisIndexOutOfRange` when the value is not in the
+/// list, which cannot happen if the entry was built from the same `AxisArrays`.
 pub(super) fn get_entry_axis_value(
     entry: &super::Entry,
-    axis_num: usize,
+    column: CoverAxis,
     axes: &AxisArrays,
-) -> Option<usize> {
+) -> Result<usize, CatalogError> {
     use super::cover_axes::{
-        get_background_index, get_coding_index, get_container_index, get_defect_index,
-        get_frame_rate_index, get_motion_index, get_scale_index, get_shape_index,
-        get_track_matrix_index,
+        get_background_index, get_coding_index, get_container_index, get_frame_rate_index,
+        get_motion_index, get_scale_index, get_shape_index, get_track_matrix_index,
     };
 
-    match axis_num {
-        0 => axes.dimensions.iter().position(|&d| d == entry.dimensions),
-        1 => axes
+    match column {
+        CoverAxis::Dimensions => axes
+            .dimensions
+            .iter()
+            .position(|&d| d == entry.dimensions)
+            .ok_or(CatalogError::AxisIndexOutOfRange),
+        CoverAxis::FrameCount => axes
             .frame_counts
             .iter()
-            .position(|&f| f == entry.frame_count),
-        2 => Some(get_frame_rate_index(entry.frame_rate)),
-        3 => Some(get_background_index(entry.background)),
-        4 => Some(get_shape_index(entry.shape)),
-        5 => Some(get_motion_index(entry.motion)),
-        6 => Some(get_coding_index(entry.coding)),
-        7 => Some(get_container_index(entry.container)),
-        8 => Some(get_track_matrix_index(entry.track_matrix)),
-        9 => Some(get_scale_index(entry.scale)),
-        10 => Some(get_defect_index(entry.defect.as_ref())),
-        _ => None,
+            .position(|&f| f == entry.frame_count)
+            .ok_or(CatalogError::AxisIndexOutOfRange),
+        CoverAxis::FrameRate => Ok(get_frame_rate_index(entry.frame_rate)),
+        CoverAxis::Background => Ok(get_background_index(entry.background)),
+        CoverAxis::Shape => Ok(get_shape_index(entry.shape)),
+        CoverAxis::Motion => Ok(get_motion_index(entry.motion)),
+        CoverAxis::Coding => Ok(get_coding_index(entry.coding)),
+        CoverAxis::Container => Ok(get_container_index(entry.container)),
+        CoverAxis::TrackMatrix => Ok(get_track_matrix_index(entry.track_matrix)),
+        CoverAxis::Scale => Ok(get_scale_index(entry.scale)),
+        CoverAxis::Defect => axes
+            .defects
+            .iter()
+            .position(|slot| *slot == entry.defect)
+            .ok_or(CatalogError::AxisIndexOutOfRange),
     }
 }
 
 /// Build the complete obligation set.
 pub(super) fn build_axis_obligations(axes: &AxisArrays) -> BTreeSet<PairObligation> {
+    use super::cover_axes::{container_defect_compatible, volume_compatible};
+
     let mut obligations = BTreeSet::new();
 
-    let all_axis_lens = [
-        axes.dimensions.len(),
-        axes.frame_counts.len(),
-        axes.frame_rates.len(),
-        axes.backgrounds.len(),
-        axes.shapes.len(),
-        axes.motions.len(),
-        axes.codings.len(),
-        axes.containers.len(),
-        axes.track_matrices.len(),
-        axes.scales.len(),
-        axes.defects.len(),
-    ];
-
-    // Generate all pairwise combinations using enumerate to avoid direct indexing
-    for (a, len_a) in all_axis_lens.iter().copied().enumerate() {
-        for (b, len_b) in all_axis_lens.iter().copied().enumerate() {
-            if b <= a {
-                continue;
-            }
-            for va in 0..len_a {
-                for vb in 0..len_b {
-                    if a == 7
-                        && b == 10
-                        && !super::cover_axes::container_defect_compatible(axes, va, vb)
-                    {
-                        continue;
+    for (position, axis_a) in CoverAxis::ALL.into_iter().enumerate() {
+        for axis_b in CoverAxis::ALL.into_iter().skip(position.saturating_add(1)) {
+            for value_a in 0..axis_a.value_count(axes) {
+                for value_b in 0..axis_b.value_count(axes) {
+                    let compatible = match (axis_a, axis_b) {
+                        (CoverAxis::Dimensions, CoverAxis::FrameCount) => {
+                            volume_compatible(axes, value_a, value_b)
+                        }
+                        (CoverAxis::Container, CoverAxis::Defect) => {
+                            container_defect_compatible(axes, value_a, value_b)
+                        }
+                        _ => true,
+                    };
+                    if compatible {
+                        obligations.insert(PairObligation {
+                            axis_a,
+                            value_a,
+                            axis_b,
+                            value_b,
+                        });
                     }
-                    obligations.insert(PairObligation {
-                        axis_a: a,
-                        value_a: va,
-                        axis_b: b,
-                        value_b: vb,
-                    });
                 }
             }
         }
@@ -206,11 +258,16 @@ pub(super) fn build_axis_obligations(axes: &AxisArrays) -> BTreeSet<PairObligati
 }
 
 /// Build one entry satisfying the first obligation and maximizing coverage of remaining obligations.
+///
+/// # Errors
+///
+/// Returns `CatalogError::UnsatisfiableObligation` when an axis has no value
+/// compatible with the values already chosen.
 pub(super) fn build_entry_for_obligation(
     obligation: PairObligation,
     obligations: &BTreeSet<PairObligation>,
     axes: &AxisArrays,
-) -> AxisSelection {
+) -> Result<AxisSelection, CatalogError> {
     // Start with values satisfying the obligation; all axes start at index 0
     let mut selection = AxisSelection {
         dimensions: 0,
@@ -226,86 +283,73 @@ pub(super) fn build_entry_for_obligation(
         defect: 0,
     };
 
-    // Obligation axes are always valid: 0..11 by construction (from build_axis_obligations)
-    if let Some(slot) = axis_value_mut(&mut selection, obligation.axis_a()) {
-        *slot = obligation.value_a();
-    }
-    if let Some(slot) = axis_value_mut(&mut selection, obligation.axis_b()) {
-        *slot = obligation.value_b();
-    }
+    selection.set(obligation.axis_a(), obligation.value_a());
+    selection.set(obligation.axis_b(), obligation.value_b());
 
     // For each axis (except those from obligation), pick the value that covers the most obligations
-    for axis in 0..11 {
+    for axis in CoverAxis::ALL {
         if axis == obligation.axis_a() || axis == obligation.axis_b() {
             continue;
         }
 
-        let len_this_axis = get_axis_length(axes, axis);
-        let mut best_value = 0;
-        let mut best_coverage = 0;
+        let len_this_axis = axis.value_count(axes);
+        // The first compatible value wins until one covers more; zero is not
+        // a safe default because it may be incompatible with the pinned axes.
+        let mut best: Result<(usize, usize), CatalogError> =
+            Err(CatalogError::UnsatisfiableObligation);
 
         for value in 0..len_this_axis {
-            // Axis is always valid: 0..11 from outer loop and always < 11
-            if let Some(slot) = axis_value_mut(&mut selection, axis) {
-                *slot = value;
-            }
+            selection.set(axis, value);
 
-            if axis == 7
+            if axis == CoverAxis::Container
                 && !super::cover_axes::container_defect_compatible(axes, value, selection.defect)
             {
                 continue;
             }
-            if axis == 10
+            if axis == CoverAxis::Defect
                 && !super::cover_axes::container_defect_compatible(axes, selection.container, value)
             {
                 continue;
             }
-            if (axis == 0 || axis == 1 || axis == 6 || axis == 7)
-                && !super::cover_axes::raw_avi_size_compatible(
+            if matches!(axis, CoverAxis::Dimensions | CoverAxis::FrameCount)
+                && !super::cover_axes::volume_compatible(
                     axes,
                     selection.dimensions,
                     selection.frame_count,
-                    selection.coding,
-                    selection.container,
                 )
             {
+                continue;
+            }
+            if matches!(
+                axis,
+                CoverAxis::Dimensions
+                    | CoverAxis::FrameCount
+                    | CoverAxis::Coding
+                    | CoverAxis::Container
+            ) && !super::cover_axes::raw_avi_size_compatible(
+                axes,
+                selection.dimensions,
+                selection.frame_count,
+                selection.coding,
+                selection.container,
+            ) {
                 continue;
             }
 
             // Count how many obligations this would cover
             let coverage = count_covered_obligations(&selection, obligations);
 
-            if coverage > best_coverage {
-                best_coverage = coverage;
-                best_value = value;
-            }
+            best = match best {
+                Ok((_, best_coverage)) if best_coverage >= coverage => best,
+                _ => Ok((value, coverage)),
+            };
         }
+        let (best_value, _) = best?;
 
-        // Axis is always valid: 0..11 from outer loop and always < 11
-        if let Some(slot) = axis_value_mut(&mut selection, axis) {
-            *slot = best_value;
-        }
+        selection.set(axis, best_value);
     }
 
-    selection
-}
-
-/// Gets the length of an axis, indexed 0..11.
-const fn get_axis_length(axes: &AxisArrays, axis_idx: usize) -> usize {
-    match axis_idx {
-        0 => axes.dimensions.len(),
-        1 => axes.frame_counts.len(),
-        2 => axes.frame_rates.len(),
-        3 => axes.backgrounds.len(),
-        4 => axes.shapes.len(),
-        5 => axes.motions.len(),
-        6 => axes.codings.len(),
-        7 => axes.containers.len(),
-        8 => axes.track_matrices.len(),
-        9 => axes.scales.len(),
-        10 => axes.defects.len(),
-        _ => 0, // Unreachable by construction
-    }
+    Ok(selection)
 }
 
 /// Count how many outstanding obligations would be covered by the given partial entry.
@@ -316,14 +360,8 @@ fn count_covered_obligations(
     obligations
         .iter()
         .filter(|&obligation| {
-            if let (Some(val_a), Some(val_b)) = (
-                axis_value(selection, obligation.axis_a()),
-                axis_value(selection, obligation.axis_b()),
-            ) {
-                val_a == obligation.value_a() && val_b == obligation.value_b()
-            } else {
-                false
-            }
+            selection.get(obligation.axis_a()) == obligation.value_a()
+                && selection.get(obligation.axis_b()) == obligation.value_b()
         })
         .count()
 }

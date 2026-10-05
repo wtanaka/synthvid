@@ -92,7 +92,7 @@ impl OnScreen {
     /// # Example
     ///
     /// ```rust
-    /// use synthvid_catalog::manifest::OnScreen;
+    /// use synthvid_video::manifest::OnScreen;
     /// use synthvid_scene::Ratio;
     ///
     /// let ok = OnScreen::new(Ratio::from_integer(1)).is_ok();

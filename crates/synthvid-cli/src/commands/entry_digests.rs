@@ -3,7 +3,7 @@
 use super::entry_name::{EntryFiles, EntryFilesError};
 use core::fmt;
 use synthvid_catalog::{
-    cover::Entry, generate_entry, sha256, ContentLength, GenerationError, LockfileEntry,
+    cover::Entry, generate_entry, sha256, ContentLength, EntryError, LockfileEntry,
 };
 
 /// The computed digest values for a single catalogue entry.
@@ -19,7 +19,7 @@ pub(super) struct EntryDigests {
 #[derive(Debug)]
 pub(super) enum EntryDigestError {
     /// Entry generation failed.
-    Generation(GenerationError),
+    Generation(EntryError),
     /// A file name of the entry is not a valid lockfile name.
     Files(EntryFilesError),
     /// Manifest too large to fit in a u64 length.

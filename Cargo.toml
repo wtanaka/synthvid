@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/synthvid-scene",
     "crates/synthvid-encode",
+    "crates/synthvid-video",
     "crates/synthvid-catalog",
     "crates/synthvid-validate",
     "crates/synthvid-cli",
