@@ -3,10 +3,12 @@
 use std::fs;
 use std::io::Write;
 use std::path::Path;
-use synthvid_catalog::{
-    cover::generate_catalogue, generate_entry, generate_lockfile, parse_lockfile, sha256, verify,
-    ContentLength, LockfileEntry, LockfileName,
-};
+use synthvid_catalog::{cover::generate_catalogue, generate_entry, generate_lockfile};
+
+mod entry_digests;
+mod entry_name;
+mod verify;
+mod verify_args;
 
 /// Prints the usage message.
 pub fn print_usage() {
@@ -17,7 +19,11 @@ pub fn print_usage() {
         "  generate --out DIR [--only NAME]... [--dry-run]"
     )
     .ok();
-    writeln!(std::io::stderr(), "  verify --corpus DIR").ok();
+    writeln!(
+        std::io::stderr(),
+        "  verify [--corpus DIR] [--lock FILE] [--only NAME]..."
+    )
+    .ok();
     writeln!(std::io::stderr(), "  list [--format text|json]").ok();
     writeln!(std::io::stderr(), "  manifest --name NAME").ok();
     writeln!(
@@ -211,96 +217,7 @@ fn generate_impl(args: GenerateArgs) -> i32 {
 /// Runs the verify subcommand.
 #[must_use]
 pub fn cmd_verify(args: &[String]) -> i32 {
-    let mut corpus_dir = None;
-
-    let mut args_iter = args.iter();
-    while let Some(arg) = args_iter.next() {
-        if arg.as_str() == "--corpus" {
-            if let Some(value) = args_iter.next() {
-                corpus_dir = Some(value.clone());
-            } else {
-                writeln!(std::io::stderr(), "--corpus requires an argument").ok();
-                return 1;
-            }
-        } else {
-            writeln!(std::io::stderr(), "unknown option: {arg}").ok();
-            return 1;
-        }
-    }
-
-    let Some(corpus_dir) = corpus_dir else {
-        writeln!(std::io::stderr(), "--corpus is required").ok();
-        return 1;
-    };
-
-    let lockfile_path = Path::new(&corpus_dir).join("catalog.lock");
-    let lockfile_content = match fs::read_to_string(&lockfile_path) {
-        Ok(content) => content,
-        Err(e) => {
-            writeln!(std::io::stderr(), "failed to read lockfile: {e}").ok();
-            return 1;
-        }
-    };
-
-    let lockfile_entries = match parse_lockfile(&lockfile_content) {
-        Ok(entries) => entries,
-        Err(e) => {
-            writeln!(std::io::stderr(), "failed to parse lockfile: {e}").ok();
-            return 1;
-        }
-    };
-
-    let mut corpus: Vec<(String, Vec<u8>)> = Vec::new();
-
-    match fs::read_dir(&corpus_dir) {
-        Ok(entries) => {
-            for entry in entries {
-                match entry {
-                    Ok(dir_entry) => {
-                        let path = dir_entry.path();
-                        let filename = match path.file_name() {
-                            Some(name) => name.to_string_lossy().to_string(),
-                            None => continue,
-                        };
-
-                        if filename == "catalog.lock" {
-                            continue;
-                        }
-
-                        match fs::read(&path) {
-                            Ok(content) => {
-                                corpus.push((filename, content));
-                            }
-                            Err(e) => {
-                                writeln!(std::io::stderr(), "failed to read file {filename}: {e}")
-                                    .ok();
-                                return 1;
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        writeln!(std::io::stderr(), "failed to read directory entry: {e}").ok();
-                        return 1;
-                    }
-                }
-            }
-        }
-        Err(e) => {
-            writeln!(std::io::stderr(), "failed to read corpus directory: {e}").ok();
-            return 1;
-        }
-    }
-
-    let differences = verify(&lockfile_entries, corpus);
-
-    if differences.is_empty() {
-        0
-    } else {
-        for diff in differences {
-            writeln!(std::io::stderr(), "{diff}").ok();
-        }
-        1
-    }
+    verify::run(args)
 }
 
 /// Runs the list subcommand.
@@ -491,35 +408,10 @@ fn lock_impl(args: LockArgs) -> i32 {
 
     let mut lockfile_entries = Vec::new();
     for entry in catalogue {
-        match generate_entry(&entry) {
-            Ok(generated) => {
-                let manifest_name = format!("{}.json", entry.manifest_name().as_str());
-                let media_name = entry.media_name();
-
-                let manifest_digest = sha256(generated.manifest_json().as_bytes());
-                let Ok(manifest_len) = u64::try_from(generated.manifest_json().len()) else {
-                    writeln!(std::io::stderr(), "manifest too large").ok();
-                    return 1;
-                };
-                let manifest_length = ContentLength::new(manifest_len);
-
-                let media_digest = sha256(generated.media_bytes());
-                let Ok(media_len) = u64::try_from(generated.media_bytes().len()) else {
-                    writeln!(std::io::stderr(), "media too large").ok();
-                    return 1;
-                };
-                let media_length = ContentLength::new(media_len);
-
-                if let Ok(mname) = LockfileName::new(&manifest_name) {
-                    lockfile_entries.push(LockfileEntry::new(
-                        mname,
-                        manifest_digest,
-                        manifest_length,
-                    ));
-                }
-                if let Ok(mname) = LockfileName::new(&media_name) {
-                    lockfile_entries.push(LockfileEntry::new(mname, media_digest, media_length));
-                }
+        match entry_digests::entry_digests(&entry) {
+            Ok(digests) => {
+                lockfile_entries.push(digests.manifest);
+                lockfile_entries.push(digests.media);
             }
             Err(e) => {
                 writeln!(

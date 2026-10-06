@@ -115,18 +115,31 @@ The workspace has zero dependencies; all commands below work offline.
 
 ```sh
 cargo build --release -p synthvid-cli
-CORPUS=$(mktemp -d)
-cargo run --release -p synthvid-cli -- generate --out "$CORPUS"
-cp catalog.lock "$CORPUS/catalog.lock"
-cargo run --release -p synthvid-cli -- verify --corpus "$CORPUS"
+cargo run --release -p synthvid-cli -- verify
 ```
 
-`generate` does not write a lockfile; copy the committed `catalog.lock`
-into the corpus before verifying. The corpus is several gigabytes, so
-generate it into a scratch directory, not into the checkout.
+`verify` with no `--corpus` regenerates the catalogue one entry at a
+time, compares each manifest and media file against `catalog.lock`, and
+discards the entry before generating the next. Nothing is written to
+disk; peak memory is one entry's manifest and media bytes. To check a
+corpus that is already on disk, generate it into a scratch directory
+(it is several gigabytes), copy the committed `catalog.lock` into it,
+and run `verify --corpus DIR`; `generate` does not write a lockfile.
 
 - `generate --out DIR [--only NAME]... [--dry-run]`: write each entry's
   manifest and media file to `DIR`.
+- `verify [--lock FILE] [--only NAME]...`: regenerate each entry in
+  memory and compare its digests and lengths against `FILE` (default
+  `catalog.lock` in the current directory); `--only` limits the check
+  to the named entries and an unknown name is an error. Prints `ok NAME`
+  per matching entry to stdout. Prints one line per difference and one
+  line per entry that could not be checked to stderr. Prints a summary
+  line to stdout with the count of entries compared and, if any could
+  not be checked, that count. Lockfile lines the catalogue does not
+  produce are reported as missing: all of them without `--only`, and
+  those of the named entries with it. A lockfile that lists a name twice
+  is rejected. Exit `0` if every entry matches and every entry could be
+  checked; nonzero otherwise, including when the lockfile cannot be read.
 - `verify --corpus DIR`: compare every file in `DIR` against
   `DIR/catalog.lock`. Exit `0` if all digests and lengths match; nonzero
   otherwise, printing one line per difference (missing, extra, invalid
