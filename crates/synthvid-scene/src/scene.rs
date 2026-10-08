@@ -116,13 +116,14 @@ impl core::error::Error for FrameSpanError {}
 
 /// Inclusive-start, exclusive-end span of frames during which an object is visible.
 ///
-/// Every span covers at least one frame.
+/// Every span covers at least one frame. The bounds are private, so the only way to
+/// build a span is [`FrameSpan::new`], which refuses an empty or inverted one.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct FrameSpan {
     /// First visible frame index, inclusive.
-    pub start: FrameIndex,
+    start: FrameIndex,
     /// One past the last visible frame index, exclusive.
-    pub end: FrameIndex,
+    end: FrameIndex,
 }
 
 impl FrameSpan {
@@ -137,6 +138,18 @@ impl FrameSpan {
         } else {
             Ok(Self { start, end })
         }
+    }
+
+    /// The first visible frame index, inclusive.
+    #[must_use]
+    pub const fn start(self) -> FrameIndex {
+        self.start
+    }
+
+    /// One past the last visible frame index, exclusive.
+    #[must_use]
+    pub const fn end(self) -> FrameIndex {
+        self.end
     }
 
     /// Returns `true` when `frame` lies in `[start, end)`.
@@ -423,6 +436,13 @@ mod tests {
             Ok(scale),
             "from_ratio must match new"
         );
+    }
+
+    #[test]
+    fn test_frame_span_reports_the_bounds_it_was_built_with() {
+        let span = make_span(3, 11).expect("valid span");
+        assert_eq!(span.start(), FrameIndex::new(3));
+        assert_eq!(span.end(), FrameIndex::new(11));
     }
 
     #[test]

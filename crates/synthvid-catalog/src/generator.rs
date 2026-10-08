@@ -193,9 +193,7 @@ pub fn generate_entry(entry: &Entry) -> Result<GeneratedEntry, GenerationError> 
         let obj_idx = ObjectIndex::new(u32::try_from(idx).map_err(|_| {
             GenerationError::SceneConstruction("object index out of range".to_owned())
         })?);
-        if let Ok(manifest_obj) = FrameSpan::new(obj.visible.start, obj.visible.end) {
-            manifest_objects.push(ManifestObjectDecl::new(obj_idx, shape_name, manifest_obj));
-        }
+        manifest_objects.push(ManifestObjectDecl::new(obj_idx, shape_name, obj.visible));
     }
 
     // Create the manifest

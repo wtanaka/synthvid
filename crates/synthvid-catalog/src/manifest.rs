@@ -341,8 +341,11 @@ impl ManifestObjectDecl {
             format!(r#""{}""#, self.shape.as_str()),
         );
         let mut visible = JsonObject::new();
-        visible.insert_int(key(ManifestKey::End), i64::from(self.visible.end.get()));
-        visible.insert_int(key(ManifestKey::Start), i64::from(self.visible.start.get()));
+        visible.insert_int(key(ManifestKey::End), i64::from(self.visible.end().get()));
+        visible.insert_int(
+            key(ManifestKey::Start),
+            i64::from(self.visible.start().get()),
+        );
         obj.insert_object(key(ManifestKey::Visible), visible);
         obj
     }
