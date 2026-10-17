@@ -198,13 +198,8 @@ impl Entry {
         let name = JsonEntryName::new(self.manifest_name().as_str())
             .map_err(SceneBuildError::EntryName)?;
 
-        Ok(VideoSpec::new(
-            name,
-            scene,
-            encoding,
-            container,
-            self.defect.clone(),
-        ))
+        VideoSpec::new(name, scene, encoding, container, self.defect.clone())
+            .map_err(SceneBuildError::VideoSpec)
     }
 }
 
@@ -391,6 +386,25 @@ pub fn generate_catalogue() -> Result<Vec<Entry>, CatalogError> {
         track_matrix: TrackMatrixAxis::Identity,
         scale: ScaleAxis::Undeclared,
         defect: None,
+    });
+
+    // Singleton entry whose container records no size: a reader without a
+    // motion-JPEG decoder finds none, and one with it reads the frames'.
+    result.push(Entry {
+        dimensions: make_dimensions(RawSize {
+            width: NonZeroU16::new(16),
+            height: NonZeroU16::new(16),
+        })?,
+        frame_count: FrameCountValue::new(10)?,
+        frame_rate: FrameRateValue::Thirty,
+        background: BackgroundAxis::Solid,
+        shape: ShapeAxis::Disc,
+        motion: MotionAxis::Fixed,
+        coding: CodingAxis::MotionJpeg,
+        container: ContainerAxis::Iso,
+        track_matrix: TrackMatrixAxis::Identity,
+        scale: ScaleAxis::Undeclared,
+        defect: Some(Defect::NoContainerSize),
     });
 
     Ok(result)

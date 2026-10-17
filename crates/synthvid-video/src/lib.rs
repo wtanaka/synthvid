@@ -47,5 +47,5 @@ pub use manifest::{
 pub use names::{BackgroundName, ShapeName};
 pub use render::{render, CameraStep, GeneratedEntry, GenerationError, ObjectStep};
 pub use render_output::{ManifestJson, MediaBytes};
-pub use video_spec::{Container, DisplayRotation, Encoding, VideoSpec};
+pub use video_spec::{Container, DisplayRotation, Encoding, VideoSpec, VideoSpecError};
 pub use writer::{JsonArray, JsonEntryName, JsonInt, JsonKey, JsonObject};

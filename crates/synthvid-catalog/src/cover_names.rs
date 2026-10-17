@@ -134,6 +134,7 @@ impl fmt::Display for DefectName<'_> {
             } => "unk-box",
             Defect::ZeroFrameRate => "zero-fps",
             Defect::ZeroDimension(_) => "zero-dim",
+            Defect::NoContainerSize => "no-dim",
             Defect::AbsurdFrameRate(_) => "absurd-fps",
             Defect::NonMonotonicTimestamps => "non-mono",
             Defect::DeclaredCountMismatch {

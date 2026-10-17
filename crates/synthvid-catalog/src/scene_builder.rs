@@ -35,6 +35,8 @@ pub enum SceneBuildError {
     FrameRate(synthvid_scene::FrameRateError),
     /// The name built from the entry's axis values is not a valid entry name.
     EntryName(JsonEntryNameError),
+    /// The entry's defect cannot meet its coding and container.
+    VideoSpec(synthvid_video::VideoSpecError),
 }
 
 impl fmt::Display for SceneBuildError {
@@ -54,6 +56,7 @@ impl fmt::Display for SceneBuildError {
             Self::RatioConstruction => write!(formatter, "ratio construction failed"),
             Self::FrameRate(error) => write!(formatter, "frame rate invalid: {error}"),
             Self::EntryName(error) => write!(formatter, "entry name invalid: {error}"),
+            Self::VideoSpec(error) => write!(formatter, "video specification invalid: {error}"),
         }
     }
 }

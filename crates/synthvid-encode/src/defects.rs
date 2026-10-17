@@ -69,8 +69,8 @@ use defects_apply::{
 };
 use defects_box::ContainerBytes;
 use defects_fields::{
-    apply_absurd_frame_rate, apply_declared_count_mismatch, apply_non_monotonic_timestamps,
-    apply_zero_dimension, apply_zero_frame_rate,
+    apply_absurd_frame_rate, apply_declared_count_mismatch, apply_no_container_size,
+    apply_non_monotonic_timestamps, apply_zero_dimension, apply_zero_frame_rate,
 };
 pub use defects_layout::{BoxAddress, BoxStep, ContainerKind};
 pub use defects_types::Occurrence;
@@ -198,6 +198,15 @@ pub enum Defect {
     ZeroFrameRate,
     /// Set a frame dimension (width or height) to zero.
     ZeroDimension(Axis),
+    /// Write width and height as zero in `tkhd` and in the `stsd` visual
+    /// sample entry, so the size is recorded only in the coded frames.
+    /// ISO only.
+    ///
+    /// Only the first track is rewritten, which is the only track the writers
+    /// produce. A file with several video tracks would need every one
+    /// rewritten, or a way to name which, so this variant would then carry a
+    /// track selector.
+    NoContainerSize,
     /// Set frame rate to an unreasonable value (numerator > 1000000).
     AbsurdFrameRate(synthvid_scene::FrameRate),
     /// Make timestamps non-monotonically increasing.
@@ -295,6 +304,7 @@ pub fn apply(defect: &Defect, input: &ContainerFile) -> Result<ContainerFile, De
         Defect::DuplicateBox(path) => apply_duplicate_box(path, container),
         Defect::UnknownBox { after, tag } => apply_unknown_box(after, *tag, container),
         Defect::ZeroFrameRate => apply_zero_frame_rate(container),
+        Defect::NoContainerSize => apply_no_container_size(container),
         Defect::ZeroDimension(axis) => apply_zero_dimension(*axis, container),
         Defect::AbsurdFrameRate(frame_rate) => apply_absurd_frame_rate(frame_rate, container),
         Defect::NonMonotonicTimestamps => apply_non_monotonic_timestamps(container),

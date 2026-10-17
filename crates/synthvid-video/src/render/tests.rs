@@ -40,7 +40,8 @@ fn render_still_grey(container: Container) -> Result<GeneratedEntry, Fail> {
         Encoding::Raw,
         container,
         None,
-    );
+    )
+    .or_fail()?;
     render(&spec).or_fail()
 }
 

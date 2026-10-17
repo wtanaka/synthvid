@@ -8,6 +8,7 @@
 //! defaulting to the scene's values. Byte-level corruption stays in the defect list.
 
 use crate::json_names::JsonEntryName;
+use core::error::Error;
 use core::fmt;
 use synthvid_encode::{ChromaSampling, Defect, Quality};
 use synthvid_scene::Scene;
@@ -92,23 +93,104 @@ pub struct VideoSpec {
     defect: Option<Defect>,
 }
 
+/// Why a combination of encoding, container and defect cannot be a specification.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum VideoSpecError {
+    /// The defect that leaves the size out of the container needs motion-JPEG frames in an
+    /// ISO container: only then does the size survive in the frames for a reader to find.
+    SizeOmissionNeedsMjpegInIso,
+}
+
+impl fmt::Display for VideoSpecError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::SizeOmissionNeedsMjpegInIso => formatter.write_str(
+                "omitting the size from the container needs motion-JPEG frames in an ISO container",
+            ),
+        }
+    }
+}
+
+impl Error for VideoSpecError {}
+
+/// Refuses a defect that cannot meet this encoding and container.
+pub(crate) const fn check_defect(
+    encoding: Encoding,
+    container: Container,
+    defect: Option<&Defect>,
+) -> Result<(), VideoSpecError> {
+    match defect {
+        Some(Defect::NoContainerSize) => check_size_omission(encoding, container),
+        Some(Defect::TruncateWithin {
+            address: _address,
+            offset: _offset,
+        }) => Ok(()),
+        Some(Defect::UnknownBox {
+            after: _after,
+            tag: _tag,
+        }) => Ok(()),
+        Some(Defect::DeclaredCountMismatch {
+            declared: _declared,
+        }) => Ok(()),
+        Some(
+            Defect::TruncateBefore(_)
+            | Defect::ZeroLengthPayload(_)
+            | Defect::OversizedBoxLength(_)
+            | Defect::UndersizedBoxLength(_)
+            | Defect::OffsetPastEnd(_)
+            | Defect::DuplicateBox(_)
+            | Defect::ZeroFrameRate
+            | Defect::ZeroDimension(_)
+            | Defect::AbsurdFrameRate(_)
+            | Defect::NonMonotonicTimestamps
+            | Defect::ReorderedBoxes(_, _),
+        )
+        | None => Ok(()),
+    }
+}
+
+/// Whether the size omitted from the container survives in the frames: only motion-JPEG
+/// frames in an ISO container carry it for a reader to find.
+const fn check_size_omission(
+    encoding: Encoding,
+    container: Container,
+) -> Result<(), VideoSpecError> {
+    match encoding {
+        Encoding::Mjpeg {
+            quality: _quality,
+            chroma: _chroma,
+        } => match container {
+            Container::Iso {
+                rotation: _rotation,
+            } => Ok(()),
+            Container::Avi => Err(VideoSpecError::SizeOmissionNeedsMjpegInIso),
+        },
+        Encoding::Raw => Err(VideoSpecError::SizeOmissionNeedsMjpegInIso),
+    }
+}
+
 impl VideoSpec {
     /// Creates a new video specification.
-    #[must_use]
-    pub const fn new(
+    ///
+    /// # Errors
+    ///
+    /// Returns [`VideoSpecError`] when the defect cannot meet the encoding and container.
+    pub fn new(
         name: JsonEntryName,
         scene: Scene,
         encoding: Encoding,
         container: Container,
         defect: Option<Defect>,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, VideoSpecError> {
+        check_defect(encoding, container, defect.as_ref())?;
+        Ok(Self {
             name,
             scene,
             encoding,
             container,
             defect,
-        }
+        })
     }
 
     /// Returns the manifest name.
@@ -142,6 +224,9 @@ impl VideoSpec {
     }
 
     /// Returns this specification with a different container.
+    ///
+    /// A combination the defect cannot meet is not refused here; [`render()`](fn@crate::render)
+    /// refuses it.
     #[must_use]
     pub fn with_container(self, container: Container) -> Self {
         Self { container, ..self }

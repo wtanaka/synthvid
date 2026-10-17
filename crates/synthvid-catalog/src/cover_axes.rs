@@ -214,6 +214,7 @@ pub(super) const fn defect_container_kind(defect: &Defect) -> Option<ContainerKi
         | Defect::OffsetPastEnd(_)
         | Defect::DuplicateBox(_)
         | Defect::ReorderedBoxes(_, _)
+        | Defect::NoContainerSize
         | Defect::NonMonotonicTimestamps => Some(ContainerKind::Iso),
         Defect::UnknownBox {
             after: _after,

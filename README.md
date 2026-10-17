@@ -114,7 +114,7 @@ part-way into a box's own bytes; between them they name every possible cut
 position exactly once), `zero-pay` (zero-length payload), `over-len` /
 `under-len` (overstated / understated box length), `off-end` (offset past the
 end), `dup-box` (duplicated box), `unk-box` (unknown box), `zero-fps` (zero
-frame rate), `zero-dim` (zero dimension), `absurd-fps` (absurd frame rate),
+frame rate), `zero-dim` (zero dimension), `no-dim` (size absent from the container), `absurd-fps` (absurd frame rate),
 `non-mono` (non-monotonic timestamps), `count-mis` (declared frame count
 disagreeing with the payload), `reorder` (reordered boxes).
 

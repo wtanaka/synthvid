@@ -190,6 +190,7 @@ mod tests {
             }) => VariantName("UnknownBox"),
             Some(Defect::ZeroFrameRate) => VariantName("ZeroFrameRate"),
             Some(Defect::ZeroDimension(_)) => VariantName("ZeroDimension"),
+            Some(Defect::NoContainerSize) => VariantName("NoContainerSize"),
             Some(Defect::AbsurdFrameRate(_)) => VariantName("AbsurdFrameRate"),
             Some(Defect::NonMonotonicTimestamps) => VariantName("NonMonotonicTimestamps"),
             Some(Defect::DeclaredCountMismatch {
@@ -217,6 +218,7 @@ mod tests {
             "UnknownBox",
             "ZeroFrameRate",
             "ZeroDimension",
+            "NoContainerSize",
             "AbsurdFrameRate",
             "NonMonotonicTimestamps",
             "DeclaredCountMismatch",
@@ -520,6 +522,7 @@ mod tests {
                             | Defect::DuplicateBox(_)
                             | Defect::ZeroFrameRate
                             | Defect::ZeroDimension(_)
+                            | Defect::NoContainerSize
                             | Defect::AbsurdFrameRate(_)
                             | Defect::NonMonotonicTimestamps
                             | Defect::ReorderedBoxes(_, _),
@@ -536,5 +539,62 @@ mod tests {
     #[test]
     fn both_formats_get_both_truncations() {
         assert_eq!(check_both_formats_get_both_truncations(), Ok(()));
+    }
+
+    /// The entry that omits the size from its container, with its coding and
+    /// container replaced.
+    fn no_dim_entry(coding: CodingAxis, container: ContainerAxis) -> Result<Entry, Fail> {
+        entry_like(EntrySize::Tiny10, |entry| {
+            entry.coding = coding;
+            entry.container = container;
+            entry.defect = Some(Defect::NoContainerSize);
+        })
+    }
+
+    fn check_size_omission_needs_mjpeg_in_iso() -> Result<(), Fail> {
+        let refused = Err(SceneBuildError::VideoSpec(
+            synthvid_video::VideoSpecError::SizeOmissionNeedsMjpegInIso,
+        ));
+        for (coding, container) in [
+            (CodingAxis::Raw, ContainerAxis::Iso),
+            (CodingAxis::Raw, ContainerAxis::Avi),
+            (CodingAxis::MotionJpeg, ContainerAxis::Avi),
+        ] {
+            let result = no_dim_entry(coding, container)?
+                .to_video_spec()
+                .map(|_spec| ());
+            ensure_eq!(result, refused);
+        }
+        ensure!(
+            no_dim_entry(CodingAxis::MotionJpeg, ContainerAxis::Iso)?
+                .to_video_spec()
+                .is_ok(),
+            "motion-JPEG in ISO must be accepted"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn size_omission_needs_mjpeg_in_iso() {
+        assert_eq!(check_size_omission_needs_mjpeg_in_iso(), Ok(()));
+    }
+
+    fn check_render_refuses_size_omission_moved_to_avi() -> Result<(), Fail> {
+        let spec = no_dim_entry(CodingAxis::MotionJpeg, ContainerAxis::Iso)?
+            .to_video_spec()
+            .or_fail()?
+            .with_container(Container::Avi);
+        ensure_eq!(
+            synthvid_video::render(&spec).map(|_entry| ()),
+            Err(synthvid_video::GenerationError::Specification(
+                synthvid_video::VideoSpecError::SizeOmissionNeedsMjpegInIso
+            ))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn render_refuses_size_omission_moved_to_avi() {
+        assert_eq!(check_render_refuses_size_omission_moved_to_avi(), Ok(()));
     }
 }

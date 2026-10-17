@@ -512,3 +512,69 @@ fn declared_count_mismatch_avi_reproducible() {
     };
     assert_eq!(reproducible(Base::Avi, &defect), Ok(()));
 }
+
+// NoContainerSize tests
+fn check_no_container_size_zeroes_tkhd_and_stsd_only() -> Result<(), Fail> {
+    // 37x23: neither a power of two nor square, so a transposed or
+    // mis-offset write shows up.
+    let input = encode_iso(
+        crate::FrameRates {
+            playback: FrameRate::from_fps(24).or_fail()?,
+            capture: None,
+        },
+        &[EncodedFrame::raw(
+            &Frame::new(
+                Dimensions::new(Width::new(37).or_fail()?, Height::new(23).or_fail()?),
+                PixelBuffer(vec![7; 2553]),
+            )
+            .or_fail()?,
+        )],
+        crate::TrackParams {
+            width: Width::new(37).or_fail()?,
+            height: Height::new(23).or_fail()?,
+            codec: IsoCodec::UncompressedRgb,
+            track_matrix: crate::TrackMatrix::identity(),
+        },
+    )
+    .or_fail()?;
+    let result = apply(&Defect::NoContainerSize, &input).or_fail()?;
+
+    let tkhd_size: &[u8] = &[0, 37, 0, 0, 0, 23, 0, 0];
+    let stsd_size: &[u8] = &[0, 37, 0, 23];
+    let count = |bytes: &[u8], needle: &[u8]| {
+        bytes
+            .windows(needle.len())
+            .filter(|window| *window == needle)
+            .count()
+    };
+    ensure_eq!(count(&input.0, tkhd_size), 1);
+    ensure_eq!(count(&input.0, stsd_size), 1);
+    ensure_eq!(count(&result.0, tkhd_size), 0);
+    ensure_eq!(count(&result.0, stsd_size), 0);
+    ensure_eq!(result.0.len(), input.0.len());
+    let changed = input
+        .0
+        .iter()
+        .zip(&result.0)
+        .filter(|(before, after)| before != after)
+        .count();
+    ensure_eq!(changed, 4);
+    Ok(())
+}
+
+#[test]
+fn no_container_size_zeroes_tkhd_and_stsd_only() {
+    assert_eq!(check_no_container_size_zeroes_tkhd_and_stsd_only(), Ok(()));
+}
+
+fn check_no_container_size_rejects_avi() -> Result<(), Fail> {
+    let media = Base::Avi.media()?;
+    let result = apply(&Defect::NoContainerSize, &media.file()).map(Media::of);
+    ensure_eq!(result, Err(DefectError::IncompatibleFileType));
+    Ok(())
+}
+
+#[test]
+fn no_container_size_rejects_avi() {
+    assert_eq!(check_no_container_size_rejects_avi(), Ok(()));
+}

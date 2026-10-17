@@ -10,7 +10,9 @@ use crate::manifest_error::ManifestError;
 use crate::names::{BackgroundName, ShapeName};
 use crate::object_state::frame_objects;
 use crate::render_output::{EncodedFrames, ManifestJson, MediaBytes};
-use crate::video_spec::{Container, DisplayRotation, Encoding, VideoSpec};
+use crate::video_spec::{
+    check_defect, Container, DisplayRotation, Encoding, VideoSpec, VideoSpecError,
+};
 use core::error::Error;
 use core::fmt;
 use core::num::TryFromIntError;
@@ -102,6 +104,8 @@ impl fmt::Display for ObjectStep {
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum GenerationError {
+    /// The specification's defect cannot meet its encoding and container.
+    Specification(VideoSpecError),
     /// The frame buffer could not be allocated.
     FrameBuffer(synthvid_scene::FrameError),
     /// A step of the camera arithmetic failed.
@@ -138,6 +142,7 @@ impl fmt::Display for GenerationError {
             Self::ObjectIndexOutOfRange(error) => {
                 write!(formatter, "object index out of range: {error}")
             }
+            Self::Specification(error) => write!(formatter, "specification invalid: {error}"),
             Self::AffineConversion => write!(formatter, "affine conversion failed"),
             Self::SceneFrameRender(error) => {
                 write!(formatter, "scene frame rendering failed: {error}")
@@ -297,6 +302,9 @@ const fn shape_name_of(shape: &Shape) -> ShapeName {
 /// Returns `GenerationError` if any step fails.
 pub fn render(spec: &VideoSpec) -> Result<GeneratedEntry, GenerationError> {
     let scene = spec.scene();
+
+    check_defect(spec.encoding(), spec.container(), spec.defect())
+        .map_err(GenerationError::Specification)?;
 
     // Check raw capacity for raw coding
     if spec.encoding() == Encoding::Raw

@@ -40,6 +40,41 @@ pub(super) fn apply_zero_frame_rate(input: ContainerBytes<'_>) -> Result<FileByt
     }
 }
 
+/// Apply `NoContainerSize` defect to the first track.
+///
+/// The writers emit one track, so the first is the only one. Several video
+/// tracks would each need their `tkhd` and `stsd` rewritten; non-video tracks
+/// would be left alone.
+pub(super) fn apply_no_container_size(input: ContainerBytes<'_>) -> Result<FileBytes, DefectError> {
+    match detect_format(input)? {
+        ContainerFormat::Iso => {
+            let trak = BoxPath::root()
+                .child(BoxTag::new(*b"moov"))
+                .child(BoxTag::new(*b"trak"));
+            let tkhd = find_iso_box(input, &trak.clone().child(BoxTag::new(*b"tkhd")))?;
+            let stsd_path = [*b"mdia", *b"minf", *b"stbl", *b"stsd"]
+                .into_iter()
+                .fold(trak, |path, tag| path.child(BoxTag::new(tag)));
+            let stsd = find_iso_box(input, &stsd_path)?;
+            let mut result = FileBytes::copy_of(input);
+
+            // tkhd width(4) and height(4) are at payload 76-84.
+            let width_pos = tkhd.payload_start.field_at(FieldOffset(76))?;
+            let height_pos = tkhd.payload_start.field_at(FieldOffset(80))?;
+            write_u32(&mut result, width_pos, FieldValue(0), Endianness::Big)?;
+            write_u32(&mut result, height_pos, FieldValue(0), Endianness::Big)?;
+            // stsd payload: version+flags(4), entry_count(4), then the sample
+            // entry: size(4), format(4), reserved(6), data_reference_index(2),
+            // pre_defined(2), reserved(2), pre_defined(12), width(2), height(2).
+            // Width and height are adjacent 16-bit fields at payload 40-44.
+            let size_pos = stsd.payload_start.field_at(FieldOffset(40))?;
+            write_u32(&mut result, size_pos, FieldValue(0), Endianness::Big)?;
+            Ok(result)
+        }
+        ContainerFormat::Avi | ContainerFormat::Neither => Err(DefectError::IncompatibleFileType),
+    }
+}
+
 /// Apply `ZeroDimension` defect.
 pub(super) fn apply_zero_dimension(
     axis: Axis,
