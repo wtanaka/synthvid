@@ -96,3 +96,34 @@ jobs:
       - name: Confirm the corpus is externally decodable
         if: hashFiles('catalog.lock') != ''
         run: sh ci/check-externally-decodable.sh "$RUNNER_TEMP/corpus"
+
+  # Rejects code whose types and signatures admit invalid states. Its facts
+  # and recorded exceptions are in .unrepresentable/; the baseline there may
+  # only shrink. Exit 3 means the change touches that configuration and needs a
+  # human decision, so it fails this job on purpose. It is a job of its own so
+  # that such a change leaves every job above green. The result does not depend
+  # on the architecture, so it runs once.
+  unrepresentable:
+    name: unrepresentable
+    runs-on: ubuntu-latest
+
+    steps:
+      # fetch-depth: 0 so that origin/main, the base of the change range, is
+      # resolvable whichever branch or pull request is being built.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install the toolchain
+        run: |
+          rustup toolchain install
+          rustc -Vv
+
+      - name: Install unrepresentable
+        run: cargo install unrepresentable --locked --version =0.0.1-alpha.1
+
+      - name: Unrepresentable
+        run: |
+          unrepresentable self-test
+          unrepresentable check --against "$BUDGET_BASE" .
+          unrepresentable canaries .

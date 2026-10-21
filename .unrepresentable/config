@@ -1,0 +1,120 @@
+# unrepresentable configuration: facts about the project and recorded exceptions.
+# Every rule is on. There is no option to turn one off.
+
+baseline = "shrink-only"
+code = ["crates/synthvid-catalog/src/**", "crates/synthvid-catalog/tests/**", "crates/synthvid-cli/src/**", "crates/synthvid-cli/tests/**", "crates/synthvid-encode/src/**", "crates/synthvid-encode/tests/**", "crates/synthvid-scene/src/**", "crates/synthvid-scene/tests/**", "crates/synthvid-testkit/src/**", "crates/synthvid-validate/src/**", "crates/synthvid-validate/tests/**", "crates/synthvid-video/src/**", "crates/synthvid-video/tests/**"]
+
+canary-dirs = ["ci/canaries/"]
+arith-files = ["crates/synthvid-catalog/src/sha256.rs", "crates/synthvid-scene/src/rng.rs", "crates/synthvid-encode/src/bitstream.rs", "crates/synthvid-encode/src/color.rs", "crates/synthvid-encode/src/dct.rs", "crates/synthvid-encode/src/dct_forward.rs", "crates/synthvid-encode/src/huffman.rs", "crates/synthvid-encode/src/huffman/tables.rs", "crates/synthvid-encode/src/jpeg/plane.rs", "crates/synthvid-scene/src/ratio/helpers.rs"]
+
+[member.synthvid-catalog]
+role = "pure"
+newtypes = [
+  { type = "ContentLength", methods = ["pub get", "pub new"] },
+  { type = "Digest", methods = ["pub as_bytes", "pub new"] },
+  { type = "FrameCountValue", methods = ["pub get", "pub new"] },
+  { type = "LockfileName", methods = ["pub as_str", "pub new"] },
+  { type = "ManifestName", methods = ["pub as_str"] },
+]
+
+[member.synthvid-cli]
+role = "shell"
+ambient = [
+  { path = "std::env::args", files = ["crates/synthvid-cli/src/main.rs"] },
+  { path = "std::process::ExitCode", files = ["crates/synthvid-cli/src/main.rs"] },
+  { path = "std::fs", files = ["crates/synthvid-cli/src/commands/shell.rs", "crates/synthvid-cli/src/commands/verify_load.rs"] },
+  { path = "std::io", files = ["crates/synthvid-cli/src/commands/shell.rs"] },
+  { path = "std::fs", files = ["crates/synthvid-cli/tests/**"] },
+  { path = "std::env", files = ["crates/synthvid-cli/tests/**"] },
+  { path = "std::process", files = ["crates/synthvid-cli/tests/**"] },
+]
+newtypes = [
+  { type = "RequestedName", methods = ["new"] },
+]
+
+[member.synthvid-encode]
+role = "pure"
+newtypes = [
+  { type = "AbsoluteOffset", methods = ["get", "new"] },
+  { type = "AcCoefficient", methods = ["pub get", "pub new"] },
+  { type = "AveragedSample", methods = ["get"] },
+  { type = "BitCount", methods = ["pub get", "pub get_u8", "pub new"] },
+  { type = "BlockCol", methods = ["new"] },
+  { type = "BlockRow", methods = ["new"] },
+  { type = "BoxLen", methods = ["get", "new"] },
+  { type = "BoxStart", methods = ["get", "new"] },
+  { type = "BoxTag", methods = ["pub get", "pub new"] },
+  { type = "BufferEnd", methods = ["get", "new"] },
+  { type = "BufferStart", methods = ["get", "new"] },
+  { type = "CenteredSample", methods = ["from_u8", "pub get"] },
+  { type = "ChromaBlue", methods = ["pub get", "pub new"] },
+  { type = "ChromaRed", methods = ["pub get", "pub new"] },
+  { type = "ChunkId", methods = ["get", "new"] },
+  { type = "ChunkOffset", methods = ["get", "new"] },
+  { type = "ChunkSize", methods = ["get", "new"] },
+  { type = "ContainerBytes", methods = ["as_slice", "new"] },
+  { type = "DcDelta", methods = ["pub get", "pub new"] },
+  { type = "DctSum", methods = ["get"] },
+  { type = "EncodedDcDelta", methods = ["pub get"] },
+  { type = "FpsDenominator", methods = ["get", "new"] },
+  { type = "FpsNumerator", methods = ["get", "new"] },
+  { type = "FrameCount", methods = ["get", "new"] },
+  { type = "Luma", methods = ["pub get", "pub new"] },
+  { type = "PayloadEnd", methods = ["get", "new"] },
+  { type = "PayloadStart", methods = ["get", "new"] },
+  { type = "PixelBlock", methods = ["pub new"] },
+  { type = "Quality", methods = ["pub get", "pub new"] },
+  { type = "QuantDivisor", methods = ["new"] },
+  { type = "RowSum", methods = ["get"] },
+  { type = "TrackMatrix", methods = ["as_array"] },
+  { type = "ZeroRun", methods = ["from_low_nibble", "pub get", "pub new"] },
+  { type = "ZigzagQuantBytes", methods = ["pub as_marker_bytes"] },
+  { type = "ContainerFile", methods = ["pub as_bytes"] },
+  { type = "EncodedFrame", methods = ["pub as_bytes"] },
+]
+
+[member.synthvid-scene]
+role = "pure"
+newtypes = [
+  { type = "FrameCount", methods = ["pub new"] },
+  { type = "FrameIndex", methods = ["pub get", "pub new"] },
+  { type = "FrameRate", methods = ["pub from_fps", "pub from_fraction"] },
+  { type = "Height", methods = ["pub new"] },
+  { type = "ObjectIndex", methods = ["pub get", "pub new"] },
+  { type = "PixelBytes", methods = ["pub get"] },
+  { type = "Seed", methods = ["pub get", "pub new"] },
+  { type = "Width", methods = ["pub new"] },
+]
+
+[member.synthvid-testkit]
+role = "pure"
+
+[member.synthvid-validate]
+role = "shell"
+ambient = [
+  { path = "std::process", files = ["crates/synthvid-validate/src/support.rs", "crates/synthvid-validate/src/tests.rs", "crates/synthvid-validate/src/jpeg_tests.rs"] },
+  { path = "std::io", files = ["crates/synthvid-validate/src/support.rs", "crates/synthvid-validate/src/tests.rs", "crates/synthvid-validate/src/jpeg_tests.rs"] },
+]
+
+[member.synthvid-video]
+role = "pure"
+newtypes = [
+  { type = "JsonEntryName", methods = ["pub as_str", "pub new"] },
+  { type = "JsonKey", methods = ["from_known", "pub as_str", "pub new"] },
+  { type = "ManifestJson", methods = ["pub as_str"] },
+  { type = "MediaBytes", methods = ["pub as_bytes"] },
+]
+
+# No crate here uses proptest. The entry gives the macro-comment rule something
+# to report in ci/canaries/macro_needs_comment.rs, so `canaries` can show the
+# rule still fires.
+[[macro-comment]]
+macro = "proptest"
+prefix = "// pins: "
+within-lines = 3
+
+[[baseline-entry]]
+rule = "option-not-must-use"
+file = "crates/synthvid-scene/src/ratio.rs"
+item = "mod ratio / impl PartialOrd for Ratio / fn partial_cmp"
+index = 0

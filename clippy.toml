@@ -1,9 +1,46 @@
-# Implements the project's existing rule that tests may use unwrap, expect, and
-# panic. Without this file, the workspace-wide denials in Cargo.toml reach test
-# code and make every .unwrap() a hard build error, forcing workarounds like
-# `let Some(x) = expr else { return };` that silently turn a failed fixture into
-# a passing test.
-allow-unwrap-in-tests = true
-allow-expect-in-tests = true
-allow-panic-in-tests = true
-allow-indexing-slicing-in-tests = true
+# Every knob that has a stricter setting than its default sits at its strict
+# value. Test code gets no exemption: tests return failures instead of
+# unwrapping (see crates/synthvid-testkit).
+accept-comment-above-attributes = false
+accept-comment-above-statement = false
+allow-comparison-to-zero = false
+allow-exact-repetitions = false
+allow-expect-in-consts = false
+allow-large-stack-frames-in-tests = false
+allow-mixed-uninlined-format-args = false
+allow-unwrap-in-consts = false
+allowed-idents-below-min-chars = []
+allowed-prefixes = []
+array-size-threshold = 512
+avoid-breaking-exported-api = false
+check-grouped-late-init = true
+check-incompatible-msrv-in-tests = true
+check-inconsistent-struct-field-initializers = true
+cognitive-complexity-threshold = 15
+enforce-iter-loop-reborrow = true
+enum-variant-name-threshold = 2
+enum-variant-size-threshold = 64
+excessive-nesting-threshold = 5
+future-size-threshold = 1024
+ignore-interior-mutability = []
+large-error-threshold = 64
+lint-commented-code = true
+matches-for-let-else = "AllTypes"
+max-fn-params-bools = 0
+max-include-file-size = 10000
+max-struct-bools = 0
+max-trait-bounds = 2
+pass-by-value-size-limit = 64
+pub-underscore-fields-behavior = "AllPubFields"
+single-char-binding-names-threshold = 1
+stack-size-threshold = 16384
+struct-field-name-threshold = 2
+too-large-for-stack = 64
+too-many-arguments-threshold = 5
+too-many-lines-threshold = 60
+type-complexity-threshold = 150
+unnecessary-box-size = 64
+upper-case-acronyms-aggressive = true
+vec-box-size-threshold = 128
+warn-on-all-wildcard-imports = true
+warn-unsafe-macro-metavars-in-private-macros = true

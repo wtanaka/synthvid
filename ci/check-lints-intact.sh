@@ -36,14 +36,14 @@ expected=$(tr -dc '0-9a-f' < "$digest_file")
 
 # Compute a combined digest of both lint configuration files.
 # We concatenate the two files so that changing either one invalidates the digest.
-# clippy.toml is not optional. Deleting it re-enables `unwrap_used` and the
-# other denials inside test code, which is itself a weakening of the lint
-# configuration, so its absence is reported as that rather than left to surface
-# as a confusing digest mismatch.
+# clippy.toml is not optional. Deleting it returns every knob to its more
+# permissive default, which is itself a weakening of the lint configuration,
+# so its absence is reported as that rather than left to surface as a
+# confusing digest mismatch.
 if [ ! -f clippy.toml ]; then
     echo "check-lints-intact: clippy.toml is missing" >&2
-    echo "  It carries the in-test lint exemptions. Without it the" >&2
-    echo "  workspace denials reach test code and tests cannot use unwrap." >&2
+    echo "  It sets every clippy knob to its strictest value. Without it the" >&2
+    echo "  knobs fall back to their more permissive defaults." >&2
     exit 1
 fi
 
