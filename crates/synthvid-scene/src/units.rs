@@ -4,13 +4,14 @@
 //! makes a render reproducible. Each one is a distinct type so they cannot be
 //! passed in the wrong order or mixed up with a bare integer.
 
+use core::error::Error;
 use core::fmt;
 use core::num::{NonZeroI64, NonZeroU16, NonZeroU32};
 
-use crate::ratio::Ratio;
+use crate::ratio::{Numerator, Overflow, Ratio};
 
 /// Zero-based index of a frame in a video sequence.
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Default)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct FrameIndex(pub u32);
 
 impl FrameIndex {
@@ -24,18 +25,6 @@ impl FrameIndex {
     #[must_use]
     pub const fn get(self) -> u32 {
         self.0
-    }
-}
-
-impl From<u32> for FrameIndex {
-    fn from(index: u32) -> Self {
-        Self(index)
-    }
-}
-
-impl From<FrameIndex> for u32 {
-    fn from(index: FrameIndex) -> Self {
-        index.0
     }
 }
 
@@ -58,7 +47,7 @@ impl fmt::Display for FrameCountError {
     }
 }
 
-impl core::error::Error for FrameCountError {}
+impl Error for FrameCountError {}
 
 impl FrameCount {
     /// Creates a frame count if `count` is non-zero.
@@ -117,7 +106,7 @@ impl fmt::Display for WidthError {
     }
 }
 
-impl core::error::Error for WidthError {}
+impl Error for WidthError {}
 
 impl Width {
     /// Creates a new width if `width` is non-zero.
@@ -176,7 +165,7 @@ impl fmt::Display for HeightError {
     }
 }
 
-impl core::error::Error for HeightError {}
+impl Error for HeightError {}
 
 impl Height {
     /// Creates a new height if `height` is non-zero.
@@ -246,7 +235,7 @@ impl FrameRate {
     ///
     /// Returns `Err(FrameRateError::NonPositive)` if the rate is zero or negative.
     pub const fn new(rate: Ratio) -> Result<Self, FrameRateError> {
-        if rate.numer() > 0 {
+        if rate.numer().0 > 0 {
             Ok(Self(rate))
         } else {
             Err(FrameRateError::NonPositive)
@@ -269,7 +258,7 @@ impl FrameRate {
     /// Returns `Err(FrameRateError::NonPositive)` if `fps` is zero.
     pub fn from_fps(fps: u32) -> Result<Self, FrameRateError> {
         let nz_fps = NonZeroU32::new(fps).ok_or(FrameRateError::NonPositive)?;
-        let ratio = Ratio::from_integer(i64::from(nz_fps.get()));
+        let ratio = Ratio::from_integer(Numerator(NonZeroI64::from(nz_fps).get()));
         Self::new(ratio)
     }
 
@@ -279,10 +268,9 @@ impl FrameRate {
     ///
     /// Returns `Err(FrameRateError::NonPositive)` if the numerator is zero or negative.
     pub fn from_fraction(numer: u32, denom: NonZeroU32) -> Result<Self, FrameRateError> {
-        let n = i64::from(numer);
-        let d = i64::from(denom.get());
-        let nz_d = NonZeroI64::new(d).ok_or(FrameRateError::NonPositive)?;
-        let ratio = Ratio::new(n, nz_d).map_err(|_| FrameRateError::NonPositive)?;
+        let numer_wide = i64::from(numer);
+        let ratio = Ratio::new(Numerator(numer_wide), NonZeroI64::from(denom))
+            .map_err(|Overflow| FrameRateError::NonPositive)?;
         Self::new(ratio)
     }
 
@@ -314,7 +302,7 @@ impl fmt::Display for FrameRateError {
     }
 }
 
-impl core::error::Error for FrameRateError {}
+impl Error for FrameRateError {}
 
 impl TryFrom<Ratio> for FrameRate {
     type Error = FrameRateError;
@@ -325,7 +313,7 @@ impl TryFrom<Ratio> for FrameRate {
 }
 
 /// Seed for deterministic pseudo-random number generation.
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Default)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct Seed(pub u64);
 
 impl Seed {
@@ -342,23 +330,11 @@ impl Seed {
     }
 }
 
-impl From<u64> for Seed {
-    fn from(seed: u64) -> Self {
-        Self(seed)
-    }
-}
-
-impl From<Seed> for u64 {
-    fn from(seed: Seed) -> Self {
-        seed.0
-    }
-}
-
 /// Zero-based index of an object in [`Scene`](crate::scene::Scene)::`objects`.
 ///
 /// Exists so an error can name which object failed without carrying a bare
 /// integer.
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Default)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct ObjectIndex(pub u32);
 
 impl ObjectIndex {
@@ -375,88 +351,5 @@ impl ObjectIndex {
     }
 }
 
-impl From<u32> for ObjectIndex {
-    fn from(index: u32) -> Self {
-        Self(index)
-    }
-}
-
-impl From<ObjectIndex> for u32 {
-    fn from(index: ObjectIndex) -> Self {
-        index.0
-    }
-}
-
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use core::num::NonZeroU32;
-
-    use crate::color::Rgb8;
-    use crate::ratio::Ratio;
-
-    #[test]
-    fn test_newtypes_and_framerate() {
-        // FrameIndex
-        let fi0 = FrameIndex::new(0);
-        assert_eq!(fi0.get(), 0, "frame index 0");
-        let fi42 = FrameIndex::from(42);
-        assert_eq!(u32::from(fi42), 42, "frame index from / into");
-
-        // FrameCount
-        assert!(FrameCount::new(0).is_err(), "frame count 0 rejected");
-        let fc = FrameCount::new(100).expect("frame count 100 accepted");
-        assert_eq!(fc.get().get(), 100, "frame count get");
-
-        // Width & Height & Dimensions
-        assert!(Width::new(0).is_err(), "width 0 rejected");
-        assert!(Height::new(0).is_err(), "height 0 rejected");
-        let w = Width::new(1920).expect("width 1920 accepted");
-        let h = Height::new(1080).expect("height 1080 accepted");
-        let dims = Dimensions::new(w, h);
-        assert_eq!(dims.width.get().get(), 1920, "dims width");
-        assert_eq!(dims.height.get().get(), 1080, "dims height");
-
-        // Seed
-        let seed = Seed::new(12345);
-        assert_eq!(seed.get(), 12345, "seed value");
-
-        // Rgb8
-        let col = Rgb8::new(255, 128, 64);
-        assert_eq!(col.r, 255, "red channel");
-        assert_eq!(col.g, 128, "green channel");
-        assert_eq!(col.b, 64, "blue channel");
-
-        // FrameRate
-        let d1 = NonZeroI64::new(1).unwrap();
-        let zero_ratio = Ratio::new(0, d1).ok().unwrap();
-        let neg_ratio = Ratio::new(-24, d1).ok().unwrap();
-
-        assert!(FrameRate::new(zero_ratio).is_err(), "rate 0 rejected");
-        assert!(FrameRate::new(neg_ratio).is_err(), "negative rate rejected");
-        assert!(FrameRate::from_fps(0).is_err(), "fps 0 rejected");
-
-        // Integer rate 24 fps
-        let fps24 = FrameRate::from_fps(24).expect("fps 24 accepted");
-        assert_eq!(fps24.get().numer(), 24, "fps 24 numerator");
-        assert_eq!(fps24.get().denom().get(), 1, "fps 24 denominator");
-
-        // Fractional rate 30000/1001 (NTSC)
-        let nz1001 = NonZeroU32::new(1001).unwrap();
-        let ntsc = FrameRate::from_fraction(30000, nz1001).expect("30000/1001 accepted");
-        assert_eq!(ntsc.ratio().numer(), 30000, "NTSC numerator");
-        assert_eq!(ntsc.ratio().denom().get(), 1001, "NTSC denominator");
-
-        // Check TryFrom
-        let d2 = NonZeroI64::new(2).unwrap();
-        let pos_ratio = Ratio::new(60, d2).ok().unwrap();
-        let try_res = FrameRate::try_from(pos_ratio);
-        assert!(try_res.is_ok(), "TryFrom positive ratio succeeds");
-        let err_res = FrameRate::try_from(neg_ratio);
-        assert_eq!(
-            err_res,
-            Err(FrameRateError::NonPositive),
-            "TryFrom negative ratio fails"
-        );
-    }
-}
+mod tests;

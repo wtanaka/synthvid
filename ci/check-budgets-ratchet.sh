@@ -1,8 +1,8 @@
 #!/bin/sh
 # Budgets must only ever ratchet down.
 #
-# Three files cap a count: suppression-budget.txt, test-hygiene-budget.txt,
-# and type-safety-budget.txt. Each guard checks count <= budget. This guard
+# Each ci/*-budget.txt file caps a count that a guard checks with
+# count <= budget. This guard
 # ensures the budget itself has not been raised: a commit that needs more
 # room cannot buy it by editing the number.
 #

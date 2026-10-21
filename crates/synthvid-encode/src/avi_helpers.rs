@@ -1,5 +1,7 @@
 //! AVI encoding helpers.
 use crate::avi::{AviCodec, AviError};
+use crate::byte_views::FramePayload;
+use core::num::NonZeroU32;
 use synthvid_scene::{Height, Width};
 
 /// Frame count.
@@ -75,18 +77,18 @@ impl FrameTiming {
     }
 
     /// Frame count.
-    pub(crate) const fn frame_count(&self) -> u32 {
-        self.frame_count.get()
+    pub(crate) const fn frame_count(&self) -> FrameCount {
+        self.frame_count
     }
 
     /// FPS numerator.
-    pub(crate) const fn fps_numerator(&self) -> u32 {
-        self.fps_numerator.get()
+    pub(crate) const fn fps_numerator(&self) -> FpsNumerator {
+        self.fps_numerator
     }
 
     /// FPS denominator.
-    pub(crate) const fn fps_denominator(&self) -> u32 {
-        self.fps_denominator.get()
+    pub(crate) const fn fps_denominator(&self) -> FpsDenominator {
+        self.fps_denominator
     }
 }
 
@@ -138,13 +140,13 @@ impl BufferRange {
     }
 
     /// Start offset.
-    pub(crate) const fn start(&self) -> usize {
-        self.start.get()
+    pub(crate) const fn start(&self) -> BufferStart {
+        self.start
     }
 
     /// End offset.
-    pub(crate) const fn end(&self) -> usize {
-        self.end.get()
+    pub(crate) const fn end(&self) -> BufferEnd {
+        self.end
     }
 }
 
@@ -181,7 +183,7 @@ impl ChunkSize {
 }
 
 /// Chunk identifier.
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, PartialEq, Eq)]
 pub(crate) struct ChunkId([u8; 4]);
 
 impl ChunkId {
@@ -217,43 +219,43 @@ impl IndexEntry {
     }
 
     /// Chunk offset.
-    pub(crate) const fn offset(&self) -> u32 {
-        self.offset.get()
+    pub(crate) const fn offset(&self) -> ChunkOffset {
+        self.offset
     }
 
     /// Chunk size.
-    pub(crate) const fn size(&self) -> u32 {
-        self.size.get()
+    pub(crate) const fn size(&self) -> ChunkSize {
+        self.size
     }
 
     /// Chunk identifier.
-    pub(crate) const fn chunk_id(&self) -> [u8; 4] {
-        self.chunk_id.get()
+    pub(crate) const fn chunk_id(&self) -> ChunkId {
+        self.chunk_id
     }
 }
 
 /// Validates frame size.
 pub(crate) fn validate_frame_size(
-    frame_data: &[u8],
+    frame_data: FramePayload<'_>,
     width: Width,
     height: Height,
     codec: AviCodec,
 ) -> Result<(), AviError> {
     match codec {
         AviCodec::UncompressedRgb => {
-            let w = u32::from(width.get().get());
-            let h = u32::from(height.get().get());
-            let expected = w
-                .checked_mul(h)
+            let width_px = NonZeroU32::from(width.get()).get();
+            let height_px = NonZeroU32::from(height.get()).get();
+            let expected = width_px
+                .checked_mul(height_px)
                 .and_then(|wh| wh.checked_mul(3))
                 .ok_or(AviError::SizeOverflow)?;
-            let expected_usize = usize::try_from(expected).map_err(|_| AviError::SizeOverflow)?;
-            if frame_data.len() != expected_usize {
+            let expected_usize = usize::try_from(expected).map_err(AviError::size_overflow)?;
+            if frame_data.0.len() != expected_usize {
                 return Err(AviError::InvalidDimensions);
             }
         }
         AviCodec::MotionJpeg => {
-            if frame_data.is_empty() {
+            if frame_data.0.is_empty() {
                 return Err(AviError::InvalidDimensions);
             }
         }
@@ -261,11 +263,20 @@ pub(crate) fn validate_frame_size(
     Ok(())
 }
 
-/// Negates a non-negative u32.
-pub(crate) const fn negate_u32_nonzero(magnitude: u32) -> u32 {
-    let inverted = !magnitude;
-    match inverted.checked_add(1) {
-        Some(neg) => neg,
-        None => u32::MAX,
-    }
+/// The height field of a top-down bitmap header, which holds the negated height.
+#[derive(Copy, Clone)]
+pub(crate) struct BitmapHeight(pub(crate) u32);
+
+/// Negates a height into the two's-complement field a top-down bitmap uses.
+///
+/// # Errors
+///
+/// Returns [`AviError::InvalidDimensions`] when the negation has no
+/// representation, which a non-zero height never produces.
+pub(crate) fn top_down_bitmap_height(height: Height) -> Result<BitmapHeight, AviError> {
+    let magnitude = NonZeroU32::from(height.get()).get();
+    let Some(neg) = (!magnitude).checked_add(1) else {
+        return Err(AviError::InvalidDimensions);
+    };
+    Ok(BitmapHeight(neg))
 }

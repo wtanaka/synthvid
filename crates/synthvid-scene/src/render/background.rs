@@ -5,89 +5,47 @@
 //! so no previous buffer contents can survive. All arithmetic is exact; no
 //! floating-point operation appears here.
 
-use crate::color::Rgb8;
-use crate::frame::{Frame, PixelCoord};
+use core::num::{NonZeroU16, NonZeroU32, NonZeroU64};
+
+use crate::color::{Channel, Rgb8};
+use crate::frame::{Frame, PixelColumn, PixelCoord, PixelOutOfBounds, PixelRow};
 use crate::geom::Point;
-use crate::ratio::{Overflow, Ratio};
-use crate::rng::Rng;
-use crate::scene::{Background, Direction};
+use crate::ratio::{Numerator, Overflow, Ratio};
+use crate::rng::{BoundedDraw, DrawBound, Rng};
+use crate::scene::{Background, BlobCount, BlobRadii, BlobRadius, Direction};
 use crate::units::Seed;
 
 use super::super::raster::fill_disc;
+use super::background_types::{CheckerPattern, GradientEnds, GridPattern};
 
 /// Black ground painted before the deterministic discs of [`Background::Blobs`].
-const BLOB_GROUND: Rgb8 = Rgb8::new(0, 0, 0);
-
-/// Returns the checker color at pixel `(x, y)`.
-///
-/// The frame is tiled with squares of side `side` pixels; the square at the
-/// origin takes `a`, and colors alternate like a chessboard. `side` is never
-/// zero by construction, so the divisions below always succeed.
-const fn checker_colour(x: u16, y: u16, side: u16, a: Rgb8, b: Rgb8) -> Rgb8 {
-    let Some(qx) = x.checked_div(side) else {
-        return a;
-    };
-    let Some(qy) = y.checked_div(side) else {
-        return a;
-    };
-    let Some(sum) = qx.checked_add(qy) else {
-        return a;
-    };
-    let Some(rem) = sum.checked_rem(2) else {
-        return a;
-    };
-    if rem == 0 {
-        a
-    } else {
-        b
-    }
-}
-
-/// Interpolates one 8-bit channel between `from` and `to`.
-///
-/// `num / den` is the position along the gradient with `0 <= num <= den` and
-/// `den >= 1`. The value is `(from * (den - num) + to * num + den / 2) / den`,
-/// computed in `u32` with symmetric rounding, so the start edge is exactly
-/// `from` and the far edge is exactly `to`.
-fn gradient_channel(from: u8, to: u8, num: u32, den: u32) -> u8 {
-    let from_wide = u32::from(from);
-    let to_wide = u32::from(to);
-    let Some(rest) = den.checked_sub(num) else {
-        return from;
-    };
-    let Some(first) = from_wide.checked_mul(rest) else {
-        return from;
-    };
-    let Some(second) = to_wide.checked_mul(num) else {
-        return from;
-    };
-    let Some(total) = first.checked_add(second) else {
-        return from;
-    };
-    let Some(half) = den.checked_div(2) else {
-        return from;
-    };
-    let Some(rounded) = total.checked_add(half) else {
-        return from;
-    };
-    let Some(value) = rounded.checked_div(den) else {
-        return from;
-    };
-    let Some(byte) = u8::try_from(value).ok() else {
-        return from;
-    };
-    byte
-}
+const BLOB_GROUND: Rgb8 = Rgb8 {
+    red: Channel(0),
+    green: Channel(0),
+    blue: Channel(0),
+};
 
 /// Paints a [`Background::Checker`] backdrop over the whole frame.
-fn paint_checker(frame: &mut Frame, side: u16, a: Rgb8, b: Rgb8) -> Result<(), Overflow> {
+///
+/// Squares are tiled from the origin. Two tile indices share the even colour
+/// exactly when their parities agree, which is the parity of their sum, so
+/// the sum itself is never formed and cannot overflow.
+fn paint_checker(frame: &mut Frame, pattern: &CheckerPattern) -> Result<(), Overflow> {
+    let side = pattern.cell.get();
     let width = frame.width().get().get();
     let height = frame.height().get().get();
-    for y in 0..height {
-        for x in 0..width {
+    for row in 0..height {
+        for column in 0..width {
+            let column_odd = column.div_euclid(side).rem_euclid(2) == 1;
+            let row_odd = row.div_euclid(side).rem_euclid(2) == 1;
+            let colour = if column_odd == row_odd {
+                pattern.even
+            } else {
+                pattern.odd
+            };
             frame
-                .set_pixel(PixelCoord::new(x, y), checker_colour(x, y, side, a, b))
-                .map_err(|_| Overflow)?;
+                .set_pixel(PixelCoord::new(PixelColumn(column), PixelRow(row)), colour)
+                .map_err(|PixelOutOfBounds| Overflow)?;
         }
     }
     Ok(())
@@ -96,13 +54,18 @@ fn paint_checker(frame: &mut Frame, side: u16, a: Rgb8, b: Rgb8) -> Result<(), O
 /// Paints a [`Background::Gradient`] backdrop over the whole frame.
 ///
 /// Along the gradient axis the first row or column is exactly `from` and the
-/// last is exactly `to`; see [`gradient_channel`]. A frame one pixel wide or
-/// tall along that axis has no distance to interpolate over and is filled
-/// with `from`.
+/// last is exactly `to`. Each channel is `(from * (den - num) + to * num +
+/// den / 2) / den`, computed in `u32` with symmetric rounding, where `num` is
+/// the pixel's index along the axis and `den` is the last index. A frame one
+/// pixel wide or tall along that axis has no distance to interpolate over and
+/// is filled with `from`.
+///
+/// # Errors
+///
+/// Returns `Err(Overflow)` if an intermediate value does not fit its integer type.
 fn paint_gradient(
     frame: &mut Frame,
-    from: Rgb8,
-    to: Rgb8,
+    ends: &GradientEnds,
     direction: Direction,
 ) -> Result<(), Overflow> {
     let width = frame.width().get().get();
@@ -111,97 +74,40 @@ fn paint_gradient(
         Direction::Horizontal => width,
         Direction::Vertical => height,
     };
-    if limit <= 1 {
-        frame.fill(from);
-        return Ok(());
-    }
-    let Some(den) = u32::from(limit).checked_sub(1) else {
-        frame.fill(from);
+    let Some(span) = limit.checked_sub(1).and_then(NonZeroU16::new) else {
+        frame.fill(ends.from);
         return Ok(());
     };
-    for y in 0..height {
-        for x in 0..width {
-            let num = match direction {
-                Direction::Horizontal => u32::from(x),
-                Direction::Vertical => u32::from(y),
+    let den = NonZeroU32::from(span).get();
+    let half = den.div_euclid(2);
+    let starts = [ends.from.red.0, ends.from.green.0, ends.from.blue.0];
+    let finals = [ends.to.red.0, ends.to.green.0, ends.to.blue.0];
+    for row in 0..height {
+        for column in 0..width {
+            let along = match direction {
+                Direction::Horizontal => column,
+                Direction::Vertical => row,
             };
-            let colour = Rgb8::new(
-                gradient_channel(from.r, to.r, num, den),
-                gradient_channel(from.g, to.g, num, den),
-                gradient_channel(from.b, to.b, num, den),
-            );
+            let num = u32::from(along);
+            let rest = den.checked_sub(num).ok_or(Overflow)?;
+            let mut channels = [0_u8; 3];
+            for ((slot, start), end) in channels.iter_mut().zip(starts).zip(finals) {
+                let first = u32::from(start).checked_mul(rest).ok_or(Overflow)?;
+                let second = u32::from(end).checked_mul(num).ok_or(Overflow)?;
+                let total = first.checked_add(second).ok_or(Overflow)?;
+                let rounded = total.checked_add(half).ok_or(Overflow)?;
+                let value = rounded.div_euclid(den);
+                *slot = u8::try_from(value).map_err(Overflow::from)?;
+            }
+            let colour = Rgb8 {
+                red: Channel(channels[0]),
+                green: Channel(channels[1]),
+                blue: Channel(channels[2]),
+            };
             frame
-                .set_pixel(PixelCoord::new(x, y), colour)
-                .map_err(|_| Overflow)?;
+                .set_pixel(PixelCoord::new(PixelColumn(column), PixelRow(row)), colour)
+                .map_err(|PixelOutOfBounds| Overflow)?;
         }
-    }
-    Ok(())
-}
-
-/// Draws one deterministic disc of a [`Background::Blobs`] backdrop.
-///
-/// The centre is uniform over the frame, the radius is uniform in
-/// `[lo, hi]`, and each channel is uniform in `[0, 255]`, all drawn in that
-/// order from the supplied generator. A blob whose values overflow is
-/// skipped, leaving the ground untouched at its position.
-fn draw_blob(
-    frame: &mut Frame,
-    rng: &mut Rng,
-    width: u16,
-    height: u16,
-    lo: u16,
-    hi: u16,
-) -> Result<(), Overflow> {
-    let raw_x = rng.next_bounded(u64::from(width));
-    let raw_y = rng.next_bounded(u64::from(height));
-    let cx = u16::try_from(raw_x).map_err(|_| Overflow)?;
-    let cy = u16::try_from(raw_y).map_err(|_| Overflow)?;
-    let extra = u32::from(hi)
-        .checked_sub(u32::from(lo))
-        .and_then(|gap| gap.checked_add(1))
-        .ok_or(Overflow)?;
-    let raw_r = rng.next_bounded(u64::from(extra));
-    let step = u32::try_from(raw_r).map_err(|_| Overflow)?;
-    let radius_wide = u32::from(lo).checked_add(step).ok_or(Overflow)?;
-    let radius_u16 = u16::try_from(radius_wide).map_err(|_| Overflow)?;
-    let red = u8::try_from(rng.next_bounded(256)).map_err(|_| Overflow)?;
-    let green = u8::try_from(rng.next_bounded(256)).map_err(|_| Overflow)?;
-    let blue = u8::try_from(rng.next_bounded(256)).map_err(|_| Overflow)?;
-    let px = Ratio::from_integer(i64::from(cx));
-    let py = Ratio::from_integer(i64::from(cy));
-    let radius = Ratio::from_integer(i64::from(radius_u16));
-    fill_disc(
-        frame,
-        Point::new(px, py),
-        radius,
-        Rgb8::new(red, green, blue),
-    )
-}
-
-/// Paints a [`Background::Blobs`] backdrop over the whole frame.
-///
-/// Black ground first, then `count` discs from [`draw_blob`] in generator
-/// order, so the same seed always yields the same discs. When `min_radius`
-/// exceeds `max_radius` the bounds are swapped rather than rejected, keeping
-/// evaluation total.
-fn paint_blobs(
-    frame: &mut Frame,
-    seed: Seed,
-    count: u16,
-    min_radius: u16,
-    max_radius: u16,
-) -> Result<(), Overflow> {
-    frame.fill(BLOB_GROUND);
-    let (lo, hi) = if min_radius <= max_radius {
-        (min_radius, max_radius)
-    } else {
-        (max_radius, min_radius)
-    };
-    let width = frame.width().get().get();
-    let height = frame.height().get().get();
-    let mut rng = Rng::from_seed(seed);
-    for _ in 0..count {
-        draw_blob(frame, &mut rng, width, height, lo, hi)?;
     }
     Ok(())
 }
@@ -211,24 +117,76 @@ fn paint_blobs(
 /// Pixels whose `x` or `y` index is a multiple of `spacing` take the line
 /// colour; every other pixel takes the ground colour. Lines are one pixel
 /// wide.
-fn paint_grid(frame: &mut Frame, spacing: u16, line: Rgb8, ground: Rgb8) -> Result<(), Overflow> {
-    frame.fill(ground);
+fn paint_grid(frame: &mut Frame, grid: &GridPattern) -> Result<(), Overflow> {
+    frame.fill(grid.ground);
     let width = frame.width().get().get();
     let height = frame.height().get().get();
-    for y in 0..height {
-        for x in 0..width {
-            let Some(rx) = x.checked_rem(spacing) else {
-                continue;
-            };
-            let Some(ry) = y.checked_rem(spacing) else {
-                continue;
-            };
-            if rx == 0 || ry == 0 {
+    let spacing = grid.spacing.get();
+    for row in 0..height {
+        for column in 0..width {
+            if column.rem_euclid(spacing) == 0 || row.rem_euclid(spacing) == 0 {
                 frame
-                    .set_pixel(PixelCoord::new(x, y), line)
-                    .map_err(|_| Overflow)?;
+                    .set_pixel(
+                        PixelCoord::new(PixelColumn(column), PixelRow(row)),
+                        grid.line,
+                    )
+                    .map_err(|PixelOutOfBounds| Overflow)?;
             }
         }
+    }
+    Ok(())
+}
+
+/// Paints black ground and then `count` generator-drawn discs; see
+/// [`paint_background`] for the draw order.
+fn paint_blobs(
+    frame: &mut Frame,
+    seed: Seed,
+    blob_count: BlobCount,
+    radii: BlobRadii,
+) -> Result<(), Overflow> {
+    let BlobCount(count) = blob_count;
+    frame.fill(BLOB_GROUND);
+    let BlobRadius(lo) = radii.min();
+    let BlobRadius(hi) = radii.max();
+    let across = DrawBound(NonZeroU64::from(frame.width().get()));
+    let down = DrawBound(NonZeroU64::from(frame.height().get()));
+    let channel_bound = DrawBound(NonZeroU64::from(
+        NonZeroU16::MIN.checked_add(255).ok_or(Overflow)?,
+    ));
+    let mut rng = Rng::from_seed(seed);
+    for _ in 0..count {
+        let BoundedDraw(raw_x) = rng.next_bounded(across);
+        let BoundedDraw(raw_y) = rng.next_bounded(down);
+        let cx = u16::try_from(raw_x).map_err(Overflow::from)?;
+        let cy = u16::try_from(raw_y).map_err(Overflow::from)?;
+        let extra = u32::from(hi)
+            .checked_sub(u32::from(lo))
+            .and_then(|gap| NonZeroU32::MIN.checked_add(gap))
+            .ok_or(Overflow)?;
+        let BoundedDraw(raw_r) = rng.next_bounded(DrawBound(NonZeroU64::from(extra)));
+        let step = u32::try_from(raw_r).map_err(Overflow::from)?;
+        let radius_wide = u32::from(lo).checked_add(step).ok_or(Overflow)?;
+        let radius_u16 = u16::try_from(radius_wide).map_err(Overflow::from)?;
+        let red = u8::try_from(rng.next_bounded(channel_bound).0).map_err(Overflow::from)?;
+        let green = u8::try_from(rng.next_bounded(channel_bound).0).map_err(Overflow::from)?;
+        let blue = u8::try_from(rng.next_bounded(channel_bound).0).map_err(Overflow::from)?;
+        let px = Ratio::from_integer(Numerator(i64::from(cx)));
+        let py = Ratio::from_integer(Numerator(i64::from(cy)));
+        let radius = Ratio::from_integer(Numerator(i64::from(radius_u16)));
+        fill_disc(
+            frame,
+            Point {
+                across: px,
+                down: py,
+            },
+            radius,
+            Rgb8 {
+                red: Channel(red),
+                green: Channel(green),
+                blue: Channel(blue),
+            },
+        )?;
     }
     Ok(())
 }
@@ -238,203 +196,42 @@ fn paint_grid(frame: &mut Frame, spacing: u16, line: Rgb8, ground: Rgb8) -> Resu
 /// Every pixel is written, so no previous buffer contents can survive. The
 /// background is drawn in frame space and never passes through the camera
 /// transform.
+///
+/// A blob backdrop first paints black ground, then `count` discs in generator
+/// order, so the same seed always yields the same discs. The radius range is
+/// ordered by construction, so evaluation is total. Each disc draws its centre uniform over the frame, its
+/// radius uniform in `[lo, hi]`, and each channel uniform in `[0, 255]`, in
+/// that order. A blob whose values overflow is skipped, leaving the ground
+/// untouched at its position.
 pub(super) fn paint_background(frame: &mut Frame, background: Background) -> Result<(), Overflow> {
     match background {
         Background::Solid(colour) => {
             frame.fill(colour);
             Ok(())
         }
-        Background::Checker { cell, a, b } => paint_checker(frame, cell.get(), a, b),
+        Background::Checker { cell, even, odd } => {
+            paint_checker(frame, &CheckerPattern { cell, even, odd })
+        }
         Background::Gradient {
             from,
             to,
             direction,
-        } => paint_gradient(frame, from, to, direction),
-        Background::Blobs {
-            seed,
-            count,
-            min_radius,
-            max_radius,
-        } => paint_blobs(frame, seed, count, min_radius, max_radius),
+        } => paint_gradient(frame, &GradientEnds { from, to }, direction),
+        Background::Blobs { seed, count, radii } => paint_blobs(frame, seed, count, radii),
         Background::Grid {
             spacing,
             line,
             ground,
-        } => paint_grid(frame, spacing.get(), line, ground),
+        } => paint_grid(
+            frame,
+            &GridPattern {
+                spacing,
+                line,
+                ground,
+            },
+        ),
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::camera::{Camera, Magnification, Rotation, Turns, Zoom};
-    use crate::scene::{Motion, Scene};
-    use crate::testutil::make_ratio;
-    use crate::units::{Dimensions, FrameCount, FrameRate, Height, Width};
-
-    /// Builds the identity camera: still at the origin with unit magnification.
-    fn identity_camera() -> Camera {
-        let zero = make_ratio(0, 1).unwrap();
-        let angle = Turns::new(zero);
-        let unit = Zoom::Fixed(Magnification::new(make_ratio(1, 1).unwrap()).unwrap());
-        Camera::new(
-            Motion::Fixed(Point::new(zero, zero)),
-            Rotation::Fixed(angle),
-            unit,
-        )
-    }
-
-    /// Builds an 8x8 scene with the given backdrop and no objects.
-    fn bare_scene(background: Background) -> Scene {
-        let width = Width::new(8).unwrap();
-        let height = Height::new(8).unwrap();
-        let rate = FrameRate::from_fps(30).unwrap();
-        let count = FrameCount::new(4).unwrap();
-        let camera = identity_camera();
-        Scene::new(
-            Dimensions::new(width, height),
-            rate,
-            count,
-            None,
-            background,
-            camera,
-            Vec::new(),
-        )
-    }
-
-    #[test]
-    fn test_checker_pixels() {
-        let cell = core::num::NonZeroU16::new(2).unwrap();
-        let red = Rgb8::new(255, 0, 0);
-        let blue = Rgb8::new(0, 0, 255);
-        let scene = bare_scene(Background::Checker {
-            cell,
-            a: red,
-            b: blue,
-        });
-        let mut frame = Frame::zeroed(scene.dimensions).unwrap();
-        paint_background(&mut frame, scene.background)
-            .expect("drawing a test fixture must not overflow");
-        assert_eq!(
-            frame.pixel(PixelCoord::new(0, 0)),
-            Some(red),
-            "origin square must be a"
-        );
-        assert_eq!(
-            frame.pixel(PixelCoord::new(2, 0)),
-            Some(blue),
-            "next square across must be b"
-        );
-        assert_eq!(
-            frame.pixel(PixelCoord::new(0, 2)),
-            Some(blue),
-            "next square down must be b"
-        );
-        assert_eq!(
-            frame.pixel(PixelCoord::new(2, 2)),
-            Some(red),
-            "diagonal square must be a again"
-        );
-    }
-
-    #[test]
-    fn test_grid_pixels() {
-        let spacing = core::num::NonZeroU16::new(4).unwrap();
-        let white = Rgb8::new(255, 255, 255);
-        let black = Rgb8::new(0, 0, 0);
-        let scene = bare_scene(Background::Grid {
-            spacing,
-            line: white,
-            ground: black,
-        });
-        let mut frame = Frame::zeroed(scene.dimensions).unwrap();
-        paint_background(&mut frame, scene.background)
-            .expect("drawing a test fixture must not overflow");
-        assert_eq!(
-            frame.pixel(PixelCoord::new(0, 3)),
-            Some(white),
-            "column zero must be a line"
-        );
-        assert_eq!(
-            frame.pixel(PixelCoord::new(3, 0)),
-            Some(white),
-            "row zero must be a line"
-        );
-        assert_eq!(
-            frame.pixel(PixelCoord::new(1, 1)),
-            Some(black),
-            "off-line pixels must be ground"
-        );
-        assert_eq!(
-            frame.pixel(PixelCoord::new(4, 4)),
-            Some(white),
-            "multiples of spacing must be lines"
-        );
-    }
-
-    #[test]
-    fn test_gradient_edges() {
-        let from = Rgb8::new(10, 20, 30);
-        let to = Rgb8::new(200, 180, 160);
-        let scene = bare_scene(Background::Gradient {
-            from,
-            to,
-            direction: Direction::Horizontal,
-        });
-        let mut frame = Frame::zeroed(scene.dimensions).unwrap();
-        paint_background(&mut frame, scene.background)
-            .expect("drawing a test fixture must not overflow");
-        assert_eq!(
-            frame.pixel(PixelCoord::new(0, 0)),
-            Some(from),
-            "gradient start edge must be from"
-        );
-        assert_eq!(
-            frame.pixel(PixelCoord::new(7, 0)),
-            Some(to),
-            "gradient far edge must be to"
-        );
-        let middle = frame.pixel(PixelCoord::new(3, 0));
-        assert!(
-            middle.is_some() && middle != Some(from) && middle != Some(to),
-            "gradient interior must lie strictly between its edges"
-        );
-    }
-
-    #[test]
-    fn test_blobs_deterministic() {
-        let blobs = Background::Blobs {
-            seed: Seed::new(1234),
-            count: 9,
-            min_radius: 1,
-            max_radius: 4,
-        };
-        let scene = bare_scene(blobs);
-        let mut once = Frame::zeroed(scene.dimensions).unwrap();
-        let mut twice = Frame::zeroed(scene.dimensions).unwrap();
-        paint_background(&mut once, scene.background)
-            .expect("drawing a test fixture must not overflow");
-        paint_background(&mut twice, scene.background)
-            .expect("drawing a test fixture must not overflow");
-        assert_eq!(
-            once.data(),
-            twice.data(),
-            "blob layout from one seed must paint identically twice"
-        );
-        let mut ground_only = Frame::zeroed(scene.dimensions).unwrap();
-        paint_background(
-            &mut ground_only,
-            Background::Blobs {
-                seed: Seed::new(1234),
-                count: 0,
-                min_radius: 1,
-                max_radius: 4,
-            },
-        )
-        .expect("drawing a test fixture must not overflow");
-        assert!(
-            ground_only.data() != once.data(),
-            "a zero-count blob field must differ from a populated one"
-        );
-    }
-}
+mod tests;

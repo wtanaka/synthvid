@@ -18,6 +18,7 @@
 //! | `config` | JPEG coding parameters (`Quality`, `ChromaSampling`) |
 //! | `defects` | single-fault mutations (`apply`)                 |
 //! | `capacity` | classic-container size check                    |
+//! | `media` | encoded frames and container files (`EncodedFrame`, `ContainerFile`) |
 //! | `color` | RGB to YCbCr conversion                             |
 //!
 //! Lower-level helpers (`bitstream`, `dct`, `huffman`, `quant`,
@@ -28,7 +29,7 @@
 //! # Example
 //!
 //! ```rust
-//! use synthvid_encode::{ChromaSampling, Quality, encode_jpeg};
+//! use synthvid_encode::{ChromaSampling, EncodedFrame, Quality, encode_jpeg};
 //! use synthvid_scene::{Dimensions, Frame, Height, Width};
 //!
 //! let dims = match (Width::new(16), Height::new(16)) {
@@ -43,8 +44,8 @@
 //!     Some(quality) => quality,
 //!     None => return,
 //! };
-//! let bytes: Vec<u8> = encode_jpeg(&frame, quality, ChromaSampling::Yuv420);
-//! bytes.len();
+//! let jpeg: EncodedFrame = encode_jpeg(&frame, quality, ChromaSampling::Yuv420);
+//! jpeg.as_bytes().len();
 //! ```
 #![forbid(unsafe_code)]
 
@@ -52,6 +53,7 @@ pub mod ac_encoding;
 pub mod avi;
 pub mod avi_helpers;
 pub mod bitstream;
+pub mod byte_views;
 pub mod capacity;
 pub mod color;
 pub mod config;
@@ -60,61 +62,27 @@ pub mod defects;
 pub mod huffman;
 pub mod iso;
 pub mod iso_helpers;
+pub mod iso_types;
 pub mod jpeg;
 pub mod jpeg_markers;
+pub mod media;
 pub mod quant;
 pub mod sample_table;
 
 pub use crate::avi::{encode_avi, AviCodec, AviError};
 pub use crate::bitstream::BitCount;
-pub use crate::capacity::raw_frames_fit_classic_container;
+pub use crate::capacity::{raw_frames_fit_classic_container, ContainerFit};
 pub use crate::color::YCbCr;
 pub use crate::config::{ChromaSampling, Quality};
 pub use crate::defects::{
-    apply, Axis, BoxAddress, BoxPath, BoxStep, BoxTag, ContainerKind, Defect, DefectError,
+    apply, Axis, BoxAddress, BoxPath, BoxStep, BoxTag, ContainerKind, DeclaredFrameCount, Defect,
+    DefectError,
 };
 pub use crate::huffman::Component;
 pub use crate::iso::{encode_iso, IsoCodec, IsoError, TrackMatrix};
+pub use crate::iso_helpers::{FrameRates, TrackParams};
 pub use crate::jpeg::encode_jpeg;
+pub use crate::media::{ContainerFile, EncodedFrame};
 
 #[cfg(test)]
-mod tests {
-    use synthvid_scene::{Dimensions, Frame, Height, Width};
-
-    /// Pins the cross-crate invariant `encode_jpeg`'s pixel-plane
-    /// construction relies on but does not itself check: `Frame::new`
-    /// only ever hands out a `Frame` whose `data` length exactly matches
-    /// `width * height * 3`. If that invariant were ever loosened,
-    /// `build_ycbcr_planes` would silently pad a short buffer's tail
-    /// with each plane's neutral fill value (or silently drop a long
-    /// buffer's excess), producing a self-consistent, fully decodable,
-    /// but silently corrupted JPEG -- the exact failure signature of
-    /// several real bugs already found and fixed in this crate. This
-    /// test does not exercise `synthvid-encode` code at all; it exists
-    /// solely to fail loudly if `synthvid_scene::Frame` ever stops
-    /// enforcing the length it currently enforces.
-    #[test]
-    fn test_frame_rejects_mismatched_data_length() {
-        let width = Width::new(4).expect("valid width");
-        let height = Height::new(4).expect("valid height");
-        let dims = Dimensions::new(width, height);
-
-        let correct_len = 4 * 4 * 3;
-        let too_short = vec![0_u8; correct_len - 1];
-        let too_long = vec![0_u8; correct_len + 1];
-        let correct = vec![0_u8; correct_len];
-
-        assert!(
-            Frame::new(dims, too_short).is_err(),
-            "Frame::new must reject a buffer shorter than width*height*3"
-        );
-        assert!(
-            Frame::new(dims, too_long).is_err(),
-            "Frame::new must reject a buffer longer than width*height*3"
-        );
-        assert!(
-            Frame::new(dims, correct).is_ok(),
-            "Frame::new must accept a buffer of exactly width*height*3 bytes"
-        );
-    }
-}
+mod tests;

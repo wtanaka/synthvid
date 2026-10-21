@@ -10,12 +10,11 @@ readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
-[dependencies]
-synthvid-video = { path = "../synthvid-video" }
-
 [dev-dependencies]
 synthvid-encode = { path = "../synthvid-encode" }
 synthvid-scene = { path = "../synthvid-scene" }
+synthvid-testkit = { path = "../synthvid-testkit" }
+synthvid-video = { path = "../synthvid-video" }
 
 [lints]
 workspace = true

@@ -1,27 +1,48 @@
 //! Axis definitions and helpers for catalog generation.
 
+use super::cover_greedy::AxisSelection;
+use super::cover_values::Compatibility;
 use crate::cover::CatalogError;
-use core::num::NonZeroU32;
-use synthvid_encode::defects::{Axis, BoxAddress, BoxPath, BoxStep, BoxTag, ContainerKind, Defect};
-use synthvid_scene::{Dimensions, FrameIndex, Height, Width};
+use core::num::{NonZeroI64, NonZeroU16, NonZeroU32, NonZeroU64};
+use synthvid_encode::defects::{
+    Axis, BoxAddress, BoxPath, BoxStep, BoxTag, ContainerKind, DeclaredFrameCount, Defect,
+};
+use synthvid_encode::ContainerFit;
+use synthvid_scene::{Dimensions, FrameCount, FrameCountError, FrameIndex, Height, Width};
+use synthvid_scene::{FrameRateError, Overflow};
 
-/// The 17 declared defect slots (index 0 is always `None`, meaning "no defect").
-pub(super) type DefectSlots = [Option<Defect>; 17];
+/// The declared defect slots (index 0 is always `None`, meaning "no defect").
+///
+/// Held on the heap: seventeen slots of a defect each are too large to build
+/// on the stack.
+pub(super) type DefectSlots = Vec<Option<Defect>>;
 
 /// Frame count axis.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
-pub struct FrameCountValue(u32);
+pub struct FrameCountValue(FrameCount);
 
 impl FrameCountValue {
     /// Creates a frame count.
-    #[must_use]
-    pub const fn new(count: u32) -> Self {
-        Self(count)
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CatalogError::ZeroFrameCount`] if `count` is zero.
+    pub const fn new(count: u32) -> Result<Self, CatalogError> {
+        match FrameCount::new(count) {
+            Ok(frames) => Ok(Self(frames)),
+            Err(FrameCountError::Zero) => Err(CatalogError::ZeroFrameCount),
+        }
     }
 
     /// Gets the frame count value.
     #[must_use]
     pub const fn get(self) -> u32 {
+        self.0 .0.get()
+    }
+
+    /// Gets the frame count as the scene's non-zero count.
+    #[must_use]
+    pub const fn frame_count(self) -> FrameCount {
         self.0
     }
 }
@@ -29,167 +50,149 @@ impl FrameCountValue {
 /// Frame rate axis.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
 pub enum FrameRateValue {
-    /// 30 frames per second
+    /// 30 frames per second.
     Thirty,
-    /// 60 frames per second
+    /// 60 frames per second.
     Sixty,
-    /// 120 frames per second
+    /// 120 frames per second.
     OneTwenty,
-    /// 240 frames per second
+    /// 240 frames per second.
     TwoForty,
-    /// 30000/1001 frames per second (NTSC)
+    /// 30000/1001 frames per second (NTSC).
     Ntsc,
-    /// An absurdly high frame rate for defect testing
+    /// An absurdly high frame rate for defect testing.
     Absurd,
 }
 
 /// Background axis.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
 pub enum BackgroundAxis {
-    /// Solid color
+    /// Solid color.
     Solid,
-    /// Checkerboard pattern
+    /// Checkerboard pattern.
     Checker,
-    /// Linear gradient
+    /// Linear gradient.
     Gradient,
-    /// Random blobs
+    /// Random blobs.
     Blobs,
-    /// Grid pattern
+    /// Grid pattern.
     Grid,
 }
 
 /// Shape axis.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
 pub enum ShapeAxis {
-    /// Disc
+    /// Disc.
     Disc,
-    /// Rectangle
+    /// Rectangle.
     Rect,
-    /// Polygon
+    /// Polygon.
     Polygon,
-    /// Cross
+    /// Cross.
     Cross,
 }
 
 /// Motion axis: different kinds of motion with reasonable parameters.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
 pub enum MotionAxis {
-    /// Fixed position
+    /// Fixed position.
     Fixed,
-    /// Linear motion
+    /// Linear motion.
     Linear,
-    /// Ballistic motion
+    /// Ballistic motion.
     Ballistic,
-    /// Circular motion
+    /// Circular motion.
     Circular,
-    /// Oscillating motion
+    /// Oscillating motion.
     Oscillating,
-    /// Random walk
+    /// Random walk.
     Walk,
 }
 
 /// Coding axis: how pixels are encoded.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
 pub enum CodingAxis {
-    /// Raw pixel data
+    /// Raw pixel data.
     Raw,
-    /// Motion JPEG
+    /// Motion JPEG.
     MotionJpeg,
 }
 
 /// Container axis: file format.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
 pub enum ContainerAxis {
-    /// ISO base media (MP4-like)
+    /// ISO base media (MP4-like).
     Iso,
-    /// AVI container
+    /// AVI container.
     Avi,
 }
 
 /// Track display matrix axis: display transformation.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
 pub enum TrackMatrixAxis {
-    /// Identity (no rotation)
+    /// Identity (no rotation).
     Identity,
-    /// 90-degree rotation
+    /// 90-degree rotation.
     Rotate90,
-    /// 180-degree rotation
+    /// 180-degree rotation.
     Rotate180,
-    /// 270-degree rotation
+    /// 270-degree rotation.
     Rotate270,
 }
 
 /// Scale axis: whether the scene has a physical scale.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
 pub enum ScaleAxis {
-    /// Scene has a physical scale
-    WithScale,
-    /// Scene has no physical scale
-    NoScale,
+    /// Scene has a physical scale.
+    Declared,
+    /// Scene has no physical scale.
+    Undeclared,
 }
 
 /// Holds all axis definitions for the catalog.
 pub(super) struct AxisArrays {
-    /// Dimension values
+    /// Dimension values.
     pub dimensions: [Dimensions; 5],
-    /// Frame count values
+    /// Frame count values.
     pub frame_counts: [FrameCountValue; 5],
-    /// Frame rate values
+    /// Frame rate values.
     pub frame_rates: [FrameRateValue; 6],
-    /// Background values
+    /// Background values.
     pub backgrounds: [BackgroundAxis; 5],
-    /// Shape values
+    /// Shape values.
     pub shapes: [ShapeAxis; 4],
-    /// Motion values
+    /// Motion values.
     pub motions: [MotionAxis; 6],
-    /// Coding values
+    /// Coding values.
     pub codings: [CodingAxis; 2],
-    /// Container values
+    /// Container values.
     pub containers: [ContainerAxis; 2],
-    /// Track matrix values
+    /// Track matrix values.
     pub track_matrices: [TrackMatrixAxis; 4],
-    /// Scale values
+    /// Scale values.
     pub scales: [ScaleAxis; 2],
-    /// Defect values
+    /// Defect values.
     pub defects: DefectSlots,
 }
 
-/// Raw width/height pair before validation.
+/// Raw width/height pair before validation. A `None` side is a zero dimension.
 #[derive(Copy, Clone)]
 pub(super) struct RawSize {
-    /// Width value before validation
-    pub(super) width: u16,
-    /// Height value before validation
-    pub(super) height: u16,
+    /// Width value before validation.
+    pub(super) width: Option<NonZeroU16>,
+    /// Height value before validation.
+    pub(super) height: Option<NonZeroU16>,
 }
 
 /// Creates a Dimensions value from width and height u16 values.
 /// Returns an error if either dimension is zero.
 pub(super) fn make_dimensions(size: RawSize) -> Result<Dimensions, CatalogError> {
-    let width = Width::new(size.width).map_err(|_| CatalogError::ZeroDimension)?;
-    let height = Height::new(size.height).map_err(|_| CatalogError::ZeroDimension)?;
-    Ok(Dimensions::new(width, height))
-}
-
-/// Maps a Defect variant to its stable name fragment.
-/// Matches on the enum variant only, ignoring payload differences.
-pub(super) const fn defect_variant_str(d: &Defect) -> &'static str {
-    match d {
-        Defect::TruncateBefore(_) => "trunc-before",
-        Defect::TruncateWithin { .. } => "trunc-within",
-        Defect::ZeroLengthPayload(_) => "zero-pay",
-        Defect::OversizedBoxLength(_) => "over-len",
-        Defect::UndersizedBoxLength(_) => "under-len",
-        Defect::OffsetPastEnd(_) => "off-end",
-        Defect::DuplicateBox(_) => "dup-box",
-        Defect::UnknownBox { .. } => "unk-box",
-        Defect::ZeroFrameRate => "zero-fps",
-        Defect::ZeroDimension(_) => "zero-dim",
-        Defect::AbsurdFrameRate(_) => "absurd-fps",
-        Defect::NonMonotonicTimestamps => "non-mono",
-        Defect::DeclaredCountMismatch { .. } => "count-mis",
-        Defect::ReorderedBoxes(_, _) => "reorder",
-    }
+    let width = size.width.ok_or(CatalogError::ZeroDimension)?;
+    let height = size.height.ok_or(CatalogError::ZeroDimension)?;
+    Ok(Dimensions::new(
+        Width::from_nonzero(width),
+        Height::from_nonzero(height),
+    ))
 }
 
 /// The container format a defect can only be applied to, or `None` when it
@@ -198,11 +201,13 @@ pub(super) const fn defect_variant_str(d: &Defect) -> &'static str {
 /// An address is written for one format, and the defects that name boxes by
 /// path are written for ISO, so such a defect cannot meet the other format.
 #[must_use]
-pub(super) const fn defect_container_kind(d: &Defect) -> Option<ContainerKind> {
-    match d {
-        Defect::TruncateBefore(address) | Defect::TruncateWithin { address, .. } => {
-            Some(address.kind())
-        }
+pub(super) const fn defect_container_kind(defect: &Defect) -> Option<ContainerKind> {
+    match defect {
+        Defect::TruncateBefore(address) => Some(address.kind()),
+        Defect::TruncateWithin {
+            address,
+            offset: _offset,
+        } => Some(address.kind()),
         Defect::ZeroLengthPayload(_)
         | Defect::OversizedBoxLength(_)
         | Defect::UndersizedBoxLength(_)
@@ -210,44 +215,49 @@ pub(super) const fn defect_container_kind(d: &Defect) -> Option<ContainerKind> {
         | Defect::DuplicateBox(_)
         | Defect::ReorderedBoxes(_, _)
         | Defect::NonMonotonicTimestamps => Some(ContainerKind::Iso),
-        Defect::UnknownBox { .. }
-        | Defect::ZeroFrameRate
-        | Defect::ZeroDimension(_)
-        | Defect::AbsurdFrameRate(_)
-        | Defect::DeclaredCountMismatch { .. } => None,
+        Defect::UnknownBox {
+            after: _after,
+            tag: _tag,
+        } => None,
+        Defect::ZeroFrameRate | Defect::ZeroDimension(_) | Defect::AbsurdFrameRate(_) => None,
+        Defect::DeclaredCountMismatch {
+            declared: _declared,
+        } => None,
     }
 }
 
 /// The container format a container axis value produces.
-pub(super) const fn container_kind(c: ContainerAxis) -> ContainerKind {
-    match c {
+pub(super) const fn container_kind(container: ContainerAxis) -> ContainerKind {
+    match container {
         ContainerAxis::Iso => ContainerKind::Iso,
         ContainerAxis::Avi => ContainerKind::Avi,
     }
 }
 
-/// Returns true if the container at `container_index` and the defect at
-/// `defect_index` (indices into `axes.containers` / `axes.defects`) can be
-/// combined in one entry. Out-of-range indices are treated as compatible
-/// (nothing to rule out).
+/// Returns whether the container and the defect chosen in `selection` (indices
+/// into `axes.containers` / `axes.defects`) can be combined in one entry.
+/// Out-of-range indices are treated as compatible (nothing to rule out).
 pub(super) fn container_defect_compatible(
     axes: &AxisArrays,
-    container_index: usize,
-    defect_index: usize,
-) -> bool {
-    let Some(container) = axes.containers.get(container_index) else {
-        return true;
+    selection: &AxisSelection,
+) -> Compatibility {
+    let Some(container) = axes.containers.get(selection.container.0) else {
+        return Compatibility::Compatible;
     };
-    match axes.defects.get(defect_index) {
-        Some(Some(d)) => {
-            defect_container_kind(d).is_none_or(|kind| kind == container_kind(*container))
+    match axes.defects.get(selection.defect.0) {
+        Some(Some(defect)) => {
+            if defect_container_kind(defect).is_none_or(|kind| kind == container_kind(*container)) {
+                Compatibility::Compatible
+            } else {
+                Compatibility::Incompatible
+            }
         }
-        _ => true,
+        _ => Compatibility::Compatible,
     }
 }
 
-/// Returns true if the given dimensions/frame-count/coding/container
-/// combination fits within its container's capacity. Raw (uncompressed)
+/// Returns whether the dimensions/frame-count/coding/container combination in
+/// `selection` fits within its container's capacity. Raw (uncompressed)
 /// frame data grows linearly with pixel count and frame count and can
 /// exceed a classic container's 32-bit size limit; motion-JPEG frames are
 /// compressed and stay well under it. Both the ISO `mdat` box and the AVI
@@ -258,23 +268,23 @@ pub(super) fn container_defect_compatible(
 /// (nothing to rule out).
 pub(super) fn raw_avi_size_compatible(
     axes: &AxisArrays,
-    dimensions_index: usize,
-    frame_count_index: usize,
-    coding_index: usize,
-    container_index: usize,
-) -> bool {
-    let is_classic_container = axes.containers.get(container_index).is_some();
-    let is_raw = axes.codings.get(coding_index) == Some(&CodingAxis::Raw);
+    selection: &AxisSelection,
+) -> Compatibility {
+    let is_classic_container = axes.containers.get(selection.container.0).is_some();
+    let is_raw = axes.codings.get(selection.coding.0) == Some(&CodingAxis::Raw);
     if !is_classic_container || !is_raw {
-        return true;
+        return Compatibility::Compatible;
     }
-    let Some(dims) = axes.dimensions.get(dimensions_index) else {
-        return true;
+    let Some(dims) = axes.dimensions.get(selection.dimensions.0) else {
+        return Compatibility::Compatible;
     };
-    let Some(frame_count) = axes.frame_counts.get(frame_count_index) else {
-        return true;
+    let Some(frame_count) = axes.frame_counts.get(selection.frame_count.0) else {
+        return Compatibility::Compatible;
     };
-    synthvid_encode::raw_frames_fit_classic_container(dims.width, dims.height, frame_count.get())
+    match synthvid_encode::raw_frames_fit_classic_container(*dims, frame_count.frame_count()) {
+        ContainerFit::Fits => Compatibility::Compatible,
+        ContainerFit::TooLarge => Compatibility::Incompatible,
+    }
 }
 
 /// The most pixels, summed over all frames, one catalogue entry may hold.
@@ -286,43 +296,43 @@ pub(super) fn raw_avi_size_compatible(
 /// entry near 30 MB.
 const MAX_PIXEL_FRAMES: u64 = 10_000_000;
 
-/// Returns true if the dimensions at `dimensions_index` and the frame count at
-/// `frame_count_index` (indices into `axes.dimensions` / `axes.frame_counts`)
-/// stay within [`MAX_PIXEL_FRAMES`]. Out-of-range indices are treated as
-/// compatible (nothing to rule out).
-pub(super) fn volume_compatible(
-    axes: &AxisArrays,
-    dimensions_index: usize,
-    frame_count_index: usize,
-) -> bool {
-    let Some(dims) = axes.dimensions.get(dimensions_index) else {
-        return true;
+/// Returns whether the dimensions and frame count chosen in `selection`
+/// (indices into `axes.dimensions` / `axes.frame_counts`) stay within
+/// [`MAX_PIXEL_FRAMES`]. Out-of-range indices are treated as compatible
+/// (nothing to rule out).
+pub(super) fn volume_compatible(axes: &AxisArrays, selection: &AxisSelection) -> Compatibility {
+    let Some(dims) = axes.dimensions.get(selection.dimensions.0) else {
+        return Compatibility::Compatible;
     };
-    let Some(frame_count) = axes.frame_counts.get(frame_count_index) else {
-        return true;
+    let Some(frame_count) = axes.frame_counts.get(selection.frame_count.0) else {
+        return Compatibility::Compatible;
     };
     // 16-bit width times 16-bit height times a 32-bit count is below 2^64, so
     // the product cannot overflow a u64.
     let total: u64 = [
-        u64::from(dims.width.get().get()),
-        u64::from(dims.height.get().get()),
+        NonZeroU64::from(dims.width.get()).get(),
+        NonZeroU64::from(dims.height.get()).get(),
         u64::from(frame_count.get()),
     ]
     .into_iter()
     .product();
-    total <= MAX_PIXEL_FRAMES
+    if total <= MAX_PIXEL_FRAMES {
+        Compatibility::Compatible
+    } else {
+        Compatibility::Incompatible
+    }
 }
 
 /// Build an `AbsurdFrameRate` defect, propagating any errors.
 pub(super) fn build_absurd_frame_rate_defect() -> Result<Defect, CatalogError> {
     // Create a frame rate of 1_000_001 / 1
-    let nz_one = core::num::NonZeroI64::new(1).ok_or(CatalogError::InvalidFrameRate)?;
+    let nz_one = NonZeroI64::new(1).ok_or(CatalogError::InvalidFrameRate)?;
 
-    let ratio = synthvid_scene::Ratio::new(1_000_001, nz_one)
-        .map_err(|_| CatalogError::InvalidFrameRate)?;
+    let ratio = synthvid_scene::Ratio::new(synthvid_scene::Numerator(1_000_001), nz_one)
+        .map_err(|Overflow| CatalogError::InvalidFrameRate)?;
 
-    let frame_rate =
-        synthvid_scene::FrameRate::new(ratio).map_err(|_| CatalogError::InvalidFrameRate)?;
+    let frame_rate = synthvid_scene::FrameRate::new(ratio)
+        .map_err(|FrameRateError::NonPositive| CatalogError::InvalidFrameRate)?;
 
     Ok(Defect::AbsurdFrameRate(frame_rate))
 }
@@ -331,21 +341,21 @@ pub(super) fn build_absurd_frame_rate_defect() -> Result<Defect, CatalogError> {
 ///
 /// Every catalogue frame is at least 16 by 16 pixels, so the boxes cut are
 /// longer than this.
-const fn truncation_offset() -> NonZeroU32 {
-    NonZeroU32::MIN.saturating_add(99)
+fn truncation_offset() -> Result<NonZeroU32, CatalogError> {
+    NonZeroU32::new(100).ok_or(CatalogError::ZeroTruncationOffset)
 }
 
 /// The address of an ISO box: a top-level box and the boxes below it, naming
 /// the first sibling carrying each tag.
-fn iso_address(top: [u8; 4], below: &[[u8; 4]]) -> BoxAddress {
+fn iso_address(top: BoxTag, below: &[BoxTag]) -> BoxAddress {
     descend(
-        BoxAddress::top(ContainerKind::Iso, BoxStep::first(BoxTag::new(top))),
+        BoxAddress::top(ContainerKind::Iso, BoxStep::first(top)),
         below,
     )
 }
 
 /// The address of an AVI chunk below the `RIFF` root.
-fn avi_address(below: &[[u8; 4]]) -> BoxAddress {
+fn avi_address(below: &[BoxTag]) -> BoxAddress {
     descend(
         BoxAddress::top(ContainerKind::Avi, BoxStep::first(BoxTag::new(*b"RIFF"))),
         below,
@@ -354,29 +364,35 @@ fn avi_address(below: &[[u8; 4]]) -> BoxAddress {
 
 /// The address of the first frame in an AVI file, whichever codec wrote it.
 fn avi_first_frame_address() -> BoxAddress {
-    avi_address(&[*b"movi"]).child(BoxStep::frame(FrameIndex::new(0)))
+    avi_address(&[BoxTag::new(*b"movi")]).child(BoxStep::frame(FrameIndex::new(0)))
 }
 
 /// Extends an address by one step per tag, each naming the first sibling.
-fn descend(address: BoxAddress, below: &[[u8; 4]]) -> BoxAddress {
-    below.iter().fold(address, |address, tag| {
-        address.child(BoxStep::first(BoxTag::new(*tag)))
-    })
+fn descend(address: BoxAddress, below: &[BoxTag]) -> BoxAddress {
+    below
+        .iter()
+        .fold(address, |so_far, tag| so_far.child(BoxStep::first(*tag)))
 }
 
 /// All possible defect instances for the catalog.
 pub(super) fn all_defects() -> Result<DefectSlots, CatalogError> {
-    Ok([
+    Ok(vec![
         None,
-        Some(Defect::TruncateBefore(iso_address(*b"moov", &[]))),
+        Some(Defect::TruncateBefore(iso_address(
+            BoxTag::new(*b"moov"),
+            &[],
+        ))),
         Some(Defect::TruncateWithin {
-            address: iso_address(*b"mdat", &[]).child(BoxStep::frame(FrameIndex::new(0))),
-            offset: truncation_offset(),
+            address: iso_address(BoxTag::new(*b"mdat"), &[])
+                .child(BoxStep::frame(FrameIndex::new(0))),
+            offset: truncation_offset()?,
         }),
-        Some(Defect::TruncateBefore(avi_address(&[*b"movi"]))),
+        Some(Defect::TruncateBefore(avi_address(&[BoxTag::new(
+            *b"movi",
+        )]))),
         Some(Defect::TruncateWithin {
             address: avi_first_frame_address(),
-            offset: truncation_offset(),
+            offset: truncation_offset()?,
         }),
         Some(Defect::ZeroLengthPayload(
             BoxPath::root().child(BoxTag::new(*b"mdat")),
@@ -405,89 +421,12 @@ pub(super) fn all_defects() -> Result<DefectSlots, CatalogError> {
         Some(Defect::ZeroDimension(Axis::Width)),
         Some(build_absurd_frame_rate_defect()?),
         Some(Defect::NonMonotonicTimestamps),
-        Some(Defect::DeclaredCountMismatch { declared: 42 }),
+        Some(Defect::DeclaredCountMismatch {
+            declared: DeclaredFrameCount(42),
+        }),
         Some(Defect::ReorderedBoxes(
             BoxPath::root().child(BoxTag::new(*b"moov")),
             BoxPath::root().child(BoxTag::new(*b"mdat")),
         )),
     ])
-}
-
-/// Gets the index for a frame rate value.
-pub(super) const fn get_frame_rate_index(fr: FrameRateValue) -> usize {
-    match fr {
-        FrameRateValue::Thirty => 0,
-        FrameRateValue::Sixty => 1,
-        FrameRateValue::OneTwenty => 2,
-        FrameRateValue::TwoForty => 3,
-        FrameRateValue::Ntsc => 4,
-        FrameRateValue::Absurd => 5,
-    }
-}
-
-/// Gets the index for a background value.
-pub(super) const fn get_background_index(bg: BackgroundAxis) -> usize {
-    match bg {
-        BackgroundAxis::Solid => 0,
-        BackgroundAxis::Checker => 1,
-        BackgroundAxis::Gradient => 2,
-        BackgroundAxis::Blobs => 3,
-        BackgroundAxis::Grid => 4,
-    }
-}
-
-/// Gets the index for a shape value.
-pub(super) const fn get_shape_index(sh: ShapeAxis) -> usize {
-    match sh {
-        ShapeAxis::Disc => 0,
-        ShapeAxis::Rect => 1,
-        ShapeAxis::Polygon => 2,
-        ShapeAxis::Cross => 3,
-    }
-}
-
-/// Gets the index for a motion value.
-pub(super) const fn get_motion_index(mot: MotionAxis) -> usize {
-    match mot {
-        MotionAxis::Fixed => 0,
-        MotionAxis::Linear => 1,
-        MotionAxis::Ballistic => 2,
-        MotionAxis::Circular => 3,
-        MotionAxis::Oscillating => 4,
-        MotionAxis::Walk => 5,
-    }
-}
-
-/// Gets the index for a coding value.
-pub(super) const fn get_coding_index(cod: CodingAxis) -> usize {
-    match cod {
-        CodingAxis::Raw => 0,
-        CodingAxis::MotionJpeg => 1,
-    }
-}
-
-/// Gets the index for a container value.
-pub(super) const fn get_container_index(cont: ContainerAxis) -> usize {
-    match cont {
-        ContainerAxis::Iso => 0,
-        ContainerAxis::Avi => 1,
-    }
-}
-
-/// Gets the index for a track matrix value.
-pub(super) const fn get_track_matrix_index(tm: TrackMatrixAxis) -> usize {
-    match tm {
-        TrackMatrixAxis::Identity => 0,
-        TrackMatrixAxis::Rotate90 => 1,
-        TrackMatrixAxis::Rotate180 => 2,
-        TrackMatrixAxis::Rotate270 => 3,
-    }
-}
-
-/// Gets the index for a scale value.
-pub(super) const fn get_scale_index(sc: ScaleAxis) -> usize {
-    match sc {
-        ScaleAxis::WithScale => 0,
-        ScaleAxis::NoScale => 1,
-    }
 }

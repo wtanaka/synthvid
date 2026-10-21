@@ -7,9 +7,15 @@
 //! enough to read.
 
 use crate::geom::{Point, Vector};
+use crate::ratio::helpers::AxisPixel;
 use crate::ratio::{
-    ceil_ratio, floor_ratio, half_ratio, int_ratio, pixel_centre_ratio, quarter_ratio, Overflow,
+    ceil_ratio, floor_ratio, half_ratio, pixel_centre_ratio, quarter_ratio, Numerator, Overflow,
     Ratio,
+};
+use core::num::{NonZeroI64, NonZeroU16};
+
+use super::coverage_types::{
+    Column, Inclusion, Interval, Parity, PixelRun, Reach, Row, Segment, VectorPair,
 };
 
 /// The pixel indices a shape's extent covers on one axis.
@@ -20,16 +26,14 @@ use crate::ratio::{
 /// extent that overflows exact arithmetic is a failure the caller must hear
 /// about. Collapsing both into `None` is what let an overflow be silently
 /// rendered as a missing shape.
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum PixelSpan {
     /// No pixel center falls within the extent; nothing is drawn.
     Empty,
-    /// The inclusive range of pixel indices to visit, with `first <= last`.
+    /// The inclusive range of pixel indices to visit, never inverted.
     Covering {
-        /// First pixel index, inclusive.
-        first: u16,
-        /// Last pixel index, inclusive.
-        last: u16,
+        /// First and last pixel index, both inclusive.
+        span: PixelRun,
     },
 }
 
@@ -40,7 +44,11 @@ pub(super) enum PixelSpan {
 /// Returns `Err(Overflow)` only when the conversion overflows exact arithmetic.
 /// An interval that is inverted, contains no pixel center, or falls entirely
 /// outside `0..limit` yields [`PixelSpan::Empty`].
-pub(super) fn clipped_pixel_range(lo: Ratio, hi: Ratio, limit: u16) -> Result<PixelSpan, Overflow> {
+pub(super) fn clipped_pixel_range(
+    interval: Interval,
+    limit: NonZeroU16,
+) -> Result<PixelSpan, Overflow> {
+    let Interval { lo, hi } = interval;
     if hi < lo {
         return Ok(PixelSpan::Empty);
     }
@@ -49,15 +57,24 @@ pub(super) fn clipped_pixel_range(lo: Ratio, hi: Ratio, limit: u16) -> Result<Pi
     if omega < alpha {
         return Ok(PixelSpan::Empty);
     }
-    let top = i64::from(limit).checked_sub(1).ok_or(Overflow)?;
-    let begin = if alpha < 0 { 0 } else { alpha };
+    let zero = Ratio::from_integer(Numerator(0));
+    let top = Ratio::from_integer(Numerator(
+        NonZeroI64::from(limit)
+            .get()
+            .checked_sub(1)
+            .ok_or(Overflow)?,
+    ));
+    let begin = if alpha < zero { zero } else { alpha };
     let finish = if omega > top { top } else { omega };
     if finish < begin {
         return Ok(PixelSpan::Empty);
     }
+    // Both ends are whole numbers, ratios over one, so the numerator is the
+    // pixel index.
+    let first = u16::try_from(begin.numer().0).map_err(Overflow::from)?;
+    let last = u16::try_from(finish.numer().0).map_err(Overflow::from)?;
     Ok(PixelSpan::Covering {
-        first: u16::try_from(begin).ok().ok_or(Overflow)?,
-        last: u16::try_from(finish).ok().ok_or(Overflow)?,
+        span: PixelRun(first..=last),
     })
 }
 
@@ -65,31 +82,35 @@ pub(super) fn clipped_pixel_range(lo: Ratio, hi: Ratio, limit: u16) -> Result<Pi
 ///
 /// The center is `(x + 1 / 2, y + 1 / 2)` as [`Ratio`]s. A `u16` index cannot
 /// overflow the numerator, so this is total.
-pub(super) fn pixel_centre(x: u16, y: u16) -> Point {
+pub(super) fn pixel_centre(column: Column, row: Row) -> Point {
     Point {
-        x: pixel_centre_ratio(x),
-        y: pixel_centre_ratio(y),
+        across: pixel_centre_ratio(AxisPixel(column.0)),
+        down: pixel_centre_ratio(AxisPixel(row.0)),
     }
 }
 
 /// Returns the exact cross product for the segment test.
 ///
-/// Computes `(b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x)`.
+/// Computes
+/// `(end.x - start.x) * (sample.y - start.y) - (end.y - start.y) * (sample.x - start.x)`
+/// for the segment from `start` to `end`.
 ///
 /// # Errors
 ///
 /// Returns `Err(Overflow)` on overflow.
-pub(super) fn segment_cross(p: Point, a: Point, b: Point) -> Result<Ratio, Overflow> {
-    let bx_ax = b.x.checked_sub(a.x)?;
-    let py_ay = p.y.checked_sub(a.y)?;
+pub(super) fn segment_cross(sample: Point, segment: Segment) -> Result<Ratio, Overflow> {
+    let start = segment.start;
+    let end = segment.end;
+    let bx_ax = end.across.checked_sub(start.across)?;
+    let py_ay = sample.down.checked_sub(start.down)?;
     let left = bx_ax.checked_mul(py_ay)?;
-    let by_ay = b.y.checked_sub(a.y)?;
-    let px_ax = p.x.checked_sub(a.x)?;
+    let by_ay = end.down.checked_sub(start.down)?;
+    let px_ax = sample.across.checked_sub(start.across)?;
     let right = by_ay.checked_mul(px_ax)?;
     left.checked_sub(right)
 }
 
-/// Tests whether `p` lies exactly on the closed segment `a` to `b`.
+/// Tests whether `sample` lies exactly on the closed segment.
 ///
 /// Collinearity comes from [`segment_cross`] and containment from exact
 /// comparisons.
@@ -97,94 +118,125 @@ pub(super) fn segment_cross(p: Point, a: Point, b: Point) -> Result<Ratio, Overf
 /// # Errors
 ///
 /// Returns `Err(Overflow)` on overflow.
-pub(super) fn point_on_segment(p: Point, a: Point, b: Point) -> Result<bool, Overflow> {
-    let cross = segment_cross(p, a, b)?;
-    if cross != int_ratio(0) {
-        return Ok(false);
+pub(super) fn point_on_segment(sample: Point, segment: Segment) -> Result<Inclusion, Overflow> {
+    let start = segment.start;
+    let end = segment.end;
+    let cross = segment_cross(sample, segment)?;
+    if cross != Ratio::from_integer(Numerator(0)) {
+        return Ok(Inclusion::Outside);
     }
-    if p.x < a.x && p.x < b.x {
-        return Ok(false);
+    if sample.across < start.across && sample.across < end.across {
+        return Ok(Inclusion::Outside);
     }
-    if a.x < p.x && b.x < p.x {
-        return Ok(false);
+    if start.across < sample.across && end.across < sample.across {
+        return Ok(Inclusion::Outside);
     }
-    if p.y < a.y && p.y < b.y {
-        return Ok(false);
+    if sample.down < start.down && sample.down < end.down {
+        return Ok(Inclusion::Outside);
     }
-    if a.y < p.y && b.y < p.y {
-        return Ok(false);
+    if start.down < sample.down && end.down < sample.down {
+        return Ok(Inclusion::Outside);
     }
-    Ok(true)
+    Ok(Inclusion::Inside)
 }
 
-/// Tests whether `p` lies on any edge of the polygon.
+/// Tests whether `sample` lies on any edge of the polygon.
 ///
 /// # Errors
 ///
 /// Returns `Err(Overflow)` on overflow.
-pub(super) fn point_on_polygon_edge(p: Point, vertices: &[Point]) -> Result<bool, Overflow> {
+pub(super) fn point_on_polygon_edge(
+    sample: Point,
+    vertices: &[Point],
+) -> Result<Inclusion, Overflow> {
     let mut iter = vertices.iter();
     let Some(first) = iter.next() else {
-        return Ok(false);
+        return Ok(Inclusion::Outside);
     };
     let mut prev = *first;
     for current in iter {
-        if point_on_segment(p, prev, *current)? {
-            return Ok(true);
+        let edge = Segment {
+            start: prev,
+            end: *current,
+        };
+        if point_on_segment(sample, edge)? == Inclusion::Inside {
+            return Ok(Inclusion::Inside);
         }
         prev = *current;
     }
-    point_on_segment(p, prev, *first)
+    point_on_segment(
+        sample,
+        Segment {
+            start: prev,
+            end: *first,
+        },
+    )
 }
 
-/// Counts ray crossings of the polygon with the horizontal ray from `p`.
+/// Counts ray crossings of the polygon with the horizontal ray from `sample`.
 ///
 /// Uses the half-open rule that an edge counts exactly when one endpoint is
-/// at or below `p.y` and the other is strictly above it. Edges whose
-/// intersection overflows are treated as non-crossing. The count parity is
+/// at or below `sample.y` and the other is strictly above it. Edges whose
+/// intersection overflows are treated as non-crossing. The parity is
 /// independent of vertex order and of edge direction.
 ///
 /// # Errors
 ///
-/// Returns `Err(Overflow)` only if the counter itself would overflow `usize` (unreachable for real polygons).
-pub(super) fn ray_crossings(p: Point, vertices: &[Point]) -> Result<usize, Overflow> {
+/// Returns `Err(Overflow)` only if exact arithmetic on an edge overflows.
+pub(super) fn ray_crossings(sample: Point, vertices: &[Point]) -> Result<Parity, Overflow> {
     let mut iter = vertices.iter();
     let Some(first) = iter.next() else {
-        return Ok(0);
+        return Ok(Parity::Even);
     };
     let mut prev = *first;
-    let mut count: usize = 0;
+    let mut parity = Parity::Even;
     for current in iter {
-        let next_count = edge_crossing(p, prev, *current, count)?;
-        count = next_count;
+        let edge = Segment {
+            start: prev,
+            end: *current,
+        };
+        parity = edge_crossing(sample, edge, parity)?;
         prev = *current;
     }
-    edge_crossing(p, prev, *first, count)
+    edge_crossing(
+        sample,
+        Segment {
+            start: prev,
+            end: *first,
+        },
+        parity,
+    )
 }
 
-/// Adds one crossing for the directed edge `a` to `b` when appropriate.
+/// Flips the parity for the directed edge when it crosses the ray from `sample`.
 ///
-/// Returns the updated count.
+/// Returns the updated parity.
 ///
 /// # Errors
 ///
-/// Returns `Err(Overflow)` only if the counter itself would overflow `usize` (unreachable for real polygons).
-pub(super) fn edge_crossing(p: Point, a: Point, b: Point, count: usize) -> Result<usize, Overflow> {
-    let a_below = a.y <= p.y;
-    let b_below = b.y <= p.y;
+/// Returns `Err(Overflow)` on overflow.
+pub(super) fn edge_crossing(
+    sample: Point,
+    edge: Segment,
+    parity: Parity,
+) -> Result<Parity, Overflow> {
+    let start = edge.start;
+    let end = edge.end;
+    let a_below = start.down <= sample.down;
+    let b_below = end.down <= sample.down;
     if a_below == b_below {
-        return Ok(count);
+        return Ok(parity);
     }
-    let num = p.y.checked_sub(a.y)?;
-    let den = b.y.checked_sub(a.y)?;
-    let t = num.checked_div(den)?;
-    let dx = b.x.checked_sub(a.x)?;
-    let shift = t.checked_mul(dx)?;
-    let x_int = a.x.checked_add(shift)?;
-    if x_int <= p.x {
-        return Ok(count);
+    let num = sample.down.checked_sub(start.down)?;
+    let den = end.down.checked_sub(start.down)?;
+    let fraction = num.checked_div(den)?;
+    let dx = end.across.checked_sub(start.across)?;
+    let shift = fraction.checked_mul(dx)?;
+    let x_int = start.across.checked_add(shift)?;
+    if x_int <= sample.across {
+        return Ok(parity);
     }
-    count.checked_add(1).ok_or(Overflow)
+    Ok(parity.flip())
 }
 
 /// Tests whether a point is inside a polygon.
@@ -202,28 +254,17 @@ pub(super) fn edge_crossing(p: Point, a: Point, b: Point, count: usize) -> Resul
 /// # Errors
 ///
 /// Returns `Err(Overflow)` on overflow.
-pub(super) fn point_in_polygon(p: Point, vertices: &[Point]) -> Result<bool, Overflow> {
+pub(super) fn point_in_polygon(sample: Point, vertices: &[Point]) -> Result<Inclusion, Overflow> {
     if vertices.len() < 3 {
-        return Ok(false);
+        return Ok(Inclusion::Outside);
     }
-    if point_on_polygon_edge(p, vertices)? {
-        return Ok(true);
+    if point_on_polygon_edge(sample, vertices)? == Inclusion::Inside {
+        return Ok(Inclusion::Inside);
     }
-    let crossings = ray_crossings(p, vertices)?;
-    let rem = crossings.checked_rem(2).ok_or(Overflow)?;
-    Ok(rem == 1)
-}
-
-/// Returns the displacement from `start` to `tip`.
-///
-/// # Errors
-///
-/// Returns `Err(Overflow)` on overflow.
-pub(super) fn vector_between(start: Point, tip: Point) -> Result<Vector, Overflow> {
-    Ok(Vector {
-        x: tip.x.checked_sub(start.x)?,
-        y: tip.y.checked_sub(start.y)?,
-    })
+    match ray_crossings(sample, vertices)? {
+        Parity::Odd => Ok(Inclusion::Inside),
+        Parity::Even => Ok(Inclusion::Outside),
+    }
 }
 
 /// Returns the squared Euclidean length of a displacement.
@@ -234,8 +275,8 @@ pub(super) fn vector_between(start: Point, tip: Point) -> Result<Vector, Overflo
 ///
 /// Returns `Err(Overflow)` on overflow.
 pub(super) fn squared_length(delta: Vector) -> Result<Ratio, Overflow> {
-    let xx = delta.x.checked_mul(delta.x)?;
-    let yy = delta.y.checked_mul(delta.y)?;
+    let xx = delta.across.checked_mul(delta.across)?;
+    let yy = delta.down.checked_mul(delta.down)?;
     xx.checked_add(yy)
 }
 
@@ -244,9 +285,9 @@ pub(super) fn squared_length(delta: Vector) -> Result<Ratio, Overflow> {
 /// # Errors
 ///
 /// Returns `Err(Overflow)` on overflow.
-pub(super) fn dot_product(first: Vector, second: Vector) -> Result<Ratio, Overflow> {
-    let xx = first.x.checked_mul(second.x)?;
-    let yy = first.y.checked_mul(second.y)?;
+pub(super) fn dot_product(pair: VectorPair) -> Result<Ratio, Overflow> {
+    let xx = pair.first.across.checked_mul(pair.second.across)?;
+    let yy = pair.first.down.checked_mul(pair.second.down)?;
     xx.checked_add(yy)
 }
 
@@ -257,26 +298,22 @@ pub(super) fn dot_product(first: Vector, second: Vector) -> Result<Ratio, Overfl
 /// # Errors
 ///
 /// Returns `Err(Overflow)` on overflow.
-pub(super) fn axis_range(centre_coord: Ratio, radius: Ratio) -> Result<(Ratio, Ratio), Overflow> {
-    Ok((
-        centre_coord.checked_sub(radius)?,
-        centre_coord.checked_add(radius)?,
-    ))
+pub(super) fn axis_range(reach: Reach) -> Result<Interval, Overflow> {
+    Ok(Interval {
+        lo: reach.centre.checked_sub(reach.radius)?,
+        hi: reach.centre.checked_add(reach.radius)?,
+    })
 }
 
-/// Returns the point `centre` shifted by the given offsets.
+/// Returns the point `centre` shifted by the given displacement.
 ///
 /// # Errors
 ///
 /// Returns `Err(Overflow)` on overflow.
-pub(super) fn shifted_point(
-    centre: Point,
-    delta_x: Ratio,
-    delta_y: Ratio,
-) -> Result<Point, Overflow> {
+pub(super) fn shifted_point(centre: Point, delta: Vector) -> Result<Point, Overflow> {
     Ok(Point {
-        x: centre.x.checked_add(delta_x)?,
-        y: centre.y.checked_add(delta_y)?,
+        across: centre.across.checked_add(delta.across)?,
+        down: centre.down.checked_add(delta.down)?,
     })
 }
 
@@ -287,28 +324,36 @@ pub(super) fn shifted_point(
 /// # Errors
 ///
 /// Returns `Err(Overflow)` on overflow.
-pub(super) fn closest_on_segment(
-    edge: Vector,
-    join: Vector,
-    origin: Point,
-) -> Result<Point, Overflow> {
+pub(super) fn closest_on_segment(segment: Segment, sample: Point) -> Result<Point, Overflow> {
+    let origin = segment.start;
+    let edge = segment.displacement()?;
+    let join = Segment {
+        start: origin,
+        end: sample,
+    }
+    .displacement()?;
     let extent = squared_length(edge)?;
-    if extent == int_ratio(0) {
+    if extent == Ratio::from_integer(Numerator(0)) {
         return Ok(origin);
     }
-    let along = dot_product(join, edge)?;
+    let along = dot_product(VectorPair {
+        first: join,
+        second: edge,
+    })?;
     let fraction = along.checked_div(extent)?;
-    let clamped = if fraction < int_ratio(0) {
-        int_ratio(0)
-    } else if int_ratio(1) < fraction {
-        int_ratio(1)
+    let clamped = if fraction < Ratio::from_integer(Numerator(0)) {
+        Ratio::from_integer(Numerator(0))
+    } else if Ratio::from_integer(Numerator(1)) < fraction {
+        Ratio::from_integer(Numerator(1))
     } else {
         fraction
     };
     shifted_point(
         origin,
-        clamped.checked_mul(edge.x)?,
-        clamped.checked_mul(edge.y)?,
+        Vector {
+            across: clamped.checked_mul(edge.across)?,
+            down: clamped.checked_mul(edge.down)?,
+        },
     )
 }
 
@@ -320,14 +365,26 @@ pub(super) fn closest_on_segment(
 /// # Errors
 ///
 /// Returns `Err(Overflow)` on overflow.
-pub(super) fn disc_covers(centre: Point, radius: Ratio, sample: Point) -> Result<bool, Overflow> {
-    if radius <= int_ratio(0) {
-        return Ok(false);
+pub(super) fn disc_covers(
+    centre: Point,
+    radius: Ratio,
+    sample: Point,
+) -> Result<Inclusion, Overflow> {
+    if radius <= Ratio::from_integer(Numerator(0)) {
+        return Ok(Inclusion::Outside);
     }
-    let gap = vector_between(sample, centre)?;
+    let gap = Segment {
+        start: sample,
+        end: centre,
+    }
+    .displacement()?;
     let dist2 = squared_length(gap)?;
     let bound = radius.checked_mul(radius)?;
-    Ok(dist2 <= bound)
+    if dist2 <= bound {
+        Ok(Inclusion::Inside)
+    } else {
+        Ok(Inclusion::Outside)
+    }
 }
 
 /// Tests whether a pixel center is within half a unit of a segment.
@@ -338,34 +395,20 @@ pub(super) fn disc_covers(centre: Point, radius: Ratio, sample: Point) -> Result
 /// # Errors
 ///
 /// Returns `Err(Overflow)` on overflow.
-pub(super) fn line_covers(start: Point, tip: Point, sample: Point) -> Result<bool, Overflow> {
-    let edge = vector_between(start, tip)?;
-    let join = vector_between(start, sample)?;
-    let nearest = closest_on_segment(edge, join, start)?;
-    let gap = vector_between(nearest, sample)?;
+pub(super) fn line_covers(segment: Segment, sample: Point) -> Result<Inclusion, Overflow> {
+    let nearest = closest_on_segment(segment, sample)?;
+    let gap = Segment {
+        start: nearest,
+        end: sample,
+    }
+    .displacement()?;
     let dist2 = squared_length(gap)?;
-    Ok(dist2 <= quarter_ratio())
+    if dist2 <= quarter_ratio() {
+        Ok(Inclusion::Inside)
+    } else {
+        Ok(Inclusion::Outside)
+    }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_pixel_centre_exact_values() {
-        // Test that pixel_centre produces exactly (2x + 1) / 2 for x, y coordinates.
-        let pt_origin = pixel_centre(0, 0);
-        assert_eq!(pt_origin.x.numer(), 1);
-        assert_eq!(pt_origin.x.denom().get(), 2);
-        assert_eq!(pt_origin.y.numer(), 1);
-        assert_eq!(pt_origin.y.denom().get(), 2);
-
-        // Test boundary values: u16::MAX.
-        let pt_max = pixel_centre(u16::MAX, u16::MAX);
-        // For x = u16::MAX = 65535: (2 * 65535 + 1) / 2 = 131_071 / 2.
-        assert_eq!(pt_max.x.numer(), 131_071);
-        assert_eq!(pt_max.x.denom().get(), 2);
-        assert_eq!(pt_max.y.numer(), 131_071);
-        assert_eq!(pt_max.y.denom().get(), 2);
-    }
-}
+mod tests;

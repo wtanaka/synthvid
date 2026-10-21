@@ -2,32 +2,22 @@
 
 use core::num::{NonZeroI64, NonZeroU8};
 
-use super::{Overflow, Ratio};
+use super::{Numerator, Overflow, Ratio};
 
 /// Constructs a `NonZeroI64` with value 2.
 ///
-/// Uses `NonZeroU8::MIN.saturating_add(1)`, which returns a `NonZeroU8`
-/// directly (not an `Option`, since adding 1 to something non-zero cannot
-/// produce zero), then converts via `From`.
+/// Counts the set bits of `0b11`: a bitwise or into a `NonZeroU8` stays
+/// non-zero, and so does its count of set bits, so there is no `Option` to
+/// discharge. The count converts via `From`.
 fn nonzero_two() -> NonZeroI64 {
-    NonZeroI64::from(NonZeroU8::MIN.saturating_add(1))
+    NonZeroI64::from((NonZeroU8::MIN | 0b10).count_ones())
 }
 
 /// Constructs a `NonZeroI64` with value 4.
 ///
-/// Uses `NonZeroU8::MIN.saturating_add(3)` then converts via `From`.
+/// Counts the set bits of `0b1111`, as [`nonzero_two`] does for `0b11`.
 fn nonzero_four() -> NonZeroI64 {
-    NonZeroI64::from(NonZeroU8::MIN.saturating_add(3))
-}
-
-/// Returns the exact ratio `value / 1`.
-///
-/// The construction is total: any `i64` divided by 1 is already in lowest terms
-/// (gcd(n, 1) = 1), and 1 fits in `i64`. Constructs the ratio directly without
-/// going through the reduction path.
-#[must_use]
-pub fn int_ratio(value: i64) -> Ratio {
-    Ratio::from_integer(value)
+    NonZeroI64::from((NonZeroU8::MIN | 0b1110).count_ones())
 }
 
 /// Returns the exact ratio `1 / 2`.
@@ -38,7 +28,7 @@ pub fn int_ratio(value: i64) -> Ratio {
 #[must_use]
 pub fn half_ratio() -> Ratio {
     Ratio {
-        numer: 1,
+        numer: Numerator(1),
         denom: nonzero_two(),
     }
 }
@@ -51,10 +41,16 @@ pub fn half_ratio() -> Ratio {
 #[must_use]
 pub fn quarter_ratio() -> Ratio {
     Ratio {
-        numer: 1,
+        numer: Numerator(1),
         denom: nonzero_four(),
     }
 }
+
+/// The index of a pixel along one axis: a column or a row.
+///
+/// Every `u16` names a pixel; the axis it lies on is the caller's to know.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct AxisPixel(pub u16);
 
 /// Returns the exact ratio `(2 * index + 1) / 2`, the center of pixel `index`.
 ///
@@ -63,14 +59,16 @@ pub fn quarter_ratio() -> Ratio {
 /// infallible, so this needs no checked arithmetic and cannot fail. The
 /// numerator is odd, so the ratio is already in lowest terms.
 #[must_use]
-pub fn pixel_centre_ratio(index: u16) -> Ratio {
+pub fn pixel_centre_ratio(pixel: AxisPixel) -> Ratio {
+    let AxisPixel(index) = pixel;
     Ratio {
-        numer: i64::from((u32::from(index) << 1) | 1),
+        numer: Numerator(i64::from((u32::from(index) << 1) | 1)),
         denom: nonzero_two(),
     }
 }
 
-/// Returns the greatest integer less than or equal to `value`.
+/// Returns the greatest integer less than or equal to `value`, as a ratio
+/// over one.
 ///
 /// Uses Euclidean division; the denominator is strictly positive so the
 /// result always fits in `i64` and this only returns `Err(Overflow)` in theory.
@@ -78,14 +76,18 @@ pub fn pixel_centre_ratio(index: u16) -> Ratio {
 /// # Errors
 ///
 /// Returns [`Overflow`] if division overflows.
-pub const fn floor_ratio(value: Ratio) -> Result<i64, Overflow> {
-    match value.numer().checked_div_euclid(value.denom().get()) {
-        Some(r) => Ok(r),
-        None => Err(Overflow),
-    }
+pub fn floor_ratio(value: Ratio) -> Result<Ratio, Overflow> {
+    value
+        .numer()
+        .0
+        .checked_div_euclid(value.denom().get())
+        .map(Numerator)
+        .map(Ratio::from_integer)
+        .ok_or(Overflow)
 }
 
-/// Returns the smallest integer greater than or equal to `value`.
+/// Returns the smallest integer greater than or equal to `value`, as a ratio
+/// over one.
 ///
 /// Computed as the Euclidean floor plus one when there is a remainder, so
 /// no negation of `i64::MIN` is ever required.
@@ -93,18 +95,23 @@ pub const fn floor_ratio(value: Ratio) -> Result<i64, Overflow> {
 /// # Errors
 ///
 /// Returns [`Overflow`] if division or increment overflows.
-pub fn ceil_ratio(value: Ratio) -> Result<i64, Overflow> {
+pub fn ceil_ratio(value: Ratio) -> Result<Ratio, Overflow> {
     let quot = value
         .numer()
+        .0
         .checked_div_euclid(value.denom().get())
         .ok_or(Overflow)?;
     let remnant = value
         .numer()
+        .0
         .checked_rem_euclid(value.denom().get())
         .ok_or(Overflow)?;
     if remnant == 0 {
-        Ok(quot)
+        Ok(Ratio::from_integer(Numerator(quot)))
     } else {
-        quot.checked_add(1).ok_or(Overflow)
+        quot.checked_add(1)
+            .map(Numerator)
+            .map(Ratio::from_integer)
+            .ok_or(Overflow)
     }
 }

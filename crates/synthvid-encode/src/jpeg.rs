@@ -1,12 +1,16 @@
 //! JPEG file assembly and encoding.
+use crate::jpeg_markers::{write_app0, write_dht, write_dqt, write_sof0, write_sos};
 
 use crate::ac_encoding::encode_ac_coefficients;
 use crate::bitstream::BitstreamWriter;
-use crate::config::SubsampleFactor;
+use crate::byte_views::ByteSink;
 pub use crate::config::{ChromaSampling, Quality};
+use crate::config::{SamplingFactor, SubsampleFactor};
 use crate::dct::encode_block;
-use crate::huffman::Component;
+use crate::huffman::{Component, TableDestination};
+use crate::media::EncodedFrame;
 use crate::quant::{self, QuantTable};
+use core::num::NonZeroU32;
 use synthvid_scene::Frame;
 
 mod plane;
@@ -17,6 +21,9 @@ use planes::{ActivePlanes, YCbCrPlanes};
 
 mod predictor;
 use predictor::DcPredictors;
+
+mod types;
+use types::{ComponentId, McuExtent};
 
 /// A JPEG component's identity: exactly the three this encoder ever
 /// produces.
@@ -29,7 +36,7 @@ use predictor::DcPredictors;
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum JpegComponent {
     /// Y (luma) component.
-    Y,
+    Luma,
     /// Cb (blue chroma) component.
     Cb,
     /// Cr (red chroma) component.
@@ -54,16 +61,16 @@ impl JpegComponent {
     /// by `CHROMA`'s own elements, rather than as its own independent
     /// `[Y, Cb, Cr]` literal, so the two arrays cannot disagree about which
     /// components are chroma.
-    pub(crate) const ALL: [Self; 3] = [Self::Y, Self::CHROMA[0], Self::CHROMA[1]];
+    pub(crate) const ALL: [Self; 3] = [Self::Luma, Self::CHROMA[0], Self::CHROMA[1]];
 
     /// This component's marker ID byte (1 = Y, 2 = Cb, 3 = Cr), as SOF0
     /// and SOS both require.
     #[must_use]
-    const fn id(self) -> u8 {
+    const fn id(self) -> ComponentId {
         match self {
-            Self::Y => 1,
-            Self::Cb => 2,
-            Self::Cr => 3,
+            Self::Luma => ComponentId(1),
+            Self::Cb => ComponentId(2),
+            Self::Cr => ComponentId(3),
         }
     }
 
@@ -71,29 +78,23 @@ impl JpegComponent {
     /// `huffman_class`, which is the single source of truth for every
     /// table destination this component uses.
     #[must_use]
-    const fn quant_table(self) -> u8 {
+    const fn quant_table(self) -> TableDestination {
         self.huffman_class().table_dest()
     }
 
     /// Gets this component's DC Huffman table index. Derived from
     /// `huffman_class`; see [`Self::quant_table`].
     #[must_use]
-    const fn dc_table(self) -> u8 {
-        self.huffman_class().table_dest()
-    }
-
-    /// Gets this component's AC Huffman table index. Derived from
-    /// `huffman_class`; see [`Self::quant_table`].
-    #[must_use]
-    const fn ac_table(self) -> u8 {
+    const fn dc_table(self) -> TableDestination {
         self.huffman_class().table_dest()
     }
 
     /// Writes this component's entry in a DQT (Define Quantization Table)
     /// marker: the byte combining the table-class nibble (0) with the
     /// quantization-table destination index.
-    pub(crate) fn write_dqt_entry(self, out: &mut Vec<u8>) {
-        out.push(self.quant_table());
+    pub(crate) fn write_dqt_entry(self, sink: ByteSink<'_>) {
+        let ByteSink(output) = sink;
+        output.push(self.quant_table().0);
     }
 
     /// The sampling factor this component uses under a given chroma
@@ -108,42 +109,59 @@ impl JpegComponent {
     /// factor.
     const fn sampling(self, chroma_sampling: ChromaSampling) -> SubsampleFactor {
         match self {
-            Self::Y => chroma_sampling.subsample_factor(),
+            Self::Luma => chroma_sampling.subsample_factor(),
             Self::Cb | Self::Cr => SubsampleFactor::ONE_TO_ONE,
         }
     }
 
     /// Writes this component's entry in a SOF0 (Start of Frame) marker:
     /// the component ID, sampling factors (high nibble = H, low nibble = V),
-    /// and quantization table destination index.
-    pub(crate) fn write_sof_component(self, out: &mut Vec<u8>, chroma_sampling: ChromaSampling) {
+    /// and quantization table destination index. A `SubsampleFactor` holds
+    /// one factor for both axes, so the two nibbles are always equal and
+    /// the byte is named per factor rather than packed from two lookups.
+    pub(crate) fn write_sof_component(self, sink: ByteSink<'_>, chroma_sampling: ChromaSampling) {
+        let ByteSink(output) = sink;
         let factor = self.sampling(chroma_sampling);
-        out.push(self.id());
-        out.push((factor.horizontal().get() << 4) | factor.vertical().get());
-        out.push(self.quant_table());
+        output.push(self.id().0);
+        output.push(match factor.horizontal() {
+            SamplingFactor::One => 0x11,
+            SamplingFactor::Two => 0x22,
+        });
+        output.push(self.quant_table().0);
     }
 
     /// Writes this component's DC Huffman table class-and-destination byte
     /// for a DHT (Define Huffman Table) marker: the class nibble (0) with
     /// the DC table destination index.
-    pub(crate) fn write_dht_dc_entry(self, out: &mut Vec<u8>) {
-        out.push(self.dc_table());
+    pub(crate) fn write_dht_dc_entry(self, sink: ByteSink<'_>) {
+        let ByteSink(output) = sink;
+        output.push(self.dc_table().0);
     }
 
     /// Writes this component's AC Huffman table class-and-destination byte
     /// for a DHT (Define Huffman Table) marker: the class nibble (1) with
-    /// the AC table destination index. The `1 << 4` class nibble is
-    /// constructed here, ensuring it cannot be omitted or misstated.
-    pub(crate) fn write_dht_ac_entry(self, out: &mut Vec<u8>) {
-        out.push((1_u8 << 4) | self.ac_table());
+    /// the AC table destination index (`0` for luma, `1` for chroma, as
+    /// [`Component::table_dest`] assigns them). The class nibble is written
+    /// here, ensuring it cannot be omitted or misstated.
+    pub(crate) fn write_dht_ac_entry(self, sink: ByteSink<'_>) {
+        let ByteSink(output) = sink;
+        output.push(match self.huffman_class() {
+            Component::Luma => 0x10,
+            Component::Chroma => 0x11,
+        });
     }
 
     /// Writes this component's entry in a SOS (Start of Scan) marker:
     /// the component ID and the byte combining DC and AC Huffman table
-    /// indices (DC in the high nibble, AC in the low nibble).
-    pub(crate) fn write_sos_component(self, out: &mut Vec<u8>) {
-        out.push(self.id());
-        out.push((self.dc_table() << 4) | self.ac_table());
+    /// indices (DC in the high nibble, AC in the low nibble). Both
+    /// indices are [`Component::table_dest`]'s, so they always agree.
+    pub(crate) fn write_sos_component(self, sink: ByteSink<'_>) {
+        let ByteSink(output) = sink;
+        output.push(self.id().0);
+        output.push(match self.huffman_class() {
+            Component::Luma => 0x00,
+            Component::Chroma => 0x11,
+        });
     }
 
     /// The `huffman::Component`/table-content selector this JPEG
@@ -151,7 +169,7 @@ impl JpegComponent {
     #[must_use]
     pub const fn huffman_class(self) -> Component {
         match self {
-            Self::Y => Component::Luma,
+            Self::Luma => Component::Luma,
             Self::Cb | Self::Cr => Component::Chroma,
         }
     }
@@ -165,34 +183,38 @@ impl JpegComponent {
 /// * `quality` - Quality parameter (1-100)
 /// * `chroma_sampling` - Chroma sampling mode
 #[must_use]
-pub fn encode_jpeg(frame: &Frame, quality: Quality, chroma_sampling: ChromaSampling) -> Vec<u8> {
+pub fn encode_jpeg(
+    frame: &Frame,
+    quality: Quality,
+    chroma_sampling: ChromaSampling,
+) -> EncodedFrame {
     let mut output = Vec::new();
 
     // Write SOI marker
     output.extend_from_slice(&[0xFF, 0xD8]);
 
     // Write APP0 (JFIF) marker
-    crate::jpeg_markers::write_app0(&mut output);
+    write_app0(ByteSink(&mut output));
 
     // Write DQT (Define Quantization Table) markers
-    crate::jpeg_markers::write_dqt(&mut output, quality);
+    write_dqt(ByteSink(&mut output), quality);
 
     // Write SOF0 (Start of Frame) marker
-    crate::jpeg_markers::write_sof0(&mut output, frame, chroma_sampling);
+    write_sof0(ByteSink(&mut output), frame, chroma_sampling);
 
     // Write DHT (Define Huffman Table) markers
-    crate::jpeg_markers::write_dht(&mut output);
+    write_dht(ByteSink(&mut output));
 
     // Write SOS (Start of Scan) marker
-    crate::jpeg_markers::write_sos(&mut output);
+    write_sos(ByteSink(&mut output));
 
     // Encode frame data
-    encode_scan(frame, quality, chroma_sampling, &mut output);
+    encode_scan(frame, quality, chroma_sampling, ByteSink(&mut output));
 
     // Write EOI marker
     output.extend_from_slice(&[0xFF, 0xD9]);
 
-    output
+    EncodedFrame(output)
 }
 
 /// Both quantization tables a scan needs, built once per [`encode_scan`]
@@ -229,220 +251,203 @@ impl QuantTablesByComponent {
     }
 }
 
-/// Extracts and encodes one block for `component`, at block-grid
-/// coordinates `coord`: DCT, delta-DC encoding, and AC coefficient
-/// run-length encoding.
-///
-/// Takes `component` once and derives the source plane
-/// ([`ActivePlanes::plane`]), the DC predictor ([`DcPredictors::slot`]),
-/// and the Huffman/quantization table class from it, rather than a caller
-/// picking a pixel block and a `ComponentSlot` as two separate arguments
-/// that could name different components with no compiler error -- which a
-/// previous version of this function, split into two, allowed (a
-/// `ComponentSlot` for one component passed alongside a block extracted
-/// from a different component's plane).
-fn encode_plane_block(
-    planes: &ActivePlanes<'_>,
-    predictors: &mut DcPredictors,
-    component: JpegComponent,
-    coord: BlockCoord,
-    quant_tables: &QuantTablesByComponent,
-    writer: &mut BitstreamWriter,
-) {
-    let block = planes.plane(component).extract_block(coord);
-    let mut slot = predictors.slot(component);
-    let table_class = component.huffman_class();
+/// The state every block of one scan advances: a DC predictor per
+/// component, the two quantization tables, and the entropy-coded output.
+struct ScanState {
+    /// One DC predictor per component.
+    predictors: DcPredictors,
+    /// The quantization tables, one per table class.
+    quant_tables: QuantTablesByComponent,
+    /// The entropy-coded scan data written so far.
+    writer: BitstreamWriter,
+}
 
-    let dct_coeffs = encode_block(&block, quant_tables.for_component(table_class));
-    slot.encode_dc(dct_coeffs.dc(), writer);
+impl ScanState {
+    /// A scan with no blocks written yet, quantizing at `quality`.
+    fn new(quality: Quality) -> Self {
+        Self {
+            predictors: DcPredictors::new(),
+            quant_tables: QuantTablesByComponent::new(quality),
+            writer: BitstreamWriter::new(),
+        }
+    }
 
-    // Reorder coefficients into zigzag scan order
-    let zigzagged = dct_coeffs.into_zigzag();
+    /// Extracts and encodes one block for `component`, at block-grid
+    /// coordinates `coord`: DCT, delta-DC encoding, and AC coefficient
+    /// run-length encoding.
+    ///
+    /// Takes `component` once and derives the source plane
+    /// ([`ActivePlanes::plane`]), the DC predictor ([`DcPredictors::slot`]),
+    /// and the Huffman/quantization table class from it, rather than a caller
+    /// picking a pixel block and a `ComponentSlot` as two separate arguments
+    /// that could name different components with no compiler error -- which a
+    /// previous version of this function, split into two, allowed (a
+    /// `ComponentSlot` for one component passed alongside a block extracted
+    /// from a different component's plane).
+    fn encode_plane_block(
+        &mut self,
+        planes: &ActivePlanes<'_>,
+        component: JpegComponent,
+        coord: BlockCoord,
+    ) {
+        let block = planes.plane(component).extract_block(coord);
+        let mut slot = self.predictors.slot(component);
+        let table_class = component.huffman_class();
 
-    // Encode AC coefficients
-    encode_ac_coefficients(zigzagged.ac_coefficients(), writer, table_class);
+        let dct_coeffs = encode_block(&block, self.quant_tables.for_component(table_class));
+        slot.encode_dc(dct_coeffs.dc(), &mut self.writer);
+
+        // Reorder coefficients into zigzag scan order
+        let zigzagged = dct_coeffs.into_zigzag();
+
+        // Encode AC coefficients
+        encode_ac_coefficients(zigzagged.ac_coefficients(), &mut self.writer, table_class);
+    }
 }
 
 /// The pixel width or height of one MCU in a given dimension: `8` for no
 /// subsampling, `16` for 2x. A pure lookup over
-/// [`crate::config::SamplingFactor`]'s two variants, not `8 * factor.get()`:
+/// [`SamplingFactor`]'s two variants, not `8 * factor.get()`:
 /// there is no multiplication here to overflow, since the two possible
 /// results are just named directly.
-const fn mcu_pixel_size(factor: crate::config::SamplingFactor) -> u32 {
+const fn mcu_pixel_size(factor: SamplingFactor) -> McuExtent {
     match factor {
-        crate::config::SamplingFactor::One => 8,
-        crate::config::SamplingFactor::Two => 16,
+        SamplingFactor::One => McuExtent(8),
+        SamplingFactor::Two => McuExtent(16),
     }
 }
 
-/// Computes a block-grid coordinate from its MCU index, subsampling
-/// factor, and in-MCU offset: `mcu_index * factor.get() + offset`. Total:
-/// `factor` is always `One` or `Two` (see
-/// [`crate::config::SamplingFactor`]), and `offset` is always `0` when
-/// `factor` is `One` (the encoding loop above only iterates
-/// `0..factor.get()`), so the `One` arm needs no arithmetic operator at
-/// all, and the `Two` arm's `mcu_index * 2` is bounded by this crate's own
-/// `Width`/`Height` types (at most `u16::MAX`, so at most `131_070` when
-/// doubled) -- both far below `u32::MAX`.
-const fn scaled_block_index(
-    mcu_index: u32,
-    factor: crate::config::SamplingFactor,
-    offset: u32,
-) -> u32 {
-    match factor {
-        crate::config::SamplingFactor::One => mcu_index,
-        crate::config::SamplingFactor::Two => {
-            let doubled = match mcu_index.checked_add(mcu_index) {
-                Some(d) => d,
-                None if mcu_index == 0 => 0,
-                None => u32::MAX,
-            };
-            match doubled.checked_add(offset) {
-                Some(v) => v,
-                None if offset == 0 => doubled,
-                None => u32::MAX,
-            }
-        }
+/// An MCU's index along one axis of the MCU grid.
+#[derive(Debug, Clone, Copy)]
+struct McuIndex(u32);
+
+impl McuIndex {
+    /// The block-grid indices, along this axis, of the luma blocks this MCU
+    /// covers: `index * factor + offset` for each `offset` in `0..factor`.
+    /// The `One` arm needs no arithmetic at all; the `Two` arm's
+    /// `index * 2 + 1` is bounded by this crate's own `Width`/`Height`
+    /// types (at most `u16::MAX`, so at most `131_071`) -- far below
+    /// `u32::MAX`, so neither checked step ever actually comes back empty.
+    fn luma_blocks(self, factor: SamplingFactor) -> impl Iterator<Item = LumaBlockIndex> {
+        let doubled = self.0.checked_mul(2);
+        let (first, second) = match factor {
+            SamplingFactor::One => (Some(self.0), None),
+            SamplingFactor::Two => (doubled, doubled.and_then(|even| even.checked_add(1))),
+        };
+        first.into_iter().chain(second).map(LumaBlockIndex)
     }
 }
+
+/// A luma block's index along one axis of the block grid.
+#[derive(Debug, Clone, Copy)]
+struct LumaBlockIndex(u32);
 
 /// Encodes the scan data.
 fn encode_scan(
     frame: &Frame,
     quality: Quality,
     chroma_sampling: ChromaSampling,
-    output: &mut Vec<u8>,
+    sink: ByteSink<'_>,
 ) {
-    let width = u32::from(frame.width().get().get());
-    let height = u32::from(frame.height().get().get());
+    let ByteSink(output) = sink;
 
     // Convert frame to YCbCr
     let planes = YCbCrPlanes::from_frame(frame);
 
-    let mut writer = BitstreamWriter::new();
-
-    let mut predictors = DcPredictors::new();
-    let quant_tables = QuantTablesByComponent::new(quality);
+    let mut state = ScanState::new(quality);
 
     match chroma_sampling {
         ChromaSampling::Yuv444 => {
-            let active = planes.full_resolution();
-
-            // 4:4:4 encoding: one luma block + one Cb + one Cr block per (bx, by)
-            let block_width = width.div_ceil(8);
-            let block_height = height.div_ceil(8);
-
-            for by in 0..block_height {
-                for bx in 0..block_width {
-                    let coord = BlockCoord::new(BlockCol::new(bx), BlockRow::new(by));
-                    for component in JpegComponent::ALL {
-                        encode_plane_block(
-                            &active,
-                            &mut predictors,
-                            component,
-                            coord,
-                            &quant_tables,
-                            &mut writer,
-                        );
-                    }
-                }
-            }
+            encode_full_resolution_blocks(&mut state, &planes.full_resolution(), frame);
         }
         ChromaSampling::Yuv420 => {
-            // 4:2:0 encoding: MCU grid covers 16x16 luma pixels
             // Downsample chroma planes to half resolution
             let downsampled_chroma = planes.downsample_chroma();
-            let active = downsampled_chroma.active();
-
-            let factor = chroma_sampling.subsample_factor();
-            let mcu_pixel_width = mcu_pixel_size(factor.horizontal());
-            let mcu_pixel_height = mcu_pixel_size(factor.vertical());
-
-            let mcu_width = width.div_ceil(mcu_pixel_width);
-            let mcu_height = height.div_ceil(mcu_pixel_height);
-
-            for mby in 0..mcu_height {
-                for mbx in 0..mcu_width {
-                    // Four luma blocks in MCU order: top-left, top-right,
-                    // bottom-left, bottom-right
-                    for dy in 0_u32..u32::from(factor.vertical().get()) {
-                        for dx in 0_u32..u32::from(factor.horizontal().get()) {
-                            let bx = scaled_block_index(mbx, factor.horizontal(), dx);
-                            let by = scaled_block_index(mby, factor.vertical(), dy);
-                            encode_plane_block(
-                                &active,
-                                &mut predictors,
-                                JpegComponent::Y,
-                                BlockCoord::new(BlockCol::new(bx), BlockRow::new(by)),
-                                &quant_tables,
-                                &mut writer,
-                            );
-                        }
-                    }
-
-                    // One Cb block and one Cr block per MCU from downsampled planes
-                    let mcu_coord = BlockCoord::new(BlockCol::new(mbx), BlockRow::new(mby));
-                    for component in JpegComponent::CHROMA {
-                        encode_plane_block(
-                            &active,
-                            &mut predictors,
-                            component,
-                            mcu_coord,
-                            &quant_tables,
-                            &mut writer,
-                        );
-                    }
-                }
-            }
+            encode_subsampled_mcus(
+                &mut state,
+                &downsampled_chroma.active(),
+                frame,
+                chroma_sampling.subsample_factor(),
+            );
         }
     }
 
-    let scan_data = writer.into_vec();
-    output.extend_from_slice(&scan_data);
+    let scan_data = state.writer.into_bytes();
+    output.extend_from_slice(&scan_data.0);
+}
+
+/// 4:4:4 encoding: one luma block, one Cb and one Cr block per block
+/// position `(bx, by)`.
+fn encode_full_resolution_blocks(state: &mut ScanState, active: &ActivePlanes<'_>, frame: &Frame) {
+    let block_width = NonZeroU32::from(frame.width().get()).get().div_ceil(8);
+    let block_height = NonZeroU32::from(frame.height().get()).get().div_ceil(8);
+
+    for by in 0..block_height {
+        for bx in 0..block_width {
+            let coord = BlockCoord::new(BlockCol::new(bx), BlockRow::new(by));
+            for component in JpegComponent::ALL {
+                state.encode_plane_block(active, component, coord);
+            }
+        }
+    }
+}
+
+/// 4:2:0 encoding: the MCU grid covers 16x16 luma pixels, with chroma
+/// read from the downsampled planes.
+fn encode_subsampled_mcus(
+    state: &mut ScanState,
+    active: &ActivePlanes<'_>,
+    frame: &Frame,
+    factor: SubsampleFactor,
+) {
+    let mcu_pixel_width = mcu_pixel_size(factor.horizontal());
+    let mcu_pixel_height = mcu_pixel_size(factor.vertical());
+
+    let mcu_width = NonZeroU32::from(frame.width().get())
+        .get()
+        .div_ceil(mcu_pixel_width.0);
+    let mcu_height = NonZeroU32::from(frame.height().get())
+        .get()
+        .div_ceil(mcu_pixel_height.0);
+
+    for mby in (0..mcu_height).map(McuIndex) {
+        for mbx in (0..mcu_width).map(McuIndex) {
+            encode_mcu(state, active, factor, McuCoord { mbx, mby });
+        }
+    }
+}
+
+/// An MCU's position in the MCU grid.
+#[derive(Debug, Clone, Copy)]
+struct McuCoord {
+    /// The MCU's column.
+    mbx: McuIndex,
+    /// The MCU's row.
+    mby: McuIndex,
+}
+
+/// Encodes one 4:2:0 MCU: its luma blocks, then one Cb and one Cr block.
+fn encode_mcu(
+    state: &mut ScanState,
+    active: &ActivePlanes<'_>,
+    factor: SubsampleFactor,
+    McuCoord { mbx, mby }: McuCoord,
+) {
+    // Four luma blocks in MCU order: top-left, top-right,
+    // bottom-left, bottom-right
+    for LumaBlockIndex(by) in mby.luma_blocks(factor.vertical()) {
+        for LumaBlockIndex(bx) in mbx.luma_blocks(factor.horizontal()) {
+            let coord = BlockCoord::new(BlockCol::new(bx), BlockRow::new(by));
+            state.encode_plane_block(active, JpegComponent::Luma, coord);
+        }
+    }
+
+    // One Cb block and one Cr block per MCU from downsampled planes
+    let mcu_coord = BlockCoord::new(BlockCol::new(mbx.0), BlockRow::new(mby.0));
+    for component in JpegComponent::CHROMA {
+        state.encode_plane_block(active, component, mcu_coord);
+    }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use synthvid_scene::{Dimensions, Height, Width};
-
-    #[test]
-    fn test_golden_bytes_output() {
-        let width = Width::new(16).expect("valid width");
-        let height = Height::new(16).expect("valid height");
-        let dims = Dimensions::new(width, height);
-        let mut data = vec![128u8; 16 * 16 * 3];
-        let (chunks, _remainder) = data.as_chunks_mut::<3>();
-        for (i, chunk) in chunks.iter_mut().enumerate() {
-            let column = u8::try_from(i.rem_euclid(16)).expect("rem_euclid(16) fits in u8");
-            let row = u8::try_from(i.div_euclid(16)).expect("i < 256, so div_euclid(16) < 16");
-            let [red, green, blue] = chunk;
-            *red = column.saturating_mul(16); // R varies by column
-            *green = 128; // G constant
-            *blue = row.saturating_mul(16); // B varies by row
-        }
-        let frame = Frame::new(dims, data).expect("valid frame");
-        let golden_yuv444 = encode_jpeg(&frame, Quality::new(75).unwrap(), ChromaSampling::Yuv444);
-        let golden_yuv420 = encode_jpeg(&frame, Quality::new(50).unwrap(), ChromaSampling::Yuv420);
-        assert!(
-            !golden_yuv444.is_empty(),
-            "Yuv444 output should not be empty"
-        );
-        assert!(
-            !golden_yuv420.is_empty(),
-            "Yuv420 output should not be empty"
-        );
-        let encoded_yuv444_again =
-            encode_jpeg(&frame, Quality::new(75).unwrap(), ChromaSampling::Yuv444);
-        let encoded_yuv420_again =
-            encode_jpeg(&frame, Quality::new(50).unwrap(), ChromaSampling::Yuv420);
-        assert_eq!(
-            golden_yuv444, encoded_yuv444_again,
-            "Yuv444 encoding should be deterministic"
-        );
-        assert_eq!(
-            golden_yuv420, encoded_yuv420_again,
-            "Yuv420 encoding should be deterministic"
-        );
-    }
-}
+mod tests;

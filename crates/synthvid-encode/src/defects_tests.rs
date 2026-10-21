@@ -1,612 +1,514 @@
 #[cfg(test)]
 use super::*;
-use crate::{encode_avi, encode_iso, AviCodec, IsoCodec};
-use synthvid_scene::{Dimensions, Frame, Height, Width};
+use crate::{encode_avi, encode_iso, AviCodec, EncodedFrame, IsoCodec};
+use synthvid_scene::{Dimensions, Frame, FrameRate, Height, PixelBuffer, Width};
+use synthvid_testkit::{ensure, ensure_eq, ensure_ne, Fail, OrFail as _};
+
+/// An encoded container file.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct Media(pub(super) Vec<u8>);
+
+impl Media {
+    /// These bytes as a container file, for [`apply`].
+    pub(super) fn file(&self) -> ContainerFile {
+        ContainerFile(self.0.clone())
+    }
+
+    /// The bytes of `file`.
+    pub(super) fn of(file: ContainerFile) -> Self {
+        Self(file.0)
+    }
+}
+
+/// The container a test file is written in.
+#[derive(Clone, Copy, Debug)]
+pub(super) enum Base {
+    /// A one-frame ISO file.
+    Iso,
+    /// A one-frame AVI file.
+    Avi,
+}
+
+impl Base {
+    /// Encodes the one-frame file of this kind.
+    pub(super) fn media(self) -> Result<Media, Fail> {
+        match self {
+            Self::Iso => make_iso_base(),
+            Self::Avi => make_avi_base(),
+        }
+    }
+}
 
 /// Creates a tiny 1×1 frame for testing.
-fn make_test_frame() -> Frame {
-    let width = Width::new(1).expect("valid width");
-    let height = Height::new(1).expect("valid height");
+pub(super) fn make_test_frame() -> Result<Frame, Fail> {
+    let width = Width::new(1).or_fail()?;
+    let height = Height::new(1).or_fail()?;
     let dims = Dimensions::new(width, height);
     let data = vec![0_u8; 3];
-    Frame::new(dims, data).expect("valid frame")
+    Frame::new(dims, PixelBuffer(data)).or_fail()
 }
 
 /// Creates a base ISO file for testing.
-fn make_iso_base() -> Vec<u8> {
-    let width = Width::new(1).expect("valid width");
-    let height = Height::new(1).expect("valid height");
-    let frame = make_test_frame();
+fn make_iso_base() -> Result<Media, Fail> {
+    let width = Width::new(1).or_fail()?;
+    let height = Height::new(1).or_fail()?;
+    let frame = make_test_frame()?;
     encode_iso(
-        synthvid_scene::FrameRate::from_fps(24).expect("valid frame rate"),
-        None,
-        &[frame.data().to_vec()],
-        width,
-        height,
-        IsoCodec::UncompressedRgb,
-        crate::TrackMatrix::identity(),
+        crate::FrameRates {
+            playback: FrameRate::from_fps(24).or_fail()?,
+            capture: None,
+        },
+        &[EncodedFrame::raw(&frame)],
+        crate::TrackParams {
+            width,
+            height,
+            codec: IsoCodec::UncompressedRgb,
+            track_matrix: crate::TrackMatrix::identity(),
+        },
     )
-    .expect("valid ISO encoding")
+    .map(Media::of)
+    .or_fail()
 }
 
 /// Creates a base AVI file for testing.
-fn make_avi_base() -> Vec<u8> {
-    let width = Width::new(1).expect("valid width");
-    let height = Height::new(1).expect("valid height");
-    let frame = make_test_frame();
+fn make_avi_base() -> Result<Media, Fail> {
+    let width = Width::new(1).or_fail()?;
+    let height = Height::new(1).or_fail()?;
+    let frame = make_test_frame()?;
     encode_avi(
-        synthvid_scene::FrameRate::from_fps(24).expect("valid frame rate"),
-        &[frame.data().to_vec()],
+        FrameRate::from_fps(24).or_fail()?,
+        &[EncodedFrame::raw(&frame)],
         width,
         height,
         AviCodec::UncompressedRgb,
     )
-    .expect("valid AVI encoding")
+    .map(Media::of)
+    .or_fail()
+}
+
+/// Applies `defect` to `input`.
+pub(super) fn applied(defect: &Defect, input: &Media) -> Result<Media, Fail> {
+    apply(defect, &input.file()).map(Media::of).or_fail()
+}
+
+/// The path of a box directly below the root.
+fn top(tag: BoxTag) -> BoxPath {
+    BoxPath::root().child(tag)
+}
+
+/// Fails unless `defect` changes the bytes of the `base` file.
+fn changes_bytes(base: Base, defect: &Defect) -> Result<(), Fail> {
+    let input = base.media()?;
+    let result = applied(defect, &input)?;
+    ensure_ne!(result, input, "defect should change bytes");
+    Ok(())
+}
+
+/// Fails unless `defect` changes the bytes of the `base` file but not its length.
+fn changes_bytes_in_place(base: Base, defect: &Defect) -> Result<(), Fail> {
+    let input = base.media()?;
+    let result = applied(defect, &input)?;
+    ensure_ne!(result, input, "defect should change bytes");
+    ensure_eq!(
+        result.0.len(),
+        input.0.len(),
+        "defect should not change file size"
+    );
+    Ok(())
+}
+
+/// Fails unless `defect` changes the bytes of the `base` file and lengthens it.
+fn grows(base: Base, defect: &Defect) -> Result<(), Fail> {
+    let input = base.media()?;
+    let result = applied(defect, &input)?;
+    ensure_ne!(result, input, "defect should change bytes");
+    ensure!(result.0.len() > input.0.len(), "file should grow");
+    Ok(())
+}
+
+/// Fails unless applying `defect` twice to the `base` file gives the same bytes.
+fn reproducible(base: Base, defect: &Defect) -> Result<(), Fail> {
+    let input = base.media()?;
+    let result1 = applied(defect, &input)?;
+    let result2 = applied(defect, &input)?;
+    ensure_eq!(result1, result2, "defect must be reproducible");
+    Ok(())
+}
+
+/// Applies `defect` to 100 zero bytes, which are no container at all.
+fn on_garbage(defect: &Defect) -> Result<Media, DefectError> {
+    apply(defect, &ContainerFile(vec![0_u8; 100])).map(Media::of)
 }
 
 #[test]
-fn test_boxpath_builder() {
+fn boxpath_builder() {
     let path = BoxPath::root()
         .child(BoxTag::new(*b"moov"))
         .child(BoxTag::new(*b"trak"))
         .child(BoxTag::new(*b"tkhd"));
     assert_eq!(path.tags().len(), 3);
-    assert_eq!(path.tags()[0], BoxTag::new(*b"moov"));
+    assert_eq!(path.tags().first(), Some(&BoxTag::new(*b"moov")));
 }
 
 #[test]
-fn test_axis_enum() {
-    let w = Axis::Width;
-    let h = Axis::Height;
-    assert_ne!(w, h);
-}
-
-// ZeroLengthPayload tests
-#[test]
-fn test_zero_payload_iso_changes_bytes() {
-    let input = make_iso_base();
-    let path = BoxPath::root().child(BoxTag::new(*b"ftyp"));
-    let defect = Defect::ZeroLengthPayload(path);
-    let result = apply(&defect, &input).expect("apply defect");
-    assert_ne!(result, input, "defect should change bytes");
-    assert_eq!(result.len(), input.len(), "same length");
+fn axis_enum() {
+    let width = Axis::Width;
+    let height = Axis::Height;
+    assert_ne!(width, height);
 }
 
 #[test]
-fn test_zero_payload_iso_reproducible() {
-    let input = make_iso_base();
-    let path = BoxPath::root().child(BoxTag::new(*b"ftyp"));
-    let defect = Defect::ZeroLengthPayload(path);
-    let result1 = apply(&defect, &input).expect("apply defect");
-    let result2 = apply(&defect, &input).expect("apply defect");
-    assert_eq!(result1, result2, "defect must be reproducible");
+fn zero_payload_iso_changes_bytes() {
+    let defect = Defect::ZeroLengthPayload(top(BoxTag::new(*b"ftyp")));
+    assert_eq!(changes_bytes_in_place(Base::Iso, &defect), Ok(()));
 }
 
 #[test]
-fn test_zero_payload_iso_missing_box_errors() {
-    let input = vec![0u8; 100];
-    let path = BoxPath::root().child(BoxTag::new(*b"ftyp"));
-    let defect = Defect::ZeroLengthPayload(path);
-    let err = apply(&defect, &input).expect_err("should fail");
-    assert_eq!(err, DefectError::IncompatibleFileType);
-}
-
-// OversizedBoxLength tests
-#[test]
-fn test_oversized_iso_changes_bytes() {
-    let input = make_iso_base();
-    let path = BoxPath::root().child(BoxTag::new(*b"ftyp"));
-    let defect = Defect::OversizedBoxLength(path);
-    let result = apply(&defect, &input).expect("apply defect");
-    assert_ne!(result, input, "defect should change bytes");
+fn zero_payload_iso_reproducible() {
+    let defect = Defect::ZeroLengthPayload(top(BoxTag::new(*b"ftyp")));
+    assert_eq!(reproducible(Base::Iso, &defect), Ok(()));
 }
 
 #[test]
-fn test_oversized_iso_reproducible() {
-    let input = make_iso_base();
-    let path = BoxPath::root().child(BoxTag::new(*b"ftyp"));
-    let defect = Defect::OversizedBoxLength(path);
-    let result1 = apply(&defect, &input).expect("apply defect");
-    let result2 = apply(&defect, &input).expect("apply defect");
-    assert_eq!(result1, result2, "defect must be reproducible");
+fn zero_payload_iso_missing_box_errors() {
+    let defect = Defect::ZeroLengthPayload(top(BoxTag::new(*b"ftyp")));
+    assert_eq!(on_garbage(&defect), Err(DefectError::IncompatibleFileType));
 }
 
 #[test]
-fn test_oversized_iso_missing_box_errors() {
-    let input = vec![0u8; 100];
-    let path = BoxPath::root().child(BoxTag::new(*b"ftyp"));
-    let defect = Defect::OversizedBoxLength(path);
-    let err = apply(&defect, &input).expect_err("should fail");
-    assert_eq!(err, DefectError::IncompatibleFileType);
-}
-
-// UndersizedBoxLength tests
-#[test]
-fn test_undersized_iso_changes_bytes() {
-    let input = make_iso_base();
-    let path = BoxPath::root().child(BoxTag::new(*b"ftyp"));
-    let defect = Defect::UndersizedBoxLength(path);
-    let result = apply(&defect, &input).expect("apply defect");
-    assert_ne!(result, input, "defect should change bytes");
+fn oversized_iso_changes_bytes() {
+    let defect = Defect::OversizedBoxLength(top(BoxTag::new(*b"ftyp")));
+    assert_eq!(changes_bytes(Base::Iso, &defect), Ok(()));
 }
 
 #[test]
-fn test_undersized_iso_reproducible() {
-    let input = make_iso_base();
-    let path = BoxPath::root().child(BoxTag::new(*b"ftyp"));
-    let defect = Defect::UndersizedBoxLength(path);
-    let result1 = apply(&defect, &input).expect("apply defect");
-    let result2 = apply(&defect, &input).expect("apply defect");
-    assert_eq!(result1, result2, "defect must be reproducible");
+fn oversized_iso_reproducible() {
+    let defect = Defect::OversizedBoxLength(top(BoxTag::new(*b"ftyp")));
+    assert_eq!(reproducible(Base::Iso, &defect), Ok(()));
 }
 
 #[test]
-fn test_undersized_iso_missing_box_errors() {
-    let input = vec![0u8; 100];
-    let path = BoxPath::root().child(BoxTag::new(*b"ftyp"));
-    let defect = Defect::UndersizedBoxLength(path);
-    let err = apply(&defect, &input).expect_err("should fail");
-    assert_eq!(err, DefectError::IncompatibleFileType);
-}
-
-// OffsetPastEnd tests
-#[test]
-fn test_offset_past_end_iso_changes_bytes() {
-    let input = make_iso_base();
-    let path = BoxPath::root().child(BoxTag::new(*b"moov"));
-    let defect = Defect::OffsetPastEnd(path);
-    let result = apply(&defect, &input).expect("apply defect");
-    assert_ne!(result, input, "defect should change bytes");
+fn oversized_iso_missing_box_errors() {
+    let defect = Defect::OversizedBoxLength(top(BoxTag::new(*b"ftyp")));
+    assert_eq!(on_garbage(&defect), Err(DefectError::IncompatibleFileType));
 }
 
 #[test]
-fn test_offset_past_end_iso_reproducible() {
-    let input = make_iso_base();
-    let path = BoxPath::root().child(BoxTag::new(*b"moov"));
-    let defect = Defect::OffsetPastEnd(path);
-    let result1 = apply(&defect, &input).expect("apply defect");
-    let result2 = apply(&defect, &input).expect("apply defect");
-    assert_eq!(result1, result2, "defect must be reproducible");
+fn undersized_iso_changes_bytes() {
+    let defect = Defect::UndersizedBoxLength(top(BoxTag::new(*b"ftyp")));
+    assert_eq!(changes_bytes(Base::Iso, &defect), Ok(()));
 }
 
 #[test]
-fn test_offset_past_end_iso_missing_box_errors() {
-    let input = vec![0u8; 100];
-    let path = BoxPath::root().child(BoxTag::new(*b"moov"));
-    let defect = Defect::OffsetPastEnd(path);
-    let err = apply(&defect, &input).expect_err("should fail");
-    assert_eq!(err, DefectError::IncompatibleFileType);
-}
-
-// DuplicateBox tests
-#[test]
-fn test_duplicate_box_iso_changes_bytes() {
-    let input = make_iso_base();
-    let path = BoxPath::root().child(BoxTag::new(*b"ftyp"));
-    let defect = Defect::DuplicateBox(path);
-    let result = apply(&defect, &input).expect("apply defect");
-    assert_ne!(result, input, "defect should change bytes");
-    assert!(
-        result.len() > input.len(),
-        "file should grow with duplicate"
-    );
+fn undersized_iso_reproducible() {
+    let defect = Defect::UndersizedBoxLength(top(BoxTag::new(*b"ftyp")));
+    assert_eq!(reproducible(Base::Iso, &defect), Ok(()));
 }
 
 #[test]
-fn test_duplicate_box_iso_reproducible() {
-    let input = make_iso_base();
-    let path = BoxPath::root().child(BoxTag::new(*b"ftyp"));
-    let defect = Defect::DuplicateBox(path);
-    let result1 = apply(&defect, &input).expect("apply defect");
-    let result2 = apply(&defect, &input).expect("apply defect");
-    assert_eq!(result1, result2, "defect must be reproducible");
+fn undersized_iso_missing_box_errors() {
+    let defect = Defect::UndersizedBoxLength(top(BoxTag::new(*b"ftyp")));
+    assert_eq!(on_garbage(&defect), Err(DefectError::IncompatibleFileType));
 }
 
 #[test]
-fn test_duplicate_box_iso_missing_box_errors() {
-    let input = vec![0u8; 100];
-    let path = BoxPath::root().child(BoxTag::new(*b"ftyp"));
-    let defect = Defect::DuplicateBox(path);
-    let err = apply(&defect, &input).expect_err("should fail");
-    assert_eq!(err, DefectError::IncompatibleFileType);
+fn offset_past_end_iso_changes_bytes() {
+    let defect = Defect::OffsetPastEnd(top(BoxTag::new(*b"moov")));
+    assert_eq!(changes_bytes(Base::Iso, &defect), Ok(()));
 }
 
-// UnknownBox tests
 #[test]
-fn test_unknown_box_iso_changes_bytes() {
-    let input = make_iso_base();
-    let path = BoxPath::root().child(BoxTag::new(*b"ftyp"));
+fn offset_past_end_iso_reproducible() {
+    let defect = Defect::OffsetPastEnd(top(BoxTag::new(*b"moov")));
+    assert_eq!(reproducible(Base::Iso, &defect), Ok(()));
+}
+
+#[test]
+fn offset_past_end_iso_missing_box_errors() {
+    let defect = Defect::OffsetPastEnd(top(BoxTag::new(*b"moov")));
+    assert_eq!(on_garbage(&defect), Err(DefectError::IncompatibleFileType));
+}
+
+#[test]
+fn duplicate_box_iso_changes_bytes() {
+    let defect = Defect::DuplicateBox(top(BoxTag::new(*b"ftyp")));
+    assert_eq!(grows(Base::Iso, &defect), Ok(()));
+}
+
+#[test]
+fn duplicate_box_iso_reproducible() {
+    let defect = Defect::DuplicateBox(top(BoxTag::new(*b"ftyp")));
+    assert_eq!(reproducible(Base::Iso, &defect), Ok(()));
+}
+
+#[test]
+fn duplicate_box_iso_missing_box_errors() {
+    let defect = Defect::DuplicateBox(top(BoxTag::new(*b"ftyp")));
+    assert_eq!(on_garbage(&defect), Err(DefectError::IncompatibleFileType));
+}
+
+#[test]
+fn unknown_box_iso_changes_bytes() {
     let defect = Defect::UnknownBox {
-        after: path,
+        after: top(BoxTag::new(*b"ftyp")),
         tag: BoxTag::new(*b"xxxx"),
     };
-    let result = apply(&defect, &input).expect("apply defect");
-    assert_ne!(result, input, "defect should change bytes");
-    assert!(result.len() > input.len(), "file should grow with new box");
+    assert_eq!(grows(Base::Iso, &defect), Ok(()));
 }
 
 #[test]
-fn test_unknown_box_iso_reproducible() {
-    let input = make_iso_base();
-    let path = BoxPath::root().child(BoxTag::new(*b"ftyp"));
+fn unknown_box_iso_reproducible() {
     let defect = Defect::UnknownBox {
-        after: path,
+        after: top(BoxTag::new(*b"ftyp")),
         tag: BoxTag::new(*b"xxxx"),
     };
-    let result1 = apply(&defect, &input).expect("apply defect");
-    let result2 = apply(&defect, &input).expect("apply defect");
-    assert_eq!(result1, result2, "defect must be reproducible");
+    assert_eq!(reproducible(Base::Iso, &defect), Ok(()));
 }
 
 #[test]
-fn test_unknown_box_iso_missing_box_errors() {
-    let input = vec![0u8; 100];
-    let path = BoxPath::root().child(BoxTag::new(*b"ftyp"));
+fn unknown_box_iso_missing_box_errors() {
     let defect = Defect::UnknownBox {
-        after: path,
+        after: top(BoxTag::new(*b"ftyp")),
         tag: BoxTag::new(*b"xxxx"),
     };
-    let err = apply(&defect, &input).expect_err("should fail");
-    assert_eq!(err, DefectError::IncompatibleFileType);
+    assert_eq!(on_garbage(&defect), Err(DefectError::IncompatibleFileType));
 }
 
-// ZeroFrameRate tests
 #[test]
-fn test_zero_frame_rate_iso_changes_bytes() {
-    let input = make_iso_base();
+fn zero_frame_rate_iso_changes_bytes() {
     let defect = Defect::ZeroFrameRate;
-    let result = apply(&defect, &input).expect("apply defect");
-    assert_ne!(result, input, "defect should change bytes");
+    assert_eq!(changes_bytes(Base::Iso, &defect), Ok(()));
 }
 
 #[test]
-fn test_zero_frame_rate_iso_reproducible() {
-    let input = make_iso_base();
+fn zero_frame_rate_iso_reproducible() {
     let defect = Defect::ZeroFrameRate;
-    let result1 = apply(&defect, &input).expect("apply defect");
-    let result2 = apply(&defect, &input).expect("apply defect");
-    assert_eq!(result1, result2, "defect must be reproducible");
+    assert_eq!(reproducible(Base::Iso, &defect), Ok(()));
 }
 
 #[test]
-fn test_zero_frame_rate_iso_missing_box_errors() {
-    let input = vec![0u8; 100];
+fn zero_frame_rate_iso_missing_box_errors() {
     let defect = Defect::ZeroFrameRate;
-    let err = apply(&defect, &input).expect_err("should fail");
-    assert_eq!(err, DefectError::IncompatibleFileType);
+    assert_eq!(on_garbage(&defect), Err(DefectError::IncompatibleFileType));
 }
 
-// ZeroDimension tests
 #[test]
-fn test_zero_dimension_width_iso_changes_bytes() {
-    let input = make_iso_base();
+fn zero_dimension_width_iso_changes_bytes() {
     let defect = Defect::ZeroDimension(Axis::Width);
-    let result = apply(&defect, &input).expect("apply defect");
-    assert_ne!(result, input, "defect should change bytes");
+    assert_eq!(changes_bytes(Base::Iso, &defect), Ok(()));
 }
 
 #[test]
-fn test_zero_dimension_height_iso_changes_bytes() {
-    let input = make_iso_base();
+fn zero_dimension_height_iso_changes_bytes() {
     let defect = Defect::ZeroDimension(Axis::Height);
-    let result = apply(&defect, &input).expect("apply defect");
-    assert_ne!(result, input, "defect should change bytes");
+    assert_eq!(changes_bytes(Base::Iso, &defect), Ok(()));
 }
 
 #[test]
-fn test_zero_dimension_iso_reproducible() {
-    let input = make_iso_base();
+fn zero_dimension_iso_reproducible() {
     let defect = Defect::ZeroDimension(Axis::Width);
-    let result1 = apply(&defect, &input).expect("apply defect");
-    let result2 = apply(&defect, &input).expect("apply defect");
-    assert_eq!(result1, result2, "defect must be reproducible");
+    assert_eq!(reproducible(Base::Iso, &defect), Ok(()));
 }
 
 #[test]
-fn test_zero_dimension_iso_missing_box_errors() {
-    let input = vec![0u8; 100];
+fn zero_dimension_iso_missing_box_errors() {
     let defect = Defect::ZeroDimension(Axis::Width);
-    let err = apply(&defect, &input).expect_err("should fail");
-    assert_eq!(err, DefectError::IncompatibleFileType);
-}
-
-// AbsurdFrameRate tests
-#[test]
-fn test_absurd_frame_rate_iso_changes_bytes() {
-    let input = make_iso_base();
-    let rate = synthvid_scene::FrameRate::from_fps(1_000_000).expect("valid rate");
-    let defect = Defect::AbsurdFrameRate(rate);
-    let result = apply(&defect, &input).expect("apply defect");
-    assert_ne!(result, input, "defect should change bytes");
+    assert_eq!(on_garbage(&defect), Err(DefectError::IncompatibleFileType));
 }
 
 #[test]
-fn test_absurd_frame_rate_iso_reproducible() {
-    let input = make_iso_base();
-    let rate = synthvid_scene::FrameRate::from_fps(1_000_000).expect("valid rate");
-    let defect = Defect::AbsurdFrameRate(rate);
-    let result1 = apply(&defect, &input).expect("apply defect");
-    let result2 = apply(&defect, &input).expect("apply defect");
-    assert_eq!(result1, result2, "defect must be reproducible");
+fn absurd_frame_rate_iso_changes_bytes() {
+    assert_eq!(check_absurd_frame_rate_iso_changes_bytes(), Ok(()));
+}
+
+fn check_absurd_frame_rate_iso_changes_bytes() -> Result<(), Fail> {
+    let defect = Defect::AbsurdFrameRate(FrameRate::from_fps(1_000_000).or_fail()?);
+    changes_bytes(Base::Iso, &defect)
 }
 
 #[test]
-fn test_absurd_frame_rate_iso_missing_box_errors() {
-    let input = vec![0u8; 100];
-    let rate = synthvid_scene::FrameRate::from_fps(1_000_000).expect("valid rate");
-    let defect = Defect::AbsurdFrameRate(rate);
-    let err = apply(&defect, &input).expect_err("should fail");
-    assert_eq!(err, DefectError::IncompatibleFileType);
+fn absurd_frame_rate_iso_reproducible() {
+    assert_eq!(check_absurd_frame_rate_iso_reproducible(), Ok(()));
 }
 
-// NonMonotonicTimestamps tests
+fn check_absurd_frame_rate_iso_reproducible() -> Result<(), Fail> {
+    let defect = Defect::AbsurdFrameRate(FrameRate::from_fps(1_000_000).or_fail()?);
+    reproducible(Base::Iso, &defect)
+}
+
 #[test]
-fn test_non_monotonic_timestamps_iso_changes_bytes() {
-    let input = make_iso_base();
+fn absurd_frame_rate_iso_missing_box_errors() {
+    assert_eq!(check_absurd_frame_rate_iso_missing_box_errors(), Ok(()));
+}
+
+fn check_absurd_frame_rate_iso_missing_box_errors() -> Result<(), Fail> {
+    let defect = Defect::AbsurdFrameRate(FrameRate::from_fps(1_000_000).or_fail()?);
+    ensure_eq!(on_garbage(&defect), Err(DefectError::IncompatibleFileType));
+    Ok(())
+}
+
+#[test]
+fn non_monotonic_timestamps_iso_changes_bytes() {
     let defect = Defect::NonMonotonicTimestamps;
-    let result = apply(&defect, &input).expect("apply defect");
-    assert_ne!(result, input, "defect should change bytes");
+    assert_eq!(changes_bytes(Base::Iso, &defect), Ok(()));
 }
 
 #[test]
-fn test_non_monotonic_timestamps_iso_reproducible() {
-    let input = make_iso_base();
+fn non_monotonic_timestamps_iso_reproducible() {
     let defect = Defect::NonMonotonicTimestamps;
-    let result1 = apply(&defect, &input).expect("apply defect");
-    let result2 = apply(&defect, &input).expect("apply defect");
-    assert_eq!(result1, result2, "defect must be reproducible");
+    assert_eq!(reproducible(Base::Iso, &defect), Ok(()));
 }
 
 #[test]
-fn test_non_monotonic_timestamps_iso_missing_box_errors() {
-    let input = vec![0u8; 100];
+fn non_monotonic_timestamps_iso_missing_box_errors() {
     let defect = Defect::NonMonotonicTimestamps;
-    let err = apply(&defect, &input).expect_err("should fail");
-    assert_eq!(err, DefectError::IncompatibleFileType);
-}
-
-// DeclaredCountMismatch tests
-#[test]
-fn test_declared_count_mismatch_iso_changes_bytes() {
-    let input = make_iso_base();
-    let defect = Defect::DeclaredCountMismatch { declared: 999 };
-    let result = apply(&defect, &input).expect("apply defect");
-    assert_ne!(result, input, "defect should change bytes");
+    assert_eq!(on_garbage(&defect), Err(DefectError::IncompatibleFileType));
 }
 
 #[test]
-fn test_declared_count_mismatch_iso_reproducible() {
-    let input = make_iso_base();
-    let defect = Defect::DeclaredCountMismatch { declared: 999 };
-    let result1 = apply(&defect, &input).expect("apply defect");
-    let result2 = apply(&defect, &input).expect("apply defect");
-    assert_eq!(result1, result2, "defect must be reproducible");
+fn declared_count_mismatch_iso_changes_bytes() {
+    let defect = Defect::DeclaredCountMismatch {
+        declared: DeclaredFrameCount(999),
+    };
+    assert_eq!(changes_bytes(Base::Iso, &defect), Ok(()));
 }
 
 #[test]
-fn test_declared_count_mismatch_iso_missing_box_errors() {
-    let input = vec![0u8; 100];
-    let defect = Defect::DeclaredCountMismatch { declared: 999 };
-    let err = apply(&defect, &input).expect_err("should fail");
-    assert_eq!(err, DefectError::IncompatibleFileType);
-}
-
-// ReorderedBoxes tests
-#[test]
-fn test_reordered_boxes_iso_changes_bytes() {
-    let input = make_iso_base();
-    // Both boxes at root level
-    let path1 = BoxPath::root().child(BoxTag::new(*b"ftyp"));
-    let path2 = BoxPath::root().child(BoxTag::new(*b"mdat"));
-    let defect = Defect::ReorderedBoxes(path1, path2);
-    let result = apply(&defect, &input).expect("apply defect");
-    assert_ne!(result, input, "defect should change bytes");
+fn declared_count_mismatch_iso_reproducible() {
+    let defect = Defect::DeclaredCountMismatch {
+        declared: DeclaredFrameCount(999),
+    };
+    assert_eq!(reproducible(Base::Iso, &defect), Ok(()));
 }
 
 #[test]
-fn test_reordered_boxes_iso_reproducible() {
-    let input = make_iso_base();
-    let path1 = BoxPath::root().child(BoxTag::new(*b"ftyp"));
-    let path2 = BoxPath::root().child(BoxTag::new(*b"mdat"));
-    let defect = Defect::ReorderedBoxes(path1, path2);
-    let result1 = apply(&defect, &input).expect("apply defect");
-    let result2 = apply(&defect, &input).expect("apply defect");
-    assert_eq!(result1, result2, "defect must be reproducible");
+fn declared_count_mismatch_iso_missing_box_errors() {
+    let defect = Defect::DeclaredCountMismatch {
+        declared: DeclaredFrameCount(999),
+    };
+    assert_eq!(on_garbage(&defect), Err(DefectError::IncompatibleFileType));
 }
 
 #[test]
-fn test_reordered_boxes_iso_missing_box_errors() {
-    let input = vec![0u8; 100];
-    let path1 = BoxPath::root().child(BoxTag::new(*b"ftyp"));
-    let path2 = BoxPath::root().child(BoxTag::new(*b"mdat"));
-    let defect = Defect::ReorderedBoxes(path1, path2);
-    let err = apply(&defect, &input).expect_err("should fail");
-    assert_eq!(err, DefectError::IncompatibleFileType);
+fn reordered_boxes_iso_changes_bytes() {
+    let defect = Defect::ReorderedBoxes(top(BoxTag::new(*b"ftyp")), top(BoxTag::new(*b"mdat")));
+    assert_eq!(changes_bytes(Base::Iso, &defect), Ok(()));
 }
 
-// Detailed tests for bug fixes
+#[test]
+fn reordered_boxes_iso_reproducible() {
+    let defect = Defect::ReorderedBoxes(top(BoxTag::new(*b"ftyp")), top(BoxTag::new(*b"mdat")));
+    assert_eq!(reproducible(Base::Iso, &defect), Ok(()));
+}
 
 #[test]
-fn test_zero_dimension_width_iso_exact_value() {
-    let input = make_iso_base();
+fn reordered_boxes_iso_missing_box_errors() {
+    let defect = Defect::ReorderedBoxes(top(BoxTag::new(*b"ftyp")), top(BoxTag::new(*b"mdat")));
+    assert_eq!(on_garbage(&defect), Err(DefectError::IncompatibleFileType));
+}
+
+#[test]
+fn zero_dimension_width_iso_exact_value() {
     let defect = Defect::ZeroDimension(Axis::Width);
-    let result = apply(&defect, &input).expect("apply defect");
-
-    // tkhd box width is at payload offset 76
-    // Verify the result is different and bytes were changed
-    assert_ne!(result, input, "defect should change bytes");
-    assert!(
-        result.len() == input.len(),
-        "defect should not change file size"
-    );
+    assert_eq!(changes_bytes_in_place(Base::Iso, &defect), Ok(()));
 }
 
 #[test]
-fn test_zero_dimension_height_iso_exact_value() {
-    let input = make_iso_base();
+fn zero_dimension_height_iso_exact_value() {
     let defect = Defect::ZeroDimension(Axis::Height);
-    let result = apply(&defect, &input).expect("apply defect");
-
-    assert_ne!(result, input, "defect should change bytes");
-    assert!(
-        result.len() == input.len(),
-        "defect should not change file size"
-    );
+    assert_eq!(changes_bytes_in_place(Base::Iso, &defect), Ok(()));
 }
 
 #[test]
-fn test_offset_past_end_iso_exact_value() {
-    let input = make_iso_base();
-    let stco_path = BoxPath::root()
-        .child(BoxTag::new(*b"moov"))
-        .child(BoxTag::new(*b"trak"))
-        .child(BoxTag::new(*b"mdia"))
-        .child(BoxTag::new(*b"minf"))
-        .child(BoxTag::new(*b"stbl"))
-        .child(BoxTag::new(*b"stco"));
-    let defect = Defect::OffsetPastEnd(stco_path);
-    let result = apply(&defect, &input).expect("apply defect");
-
-    // Verify bytes were changed
-    assert_ne!(result, input, "defect should change bytes");
-    assert!(
-        result.len() == input.len(),
-        "defect should not change file size"
+fn offset_past_end_iso_exact_value() {
+    let defect = Defect::OffsetPastEnd(
+        BoxPath::root()
+            .child(BoxTag::new(*b"moov"))
+            .child(BoxTag::new(*b"trak"))
+            .child(BoxTag::new(*b"mdia"))
+            .child(BoxTag::new(*b"minf"))
+            .child(BoxTag::new(*b"stbl"))
+            .child(BoxTag::new(*b"stco")),
     );
+    assert_eq!(changes_bytes_in_place(Base::Iso, &defect), Ok(()));
 }
 
 #[test]
-fn test_declared_count_mismatch_iso_stsz_field() {
-    let input = make_iso_base();
-    let defect = Defect::DeclaredCountMismatch { declared: 42 };
-    let result = apply(&defect, &input).expect("apply defect");
-
-    // Verify stsz box was modified
-    assert_ne!(result, input, "defect should change bytes");
-    assert!(
-        result.len() == input.len(),
-        "defect should not change file size"
-    );
+fn declared_count_mismatch_iso_stsz_field() {
+    let defect = Defect::DeclaredCountMismatch {
+        declared: DeclaredFrameCount(42),
+    };
+    assert_eq!(changes_bytes_in_place(Base::Iso, &defect), Ok(()));
 }
 
 #[test]
-fn test_non_monotonic_timestamps_iso_sample_delta() {
-    let input = make_iso_base();
+fn non_monotonic_timestamps_iso_sample_delta() {
     let defect = Defect::NonMonotonicTimestamps;
-    let result = apply(&defect, &input).expect("apply defect");
-
-    // Verify stts was modified with sample_delta = 0
-    assert_ne!(result, input, "defect should change bytes");
-    assert!(
-        result.len() == input.len(),
-        "defect should not change file size"
-    );
+    assert_eq!(changes_bytes_in_place(Base::Iso, &defect), Ok(()));
 }
 
 #[test]
-fn test_zero_frame_rate_avi_correct_offset() {
-    let input = make_avi_base();
+fn zero_frame_rate_avi_correct_offset() {
     let defect = Defect::ZeroFrameRate;
-    let result = apply(&defect, &input).expect("apply defect");
-
-    // Verify bytes were changed and size unchanged
-    assert_ne!(result, input, "defect should change bytes");
-    assert!(
-        result.len() == input.len(),
-        "defect should not change file size"
-    );
+    assert_eq!(changes_bytes_in_place(Base::Avi, &defect), Ok(()));
 }
 
 #[test]
-fn test_zero_frame_rate_avi_reproducible() {
-    let input = make_avi_base();
+fn zero_frame_rate_avi_reproducible() {
     let defect = Defect::ZeroFrameRate;
-    let result1 = apply(&defect, &input).expect("apply defect");
-    let result2 = apply(&defect, &input).expect("apply defect");
-    assert_eq!(result1, result2, "defect must be reproducible");
+    assert_eq!(reproducible(Base::Avi, &defect), Ok(()));
 }
 
 #[test]
-fn test_absurd_frame_rate_avi_correct_offset() {
-    let input = make_avi_base();
-    let frame_rate = synthvid_scene::FrameRate::from_fps(2000).expect("valid frame rate");
-    let defect = Defect::AbsurdFrameRate(frame_rate);
-    let result = apply(&defect, &input).expect("apply defect");
+fn absurd_frame_rate_avi_correct_offset() {
+    assert_eq!(check_absurd_frame_rate_avi_correct_offset(), Ok(()));
+}
 
-    // Verify bytes were changed
-    assert_ne!(result, input, "defect should change bytes");
-    assert!(
-        result.len() == input.len(),
-        "defect should not change file size"
-    );
+fn check_absurd_frame_rate_avi_correct_offset() -> Result<(), Fail> {
+    let defect = Defect::AbsurdFrameRate(FrameRate::from_fps(2000).or_fail()?);
+    changes_bytes_in_place(Base::Avi, &defect)
 }
 
 #[test]
-fn test_absurd_frame_rate_avi_reproducible() {
-    let input = make_avi_base();
-    let frame_rate = synthvid_scene::FrameRate::from_fps(2000).expect("valid frame rate");
-    let defect = Defect::AbsurdFrameRate(frame_rate);
-    let result1 = apply(&defect, &input).expect("apply defect");
-    let result2 = apply(&defect, &input).expect("apply defect");
-    assert_eq!(result1, result2, "defect must be reproducible");
+fn absurd_frame_rate_avi_reproducible() {
+    assert_eq!(check_absurd_frame_rate_avi_reproducible(), Ok(()));
+}
+
+fn check_absurd_frame_rate_avi_reproducible() -> Result<(), Fail> {
+    let defect = Defect::AbsurdFrameRate(FrameRate::from_fps(2000).or_fail()?);
+    reproducible(Base::Avi, &defect)
 }
 
 #[test]
-fn test_zero_dimension_width_avi_correct_offset() {
-    let input = make_avi_base();
+fn zero_dimension_width_avi_correct_offset() {
     let defect = Defect::ZeroDimension(Axis::Width);
-    let result = apply(&defect, &input).expect("apply defect");
-
-    // Verify bytes were changed
-    assert_ne!(result, input, "defect should change bytes");
-    assert!(
-        result.len() == input.len(),
-        "defect should not change file size"
-    );
+    assert_eq!(changes_bytes_in_place(Base::Avi, &defect), Ok(()));
 }
 
 #[test]
-fn test_zero_dimension_height_avi_correct_offset() {
-    let input = make_avi_base();
+fn zero_dimension_height_avi_correct_offset() {
     let defect = Defect::ZeroDimension(Axis::Height);
-    let result = apply(&defect, &input).expect("apply defect");
-
-    // Verify bytes were changed
-    assert_ne!(result, input, "defect should change bytes");
-    assert!(
-        result.len() == input.len(),
-        "defect should not change file size"
-    );
+    assert_eq!(changes_bytes_in_place(Base::Avi, &defect), Ok(()));
 }
 
 #[test]
-fn test_zero_dimension_avi_reproducible() {
-    let input = make_avi_base();
+fn zero_dimension_avi_reproducible() {
     let defect = Defect::ZeroDimension(Axis::Width);
-    let result1 = apply(&defect, &input).expect("apply defect");
-    let result2 = apply(&defect, &input).expect("apply defect");
-    assert_eq!(result1, result2, "defect must be reproducible");
+    assert_eq!(reproducible(Base::Avi, &defect), Ok(()));
 }
 
 #[test]
-fn test_declared_count_mismatch_avi_correct_offset() {
-    let input = make_avi_base();
-    let defect = Defect::DeclaredCountMismatch { declared: 99 };
-    let result = apply(&defect, &input).expect("apply defect");
-
-    // Verify avih frame_count was modified
-    assert_ne!(result, input, "defect should change bytes");
-    assert!(
-        result.len() == input.len(),
-        "defect should not change file size"
-    );
+fn declared_count_mismatch_avi_correct_offset() {
+    let defect = Defect::DeclaredCountMismatch {
+        declared: DeclaredFrameCount(99),
+    };
+    assert_eq!(changes_bytes_in_place(Base::Avi, &defect), Ok(()));
 }
 
 #[test]
-fn test_declared_count_mismatch_avi_reproducible() {
-    let input = make_avi_base();
-    let defect = Defect::DeclaredCountMismatch { declared: 99 };
-    let result1 = apply(&defect, &input).expect("apply defect");
-    let result2 = apply(&defect, &input).expect("apply defect");
-    assert_eq!(result1, result2, "defect must be reproducible");
+fn declared_count_mismatch_avi_reproducible() {
+    let defect = Defect::DeclaredCountMismatch {
+        declared: DeclaredFrameCount(99),
+    };
+    assert_eq!(reproducible(Base::Avi, &defect), Ok(()));
 }

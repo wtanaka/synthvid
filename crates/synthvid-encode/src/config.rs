@@ -52,26 +52,14 @@ impl Quality {
 /// spec forbids 3 or 4, but because [`ChromaSampling`] (the only place a
 /// `SamplingFactor` is ever built) defines only 4:4:4 and 4:2:0 -- so the
 /// type is this closed set rather than a `u8` a caller could hand any
-/// value at all, which `write_sof_component`'s `(h << 4) | v`
-/// nibble-packing and `encode_scan`'s block-grid multipliers both depend
-/// on staying small.
+/// value at all, which `write_sof_component`'s sampling byte and
+/// `encode_scan`'s block-grid multipliers both depend on staying small.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum SamplingFactor {
     /// No subsampling in this dimension.
     One,
     /// 2x subsampling in this dimension.
     Two,
-}
-
-impl SamplingFactor {
-    /// The raw JPEG sampling-factor value (1 or 2).
-    #[must_use]
-    pub const fn get(self) -> u8 {
-        match self {
-            Self::One => 1,
-            Self::Two => 2,
-        }
-    }
 }
 
 /// The chroma subsampling factor for JPEG encoding, applied equally in

@@ -1,13 +1,22 @@
 //! Huffman table definitions and encoding.
 
-use crate::bitstream::{BitCount, BitstreamWriter};
+use crate::bitstream::{BitCount, BitPattern, BitstreamWriter};
 use crate::dct::{DcDelta, EncodedDcDelta};
+use core::num::{NonZeroI16, NonZeroI32};
 
 mod tables;
+mod types;
 pub use tables::{
     get_ac_chroma_bits, get_ac_chroma_values, get_ac_luma_bits, get_ac_luma_values,
     get_dc_chroma_bits, get_dc_chroma_values, get_dc_luma_bits, get_dc_luma_values,
 };
+
+/// The destination index of a Huffman or quantization table: `0` for luma,
+/// `1` for chroma. Derived from [`Component`] alone.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub(crate) struct TableDestination(pub(crate) u8);
+pub use types::{Codeword, HuffmanBits, HuffmanValues, SizeCategory};
+use types::{SignPattern, SignedValue};
 
 /// A count of preceding zero coefficients before a nonzero AC coefficient (0-15).
 ///
@@ -77,7 +86,7 @@ pub(crate) enum AcSymbol {
 /// silently miscoding the stream rather than being folded into the run
 /// length as a real zero coefficient should be.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub struct AcCoefficient(core::num::NonZeroI16);
+pub struct AcCoefficient(NonZeroI16);
 
 impl AcCoefficient {
     /// Clamps `value` to the AC magnitude range and wraps it, or returns
@@ -88,7 +97,7 @@ impl AcCoefficient {
     /// bit level, not merely refused by this constructor.
     #[must_use]
     pub fn new(value: i32) -> Option<Self> {
-        if value == 0 {
+        if value == 0_i32 {
             return None;
         }
         // `clamp_to_magnitude` cannot cross zero: it only shrinks a
@@ -96,19 +105,19 @@ impl AcCoefficient {
         // `clamped` is nonzero whenever `value` is. `i16::try_from`'s
         // fallback is unreachable in practice, since |clamped| <= 1023
         // already fits i16 -- but total either way.
-        let clamped = clamp_to_magnitude(value, MAX_AC_MAGNITUDE);
+        let SignedValue(clamped) = clamp_to_magnitude(SignedValue(value), MAX_AC_MAGNITUDE);
         let narrowed = match i16::try_from(clamped) {
-            Ok(n) => n,
-            Err(_) if clamped > 0 => i16::MAX,
+            Ok(fits) => fits,
+            Err(_) if clamped > 0_i32 => i16::MAX,
             Err(_) => i16::MIN,
         };
-        core::num::NonZeroI16::new(narrowed).map(Self)
+        NonZeroI16::new(narrowed).map(Self)
     }
 
     /// Gets the underlying value.
     #[must_use]
     pub fn get(self) -> i32 {
-        i32::from(self.0.get())
+        NonZeroI32::from(self.0).get()
     }
 }
 
@@ -126,10 +135,10 @@ impl Component {
     /// component's content selector maps to: `0` for luma, `1` for chroma.
     /// A single derivation, since all three destinations always agree.
     #[must_use]
-    pub(crate) const fn table_dest(self) -> u8 {
+    pub(crate) const fn table_dest(self) -> TableDestination {
         match self {
-            Self::Luma => 0,
-            Self::Chroma => 1,
+            Self::Luma => TableDestination(0),
+            Self::Chroma => TableDestination(1),
         }
     }
 }
@@ -138,7 +147,7 @@ impl Component {
 #[derive(Debug, Clone, Copy)]
 pub struct HuffmanCode {
     /// The code value.
-    code: u16,
+    code: Codeword,
     /// The number of bits in the code, guaranteed `1..=16` by `new`'s
     /// validation -- stored as a `BitCount` so reading it back can never
     /// fail, instead of re-validating a bare `u8` every time it's needed.
@@ -156,7 +165,7 @@ impl HuffmanCode {
     /// # Returns
     /// `Some(HuffmanCode)` if parameters are valid, `None` otherwise.
     #[must_use]
-    pub const fn new(code: u16, bits: BitCount) -> Option<Self> {
+    pub const fn new(code: Codeword, bits: BitCount) -> Option<Self> {
         // JPEG (T.81) limits Huffman codes to 16 bits maximum
         if bits.get() > 16 {
             return None;
@@ -185,7 +194,7 @@ impl HuffmanCode {
             15 => 0x7FFF,
             _ => 0xFFFF,
         };
-        if code > max_val {
+        if code.0 > max_val {
             return None;
         }
         Some(Self { code, bits })
@@ -193,7 +202,7 @@ impl HuffmanCode {
 
     /// Gets the code value.
     #[must_use]
-    pub const fn code(self) -> u16 {
+    pub const fn code(self) -> Codeword {
         self.code
     }
 
@@ -220,14 +229,14 @@ impl HuffmanCode {
 /// `dct::EncodedDcDelta`'s constructor can clamp to this exact bound
 /// directly, rather than accepting an arbitrary bound as a parameter that a
 /// future call site could pass something else to.
-pub(crate) const MAX_DC_MAGNITUDE: u32 = 11;
+pub(crate) const MAX_DC_MAGNITUDE: SizeCategory = SizeCategory(11);
 
 /// The largest AC size category the standard Huffman tables define (1-10).
 /// See [`MAX_DC_MAGNITUDE`] for why a coefficient can plausibly exceed this.
 ///
 /// This constant is verified against the actual Huffman table values in tests
 /// to ensure it never silently drifts if the tables change.
-const MAX_AC_MAGNITUDE: u32 = 10;
+const MAX_AC_MAGNITUDE: SizeCategory = SizeCategory(10);
 
 /// The `(-max_abs, max_abs)` clamp bounds for a magnitude category, where
 /// `max_abs = 2^max_magnitude - 1`.
@@ -238,30 +247,31 @@ const MAX_AC_MAGNITUDE: u32 = 10;
 /// runtime shift/subtract/negate: there is no arithmetic operator here
 /// that could overflow, only a lookup, so there is no `None` case to
 /// prove unreachable in the first place.
-const fn magnitude_bounds(max_magnitude: u32) -> (i32, i32) {
-    match max_magnitude {
-        0 => (0, 0),
-        1 => (-1, 1),
-        2 => (-3, 3),
-        3 => (-7, 7),
-        4 => (-15, 15),
-        5 => (-31, 31),
-        6 => (-63, 63),
-        7 => (-127, 127),
-        8 => (-255, 255),
-        9 => (-511, 511),
-        10 => (-1023, 1023),
-        11 => (-2047, 2047),
+const fn magnitude_bounds(max_magnitude: SizeCategory) -> (SignedValue, SignedValue) {
+    let (low, high) = match max_magnitude.0 {
+        0 => (0_i32, 0_i32),
+        1 => (-1_i32, 1_i32),
+        2 => (-3_i32, 3_i32),
+        3 => (-7_i32, 7_i32),
+        4 => (-15_i32, 15_i32),
+        5 => (-31_i32, 31_i32),
+        6 => (-63_i32, 63_i32),
+        7 => (-127_i32, 127_i32),
+        8 => (-255_i32, 255_i32),
+        9 => (-511_i32, 511_i32),
+        10 => (-1_023_i32, 1_023_i32),
+        11 => (-2_047_i32, 2_047_i32),
         _ => (i32::MIN, i32::MAX),
-    }
+    };
+    (SignedValue(low), SignedValue(high))
 }
 
 /// Clamps `value` so `encode_signed_value` never reports a magnitude
 /// greater than `max_magnitude`, i.e. so it always fits a category the
 /// standard Huffman tables actually define.
-fn clamp_to_magnitude(value: i32, max_magnitude: u32) -> i32 {
-    let (neg_max_abs, max_abs) = magnitude_bounds(max_magnitude);
-    value.clamp(neg_max_abs, max_abs)
+fn clamp_to_magnitude(value: SignedValue, max_magnitude: SizeCategory) -> SignedValue {
+    let (SignedValue(neg_max_abs), SignedValue(max_abs)) = magnitude_bounds(max_magnitude);
+    SignedValue(value.0.clamp(neg_max_abs, max_abs))
 }
 
 /// Encodes a DC delta, returning the actually-written (possibly-clamped) delta.
@@ -272,7 +282,7 @@ pub(crate) fn encode_dc(
     component: Component,
 ) -> EncodedDcDelta {
     let clamped = EncodedDcDelta::from_delta(value);
-    let bits = encode_signed_value(clamped.get());
+    let bits = encode_signed_value(SignedValue(clamped.get()));
 
     let table = match component {
         Component::Chroma => tables::get_dc_chroma_table(),
@@ -281,11 +291,11 @@ pub(crate) fn encode_dc(
 
     // `magnitude` is now guaranteed <= MAX_DC_MAGNITUDE (11) by the clamp
     // above, so this lookup can never miss a symbol the table defines.
-    if let Some(Some(huffman_code)) = table.get(usize::from(bits.magnitude())) {
-        writer.write_bits(u32::from(huffman_code.code()), huffman_code.bit_count());
+    if let Some(Some(huffman_code)) = table.get(usize::from(bits.magnitude().0)) {
+        writer.write_bits(huffman_code.code().bits(), huffman_code.bit_count());
 
         if let Some((bit_count, pattern)) = bits.sign_bits {
-            writer.write_bits(pattern, bit_count);
+            writer.write_bits(BitPattern(pattern.0), bit_count);
         }
     }
     clamped
@@ -302,7 +312,7 @@ pub(crate) fn encode_ac(symbol: AcSymbol, writer: &mut BitstreamWriter, componen
         AcSymbol::Eob => (0x00_u8, None),
         AcSymbol::Zrl => (0xF0_u8, None),
         AcSymbol::Coefficient { run, value } => {
-            let bits = encode_signed_value(value.get());
+            let bits = encode_signed_value(SignedValue(value.get()));
             // `bits.magnitude()` is at most 10 in practice, since `value`
             // came from `AcCoefficient::new`'s own clamp -- but the packing
             // below only has 4 bits (0..=15) to put it in regardless of
@@ -312,16 +322,16 @@ pub(crate) fn encode_ac(symbol: AcSymbol, writer: &mut BitstreamWriter, componen
             // Without it, a magnitude of 16 or more would spill into the
             // `run` nibble, corrupting the symbol into a different one
             // instead of just being wrong.
-            let size = bits.magnitude().min(15);
-            ((run.get() << 4) | size, bits.sign_bits)
+            let SizeCategory(size) = bits.magnitude().min(SizeCategory(15));
+            ((run.get() << 4_i32) | size, bits.sign_bits)
         }
     };
 
     if let Some(Some(huffman_code)) = table.get(usize::from(ac_symbol_byte)) {
-        writer.write_bits(u32::from(huffman_code.code()), huffman_code.bit_count());
+        writer.write_bits(huffman_code.code().bits(), huffman_code.bit_count());
 
         if let Some((bit_count, pattern)) = sign_bits_info {
-            writer.write_bits(pattern, bit_count);
+            writer.write_bits(BitPattern(pattern.0), bit_count);
         }
     }
 }
@@ -339,30 +349,31 @@ struct SignedValueBits {
     /// The sign-bit pattern to write after the Huffman code, along
     /// with how many bits of it to write -- `None` when the magnitude
     /// category is 0, meaning there are no sign bits to write at all.
-    /// Bundling this as `Option<(BitCount, u32)>` means callers no longer
+    /// Bundling this as `Option<(BitCount, SignPattern)>` means callers no longer
     /// need to separately re-check the magnitude and re-derive a
     /// `BitCount` from it -- this type already knows both facts.
-    sign_bits: Option<(BitCount, u32)>,
+    sign_bits: Option<(BitCount, SignPattern)>,
 }
 
 impl SignedValueBits {
     /// The magnitude category (0-32): how many bits are needed to
     /// represent this value's absolute value, used to select a Huffman
     /// symbol. Derived from `sign_bits` rather than stored separately.
-    /// Returns `u8` directly (via `BitCount::get_u8`'s total narrowing,
-    /// not a fallible conversion a caller has to handle) since a Huffman
-    /// symbol byte is always a `u8` anyway.
-    const fn magnitude(self) -> u8 {
+    /// Held as a `u8` (via `BitCount::get_u8`'s total narrowing, not a
+    /// fallible conversion a caller has to handle) since a Huffman symbol
+    /// byte is always a `u8` anyway.
+    const fn magnitude(self) -> SizeCategory {
         match self.sign_bits {
-            Some((bit_count, _)) => bit_count.get_u8(),
-            None => 0,
+            Some((bit_count, _)) => SizeCategory(bit_count.get_u8()),
+            None => SizeCategory(0),
         }
     }
 }
 
 /// Encodes a signed value as its magnitude category and sign bit pattern.
 #[must_use]
-const fn encode_signed_value(value: i32) -> SignedValueBits {
+const fn encode_signed_value(signed_value: SignedValue) -> SignedValueBits {
+    let SignedValue(value) = signed_value;
     let abs_val = value.unsigned_abs();
 
     // Count bits needed
@@ -379,7 +390,7 @@ const fn encode_signed_value(value: i32) -> SignedValueBits {
         }
     };
 
-    let sign_bits = if value >= 0 {
+    let sign_bits = if value >= 0_i32 {
         abs_val
     } else {
         // T.81 F.1.2.1.3 EXTEND procedure: the appended bits for a negative
@@ -402,7 +413,7 @@ const fn encode_signed_value(value: i32) -> SignedValueBits {
             u32::MAX
         } else {
             match (1_u32 << magnitude).checked_sub(1) {
-                Some(m) => m,
+                Some(ones) => ones,
                 None => 0,
             }
         };
@@ -414,7 +425,7 @@ const fn encode_signed_value(value: i32) -> SignedValueBits {
         // magnitude is computed as 32 - leading_zeros() when abs_val != 0, which
         // gives a value in the range [1, 32].
         match BitCount::new(magnitude) {
-            Some(bit_count) => Some((bit_count, sign_bits)),
+            Some(bit_count) => Some((bit_count, SignPattern(sign_bits))),
             None => None, // This branch is unreachable due to the conditions above
         }
     } else {
@@ -431,12 +442,11 @@ const fn encode_signed_value(value: i32) -> SignedValueBits {
 /// deliberately re-implements the pre-fix (buggy) run-length loop to prove
 /// the real fix changes behavior. Kept in their own `#[cfg(test)]` impl
 /// block immediately before `mod tests`, rather than inside `ZeroRun`'s
-/// main impl block near its definition: `ci/check-type-safety.sh` and
-/// `ci/check-test-hygiene.sh` both treat the first `#[cfg(test)]` in a file
-/// as the start of test-only code and stop scanning production code past
-/// it, so putting this attribute earlier in the file would have silently
-/// exempted every real function between it and the actual test module from
-/// those checks.
+/// main impl block near its definition: `ci/check-type-safety.sh` treats
+/// the first `#[cfg(test)]` in a file as the start of test-only code and
+/// stops scanning production code past it, so putting this attribute
+/// earlier in the file would have silently exempted every real function
+/// between it and the actual test module from that check.
 #[cfg(test)]
 impl ZeroRun {
     /// A zero run count of zero.
@@ -457,196 +467,12 @@ impl ZeroRun {
     /// start a new run instead).
     #[must_use]
     pub(crate) const fn advance(self) -> Option<Self> {
-        Self::new(self.0.saturating_add(1))
+        match self.0.checked_add(1) {
+            Some(next) => Self::new(next),
+            None => None,
+        }
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use tables::{AC_CHROMA_VALUES, AC_LUMA_VALUES, DC_CHROMA_VALUES, DC_LUMA_VALUES};
-
-    #[test]
-    fn test_encode_signed_value_positive() {
-        let result = encode_signed_value(5);
-        assert_eq!(result.magnitude(), 3);
-        assert_eq!(result.sign_bits, Some((BitCount::new(3).unwrap(), 5)));
-    }
-
-    #[test]
-    fn test_encode_signed_value_zero() {
-        let result = encode_signed_value(0);
-        assert_eq!(result.magnitude(), 0);
-        assert_eq!(result.sign_bits, None);
-    }
-
-    #[test]
-    fn test_dc_luma_codes() {
-        let table = tables::get_dc_luma_table();
-        // DC symbol 0 should exist
-        assert!(table.first().copied().flatten().is_some());
-    }
-
-    #[test]
-    fn test_clamp_to_magnitude_keeps_symbol_in_range() {
-        // A value whose natural magnitude exceeds what the table defines
-        // must clamp down to one that fits, not pass through unclamped.
-        let dc_clamped = clamp_to_magnitude(100_000, MAX_DC_MAGNITUDE);
-        let dc_bits = encode_signed_value(dc_clamped);
-        assert!(u32::from(dc_bits.magnitude()) <= MAX_DC_MAGNITUDE);
-
-        let ac_clamped = clamp_to_magnitude(-100_000, MAX_AC_MAGNITUDE);
-        let ac_bits = encode_signed_value(ac_clamped);
-        assert!(u32::from(ac_bits.magnitude()) <= MAX_AC_MAGNITUDE);
-    }
-
-    #[test]
-    fn test_clamp_to_magnitude_leaves_in_range_values_untouched() {
-        assert_eq!(clamp_to_magnitude(5, MAX_DC_MAGNITUDE), 5);
-        assert_eq!(clamp_to_magnitude(-5, MAX_DC_MAGNITUDE), -5);
-        assert_eq!(clamp_to_magnitude(0, MAX_AC_MAGNITUDE), 0);
-    }
-
-    #[test]
-    fn test_encode_dc_never_silently_drops_an_out_of_range_coefficient() {
-        // Before the clamp fix, a DC delta needing more than 11 bits would
-        // silently write nothing at all. Confirm a huge delta still writes
-        // some bits to the stream instead of desyncing it silently.
-        // 30_000 is the largest value that both exceeds MAX_DC_MAGNITUDE's
-        // +/-2047 bound and fits in DcDelta's own i16 range.
-        let mut writer = BitstreamWriter::new();
-        let encoded = encode_dc(DcDelta::new(30_000), &mut writer, Component::Luma);
-        let max_dc = 1_i32.wrapping_shl(MAX_DC_MAGNITUDE).saturating_sub(1);
-        assert!(encoded.get().abs() <= max_dc && !writer.into_vec().is_empty());
-    }
-
-    #[test]
-    fn test_encode_ac_never_silently_drops_an_out_of_range_coefficient() {
-        let mut writer = BitstreamWriter::new();
-        encode_ac(
-            AcSymbol::Coefficient {
-                run: ZeroRun::new(0).expect("0 is a valid zero run"),
-                value: AcCoefficient::new(1_000_000).expect("1_000_000 is nonzero"),
-            },
-            &mut writer,
-            Component::Luma,
-        );
-        assert!(!writer.into_vec().is_empty());
-    }
-
-    #[test]
-    fn test_max_dc_magnitude_matches_table_values() {
-        // Re-derive the expected max DC magnitude directly from the tables
-        let mut dc_luma_max = 0_u8;
-        for &val in &DC_LUMA_VALUES {
-            if val > dc_luma_max {
-                dc_luma_max = val;
-            }
-        }
-        let mut dc_chroma_max = 0_u8;
-        for &val in &DC_CHROMA_VALUES {
-            if val > dc_chroma_max {
-                dc_chroma_max = val;
-            }
-        }
-        let expected_max = if dc_luma_max > dc_chroma_max {
-            dc_luma_max
-        } else {
-            dc_chroma_max
-        };
-        assert_eq!(
-            MAX_DC_MAGNITUDE,
-            u32::from(expected_max),
-            "MAX_DC_MAGNITUDE must match the max value in the DC Huffman tables"
-        );
-    }
-
-    #[test]
-    fn test_max_ac_magnitude_matches_table_values() {
-        // Re-derive the expected max AC magnitude (low nibble) directly from the tables,
-        // excluding special bytes 0x00 (EOB) and 0xF0 (ZRL)
-        let mut ac_luma_max = 0_u8;
-        for &byte in &AC_LUMA_VALUES {
-            if byte != 0x00 && byte != 0xF0 {
-                let size = byte & 0x0F;
-                if size > ac_luma_max {
-                    ac_luma_max = size;
-                }
-            }
-        }
-        let mut ac_chroma_max = 0_u8;
-        for &byte in &AC_CHROMA_VALUES {
-            if byte != 0x00 && byte != 0xF0 {
-                let size = byte & 0x0F;
-                if size > ac_chroma_max {
-                    ac_chroma_max = size;
-                }
-            }
-        }
-        let expected_max = if ac_luma_max > ac_chroma_max {
-            ac_luma_max
-        } else {
-            ac_chroma_max
-        };
-        assert_eq!(
-            MAX_AC_MAGNITUDE,
-            u32::from(expected_max),
-            "MAX_AC_MAGNITUDE must match the max AC size category in the Huffman tables"
-        );
-    }
-
-    /// Regression test for `encode_signed_value`: must be exactly invertible via
-    /// the JPEG T.81 EXTEND procedure for both positive and negative values.
-    /// A previous bug computed the wrong sign-bit pattern for every negative
-    /// value (either a full sign flip when |V| was a power of two, or an
-    /// off-by-one error toward zero otherwise), which this round-trip test
-    /// would have caught immediately since the existing tests never covered
-    /// a negative case.
-    #[test]
-    fn test_encode_signed_value_round_trip_with_negative_values() {
-        /// Decodes a value that was encoded with `encode_signed_value`, using
-        /// the JPEG T.81 F.1.2.1.3 EXTEND procedure. Given magnitude S and
-        /// the unsigned S-bit value that was transmitted, returns the
-        /// original signed value.
-        fn decode_extend(magnitude: u32, sign_bits: u32) -> i64 {
-            if magnitude == 0 {
-                0
-            } else {
-                let half = 1_u32 << (magnitude - 1);
-                if sign_bits < half {
-                    // Negative case: V = V' - (1<<magnitude) + 1
-                    i64::from(sign_bits) - i64::from(1_u32 << magnitude) + 1
-                } else {
-                    // Positive case: V = V'
-                    i64::from(sign_bits)
-                }
-            }
-        }
-
-        // Test critical values that the buggy code would have corrupted:
-        // V = -1 (S=1, mask=1): correct = 1 XOR 1 = 0. Buggy = (1-1) XOR 1 = 1.
-        // V = -2 (S=2, mask=3): correct = 2 XOR 3 = 1. Buggy = (2-1) XOR 3 = 2.
-        // V = -5 (S=3, mask=7): correct = 5 XOR 7 = 2. Buggy = (5-1) XOR 7 = 3.
-        let test_values = [
-            -1, -2, -3, -4, -5, -7, -15, -31, -63, -127, -255, -511, -1023, -2047, 1, 2, 3, 4, 5,
-            7, 15, 31, 63, 127, 255, 511, 1023, 2047, 0,
-        ];
-
-        for original in &test_values {
-            let encoded = encode_signed_value(*original);
-            let magnitude = encoded.magnitude();
-            let sign_bits = match encoded.sign_bits {
-                Some((_, pattern)) => pattern,
-                None => 0, // magnitude == 0 case
-            };
-
-            let decoded = decode_extend(u32::from(magnitude), sign_bits);
-            assert_eq!(
-                decoded,
-                i64::from(*original),
-                "Round-trip failed for value {original}: encoded as magnitude={magnitude}, \
-                 sign_bits={sign_bits}, decoded as {decoded}"
-            );
-        }
-    }
-}
+mod tests;

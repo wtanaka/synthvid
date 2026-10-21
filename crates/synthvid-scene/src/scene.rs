@@ -6,14 +6,24 @@
 //! Every type here is [`Clone`] and [`PartialEq`], so a future canonical text
 //! form can round-trip a scene and compare the result with [`Eq`].
 
+mod blobs;
+mod membership;
+mod scale;
+
+use core::error::Error;
 use core::fmt;
 use core::num::NonZeroU16;
+use core::ops::Range;
 
 use crate::camera::Camera;
 use crate::color::Rgb8;
 use crate::geom::{Point, Vector};
 use crate::ratio::Ratio;
 use crate::units::{Dimensions, FrameCount, FrameIndex, FrameRate, Seed};
+
+pub use blobs::{BlobCount, BlobRadii, BlobRadius};
+pub use membership::Membership;
+pub use scale::{Scale, ScaleError};
 
 /// Direction of a linear gradient across the frame.
 ///
@@ -25,76 +35,6 @@ pub enum Direction {
     Horizontal,
     /// Gradient varies from top (`from`) to bottom (`to`).
     Vertical,
-}
-
-/// Error returned when a [`Scale`] cannot be constructed.
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum ScaleError {
-    /// Scale must be strictly positive.
-    NonPositive,
-}
-
-impl fmt::Display for ScaleError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::NonPositive => write!(f, "scale must be strictly positive"),
-        }
-    }
-}
-
-impl core::error::Error for ScaleError {}
-
-/// Declares how many scene units correspond to one world unit.
-///
-/// A scene is laid out in scene units, which coincide with pixel units. The
-/// optional [`Scene::scale`] gives the layout an exact physical
-/// interpretation, so a manifest can report real distances rather than only
-/// pixels. The value must be strictly positive.
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
-pub struct Scale(Ratio);
-
-impl Scale {
-    /// Creates a scale from a [`Ratio`], rejecting zero and negative values.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Err(ScaleError::NonPositive)` when `units_per_world_unit` is zero or negative.
-    pub const fn new(units_per_world_unit: Ratio) -> Result<Self, ScaleError> {
-        if units_per_world_unit.numer() > 0 {
-            Ok(Self(units_per_world_unit))
-        } else {
-            Err(ScaleError::NonPositive)
-        }
-    }
-
-    /// Creates a scale from a [`Ratio`], rejecting zero and negative values.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Err(ScaleError::NonPositive)` when `units_per_world_unit` is zero or negative.
-    pub const fn from_ratio(units_per_world_unit: Ratio) -> Result<Self, ScaleError> {
-        Self::new(units_per_world_unit)
-    }
-
-    /// Returns the underlying [`Ratio`] of scene units per world unit.
-    #[must_use]
-    pub const fn get(self) -> Ratio {
-        self.0
-    }
-
-    /// Returns the underlying [`Ratio`] of scene units per world unit.
-    #[must_use]
-    pub const fn ratio(self) -> Ratio {
-        self.0
-    }
-}
-
-impl TryFrom<Ratio> for Scale {
-    type Error = ScaleError;
-
-    fn try_from(units_per_world_unit: Ratio) -> Result<Self, Self::Error> {
-        Self::new(units_per_world_unit)
-    }
 }
 
 /// Error returned when attempting to construct an invalid [`FrameSpan`].
@@ -112,7 +52,7 @@ impl fmt::Display for FrameSpanError {
     }
 }
 
-impl core::error::Error for FrameSpanError {}
+impl Error for FrameSpanError {}
 
 /// Inclusive-start, exclusive-end span of frames during which an object is visible.
 ///
@@ -127,12 +67,14 @@ pub struct FrameSpan {
 }
 
 impl FrameSpan {
-    /// Creates a frame span from `start` (inclusive) to `end` (exclusive).
+    /// Creates a frame span covering `frames`, from its start (inclusive) to
+    /// its end (exclusive).
     ///
     /// # Errors
     ///
-    /// Returns `Err(FrameSpanError::EndBeforeStart)` when `start` lies at or after `end`.
-    pub const fn new(start: FrameIndex, end: FrameIndex) -> Result<Self, FrameSpanError> {
+    /// Returns `Err(FrameSpanError::EndBeforeStart)` when the start lies at or after the end.
+    pub const fn new(frames: Range<FrameIndex>) -> Result<Self, FrameSpanError> {
+        let Range { start, end } = frames;
         if start.get() >= end.get() {
             Err(FrameSpanError::EndBeforeStart)
         } else {
@@ -152,10 +94,14 @@ impl FrameSpan {
         self.end
     }
 
-    /// Returns `true` when `frame` lies in `[start, end)`.
+    /// Returns [`Membership::Inside`] when `frame` lies in `[start, end)`.
     #[must_use]
-    pub const fn contains(self, frame: FrameIndex) -> bool {
-        frame.get() >= self.start.get() && frame.get() < self.end.get()
+    pub const fn contains(self, frame: FrameIndex) -> Membership {
+        if frame.get() >= self.start.get() && frame.get() < self.end.get() {
+            Membership::Inside
+        } else {
+            Membership::Outside
+        }
     }
 }
 
@@ -234,14 +180,14 @@ pub enum Motion {
 pub enum Background {
     /// Uniform fill of a single color.
     Solid(Rgb8),
-    /// Alternating squares of side `cell` pixels, color `a` at the origin.
+    /// Alternating squares of side `cell` pixels, color `even` at the origin.
     Checker {
         /// Side length of one square in pixels, never zero.
         cell: NonZeroU16,
         /// Color of the square at the origin.
-        a: Rgb8,
+        even: Rgb8,
         /// Color of the square adjacent to the origin.
-        b: Rgb8,
+        odd: Rgb8,
     },
     /// Linear interpolation from `from` to `to` along `direction`.
     Gradient {
@@ -256,16 +202,14 @@ pub enum Background {
     ///
     /// Centers, radii, and colors derive from `seed`, so the same seed
     /// yields the same discs on every platform. `count` is the number of
-    /// discs; radii lie in `[min_radius, max_radius]`.
+    /// discs; radii lie in the inclusive range `radii`.
     Blobs {
         /// Seed for the deterministic disc layout.
         seed: Seed,
         /// Number of discs to place.
-        count: u16,
-        /// Smallest disc radius in pixels.
-        min_radius: u16,
-        /// Largest disc radius in pixels.
-        max_radius: u16,
+        count: BlobCount,
+        /// Inclusive range of disc radii in pixels.
+        radii: BlobRadii,
     },
     /// Axis-aligned lines of width one over a uniform ground.
     Grid {
@@ -359,328 +303,5 @@ pub struct Scene {
     pub objects: Vec<Object>,
 }
 
-impl Scene {
-    /// Creates a scene from its dimensions, rate, length, scale, backdrop, camera, and objects.
-    #[must_use]
-    pub const fn new(
-        dimensions: Dimensions,
-        frame_rate: FrameRate,
-        frame_count: FrameCount,
-        scale: Option<Scale>,
-        background: Background,
-        camera: Camera,
-        objects: Vec<Object>,
-    ) -> Self {
-        Self {
-            dimensions,
-            frame_rate,
-            frame_count,
-            scale,
-            background,
-            camera,
-            objects,
-        }
-    }
-}
-
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::camera::{Magnification, Rotation, Turns, Zoom};
-    use crate::testutil::make_ratio;
-    use crate::units::{Height, Width};
-
-    /// Builds the fixed point at the origin for motion tests.
-    fn origin_point() -> Option<Point> {
-        let zero = make_ratio(0, 1)?;
-        Some(Point::new(zero, zero))
-    }
-
-    /// Builds the identity camera: still at the origin with unit magnification.
-    fn fixed_camera() -> Option<Camera> {
-        let origin = origin_point()?;
-        let angle = Turns::new(make_ratio(0, 1)?);
-        let unit = Zoom::Fixed(Magnification::new(make_ratio(1, 1)?).ok()?);
-        Some(Camera::new(
-            Motion::Fixed(origin),
-            Rotation::Fixed(angle),
-            unit,
-        ))
-    }
-
-    /// Builds a one-frame-per-side span from `start` to `end`.
-    fn make_span(start: u32, end: u32) -> Result<FrameSpan, FrameSpanError> {
-        FrameSpan::new(FrameIndex::new(start), FrameIndex::new(end))
-    }
-
-    #[test]
-    fn test_scale_rejects_non_positive() {
-        let zero = make_ratio(0, 1).unwrap();
-        let neg = make_ratio(-3, 2).unwrap();
-        let pos = make_ratio(3, 2).unwrap();
-        assert!(Scale::new(zero).is_err(), "zero scale must be rejected");
-        assert!(Scale::new(neg).is_err(), "negative scale must be rejected");
-        let scale = Scale::new(pos).expect("positive scale accepted");
-        assert_eq!(scale.get(), pos, "positive scale must round-trip");
-        assert_eq!(scale.ratio(), pos, "scale ratio must round-trip");
-        assert_eq!(
-            Scale::try_from(pos),
-            Ok(scale),
-            "TryFrom a positive ratio must succeed"
-        );
-        assert_eq!(
-            Scale::try_from(neg),
-            Err(ScaleError::NonPositive),
-            "TryFrom a negative ratio must fail"
-        );
-        assert_eq!(
-            Scale::from_ratio(pos),
-            Ok(scale),
-            "from_ratio must match new"
-        );
-    }
-
-    #[test]
-    fn test_frame_span_reports_the_bounds_it_was_built_with() {
-        let span = make_span(3, 11).expect("valid span");
-        assert_eq!(span.start(), FrameIndex::new(3));
-        assert_eq!(span.end(), FrameIndex::new(11));
-    }
-
-    #[test]
-    fn test_frame_span_contains_and_rejects_inverted() {
-        let span = make_span(2, 5).expect("valid span");
-        assert!(span.contains(FrameIndex::new(2)), "span must contain start");
-        assert!(
-            span.contains(FrameIndex::new(4)),
-            "span must contain end - 1"
-        );
-        assert!(!span.contains(FrameIndex::new(5)), "span must exclude end");
-        assert!(
-            !span.contains(FrameIndex::new(1)),
-            "span must exclude before start"
-        );
-        assert!(make_span(5, 2).is_err(), "inverted span must be rejected");
-        assert!(make_span(5, 4).is_err(), "inverted span must be rejected");
-        assert!(make_span(5, 5).is_err(), "empty span must be rejected");
-        let unit = make_span(5, 6).expect("unit span");
-        assert!(
-            unit.contains(FrameIndex::new(5)),
-            "unit span must contain start"
-        );
-        assert!(
-            !unit.contains(FrameIndex::new(6)),
-            "unit span must exclude end"
-        );
-    }
-
-    #[test]
-    fn test_scene_clone_compares_equal() {
-        let width = Width::new(64).unwrap();
-        let height = Height::new(48).unwrap();
-        let dimensions = Dimensions::new(width, height);
-        let rate = FrameRate::from_fps(30).unwrap();
-        let count = FrameCount::new(4).unwrap();
-        let unit = make_ratio(2, 1).unwrap();
-        let scale = Scale::new(unit).unwrap();
-        let camera = fixed_camera().unwrap();
-        let origin = origin_point().unwrap();
-        let radius = make_ratio(5, 1).unwrap();
-        let span = make_span(0, 4).unwrap();
-        let red = Rgb8::new(200, 30, 30);
-        let disc = Object::new(Shape::Disc { radius }, red, Motion::Fixed(origin), span);
-        let scene = Scene::new(
-            dimensions,
-            rate,
-            count,
-            Some(scale),
-            Background::Solid(red),
-            camera,
-            vec![disc],
-        );
-        let cloned = scene.clone();
-        assert_eq!(cloned, scene, "a scene must equal its clone");
-    }
-
-    /// Builds the shared object list covering every shape variant.
-    fn every_shape_objects(green: Rgb8, span: FrameSpan) -> Vec<Object> {
-        let origin = origin_point().unwrap();
-        let one = make_ratio(1, 1).unwrap();
-        let two = make_ratio(2, 1).unwrap();
-        let drift = Motion::Linear {
-            origin,
-            velocity: Vector::new(one, one),
-        };
-        let shapes = [
-            Shape::Disc { radius: two },
-            Shape::Rect {
-                half_width: two,
-                half_height: one,
-            },
-            Shape::Polygon {
-                vertices: vec![origin, Point::new(one, origin.y), Point::new(one, one)],
-            },
-            Shape::Cross {
-                arm: two,
-                thickness: one,
-            },
-        ];
-        let mut objects = Vec::new();
-        for shape in shapes {
-            objects.push(Object::new(shape, green, drift.clone(), span));
-        }
-        objects
-    }
-
-    /// Builds every background variant in declaration order.
-    fn every_background() -> [Background; 6] {
-        let red = Rgb8::new(255, 0, 0);
-        let blue = Rgb8::new(0, 0, 255);
-        let white = Rgb8::new(255, 255, 255);
-        let black = Rgb8::new(0, 0, 0);
-        let cell = NonZeroU16::new(4).unwrap();
-        let spacing = NonZeroU16::new(8).unwrap();
-        [
-            Background::Solid(red),
-            Background::Checker {
-                cell,
-                a: red,
-                b: blue,
-            },
-            Background::Gradient {
-                from: red,
-                to: blue,
-                direction: Direction::Horizontal,
-            },
-            Background::Gradient {
-                from: black,
-                to: white,
-                direction: Direction::Vertical,
-            },
-            Background::Blobs {
-                seed: Seed::new(7),
-                count: 5,
-                min_radius: 1,
-                max_radius: 4,
-            },
-            Background::Grid {
-                spacing,
-                line: white,
-                ground: black,
-            },
-        ]
-    }
-
-    /// Builds a small scene with the given backdrop and objects.
-    fn small_scene(background: Background, objects: Vec<Object>) -> Scene {
-        let width = Width::new(32).unwrap();
-        let height = Height::new(32).unwrap();
-        let dimensions = Dimensions::new(width, height);
-        let rate = FrameRate::from_fps(60).unwrap();
-        let count = FrameCount::new(8).unwrap();
-        let camera = fixed_camera().unwrap();
-        Scene::new(dimensions, rate, count, None, background, camera, objects)
-    }
-
-    #[test]
-    fn test_scene_backgrounds_round_trip() {
-        let backgrounds = every_background();
-        let span = make_span(0, 8).unwrap();
-        let green = Rgb8::new(0, 255, 0);
-        let objects = every_shape_objects(green, span);
-        for background in backgrounds {
-            let scene = small_scene(background, objects.clone());
-            let cloned = scene.clone();
-            assert_eq!(
-                cloned, scene,
-                "every background variant must round-trip through clone"
-            );
-        }
-    }
-
-    #[test]
-    fn test_scene_shapes_round_trip() {
-        let span = make_span(0, 8).unwrap();
-        let green = Rgb8::new(0, 255, 0);
-        let objects = every_shape_objects(green, span);
-        let slice = &objects[0..4];
-        assert_eq!(slice.len(), 4, "one object per shape variant must exist");
-        let backgrounds = every_background();
-        let first = backgrounds[0];
-        let scene = small_scene(first, objects);
-        let cloned = scene.clone();
-        assert_eq!(
-            cloned, scene,
-            "every shape variant must round-trip through clone"
-        );
-    }
-
-    #[test]
-    fn test_scene_inequality() {
-        let backgrounds = every_background();
-        let first = backgrounds[0];
-        let span = make_span(0, 8).unwrap();
-        let green = Rgb8::new(0, 255, 0);
-        let red = Rgb8::new(255, 0, 0);
-        let objects = every_shape_objects(green, span);
-        let scene = small_scene(first, objects);
-        let mut altered = scene.clone();
-        altered.background = Background::Solid(green);
-        assert!(
-            altered != scene,
-            "changing the background must compare unequal"
-        );
-        let one = make_ratio(1, 1).unwrap();
-        let two = make_ratio(2, 1).unwrap();
-        let origin = origin_point().unwrap();
-        let still = Motion::Fixed(origin);
-        let still_object = Object::new(Shape::Disc { radius: one }, red, still, span);
-        assert!(
-            still_object.shape != Shape::Disc { radius: two },
-            "distinct shapes must compare unequal"
-        );
-    }
-
-    #[test]
-    fn test_motion_variants_clone_equal() {
-        let origin = origin_point().unwrap();
-        let one = make_ratio(1, 1).unwrap();
-        let quarter = make_ratio(1, 4).unwrap();
-        let count = FrameCount::new(24).unwrap();
-        let vector = Vector::new(one, one);
-        let motions = [
-            Motion::Fixed(origin),
-            Motion::Linear {
-                origin,
-                velocity: vector,
-            },
-            Motion::Ballistic {
-                origin,
-                velocity: vector,
-                acceleration: vector,
-            },
-            Motion::Circular {
-                centre: origin,
-                radius: one,
-                turns_per_frame: quarter,
-                phase: one,
-            },
-            Motion::Oscillating {
-                origin,
-                amplitude: vector,
-                period: count,
-                phase: quarter,
-            },
-            Motion::Walk {
-                origin,
-                step: one,
-                seed: Seed::new(11),
-            },
-            Motion::Piecewise(vec![(FrameIndex::new(0), Motion::Fixed(origin))]),
-        ];
-        for motion in motions {
-            let cloned = motion.clone();
-            assert_eq!(cloned, motion, "every motion variant must equal its clone");
-        }
-    }
-}
+mod tests;

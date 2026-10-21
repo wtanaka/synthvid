@@ -6,14 +6,21 @@
 use crate::manifest::{
     Manifest, ManifestAffine, ManifestFrame, ManifestHeader, ManifestObjectDecl,
 };
+use crate::manifest_error::ManifestError;
 use crate::names::{BackgroundName, ShapeName};
 use crate::object_state::frame_objects;
+use crate::render_output::{EncodedFrames, ManifestJson, MediaBytes};
 use crate::video_spec::{Container, DisplayRotation, Encoding, VideoSpec};
+use core::error::Error;
 use core::fmt;
-use synthvid_encode::{encode_avi, encode_iso, encode_jpeg, AviCodec, IsoCodec, TrackMatrix};
+use core::num::TryFromIntError;
+use synthvid_encode::{
+    encode_avi, encode_iso, encode_jpeg, AviCodec, ContainerFile, ContainerFit, EncodedFrame,
+    IsoCodec, TrackMatrix,
+};
 use synthvid_scene::{
-    render_into, Background, Camera, Dimensions, Frame, FrameIndex, ObjectIndex, Scale, Scene,
-    Shape,
+    render_into, Background, Camera, Dimensions, Frame, FrameIndex, ObjectIndex, Overflow, Scale,
+    Scene, Shape,
 };
 
 /// A step of the exact camera arithmetic that failed.
@@ -40,10 +47,10 @@ pub enum CameraStep {
     TranslationY,
 }
 
-impl CameraStep {
-    /// The step as a phrase.
-    const fn describe(self) -> &'static str {
-        match self {
+/// Writes the step as a phrase.
+impl fmt::Display for CameraStep {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
             Self::Centre => "evaluating the centre",
             Self::Rotation => "evaluating the rotation",
             Self::Zoom => "evaluating the magnification",
@@ -53,7 +60,7 @@ impl CameraStep {
             Self::LinearTerms => "forming the linear terms",
             Self::TranslationX => "forming the horizontal translation",
             Self::TranslationY => "forming the vertical translation",
-        }
+        })
     }
 }
 
@@ -75,17 +82,17 @@ pub enum ObjectStep {
     OnScreenValue,
 }
 
-impl ObjectStep {
-    /// The step as a phrase.
-    const fn describe(self) -> &'static str {
-        match self {
+/// Writes the step as a phrase.
+impl fmt::Display for ObjectStep {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
             Self::FrameBounds => "building the frame bounds",
             Self::BoxArea => "taking the box area",
             Self::VisibleArea => "taking the visible area",
             Self::VisibleFraction => "dividing the visible area by the box area",
             Self::WorldCoordinate => "converting a coordinate to world units",
             Self::OnScreenValue => "recording the visible fraction",
-        }
+        })
     }
 }
 
@@ -100,13 +107,13 @@ pub enum GenerationError {
     /// A step of the camera arithmetic failed.
     CameraMath(CameraStep),
     /// There are more objects than an object index can number.
-    ObjectIndexOutOfRange(core::num::TryFromIntError),
+    ObjectIndexOutOfRange(TryFromIntError),
     /// The camera similarity could not be widened to an affine without overflow.
     AffineConversion,
     /// Scene frame rendering failed.
     SceneFrameRender(synthvid_scene::RenderError),
     /// Manifest could not be created.
-    ManifestConstruction,
+    ManifestConstruction(ManifestError),
     /// A step of the per-object arithmetic failed.
     ObjectState(ObjectStep),
     /// Raw frame data exceeds container capacity.
@@ -122,61 +129,73 @@ pub enum GenerationError {
 }
 
 impl fmt::Display for GenerationError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::FrameBuffer(e) => write!(f, "frame buffer allocation failed: {e}"),
-            Self::CameraMath(step) => write!(f, "camera arithmetic failed {}", step.describe()),
-            Self::ObjectIndexOutOfRange(e) => write!(f, "object index out of range: {e}"),
-            Self::AffineConversion => write!(f, "affine conversion failed"),
-            Self::SceneFrameRender(e) => write!(f, "scene frame rendering failed: {e}"),
-            Self::ManifestConstruction => write!(f, "manifest construction failed"),
-            Self::ObjectState(step) => {
-                write!(f, "object state arithmetic failed {}", step.describe())
+            Self::FrameBuffer(error) => {
+                write!(formatter, "frame buffer allocation failed: {error}")
             }
-            Self::RawCapacityExceeded => write!(f, "raw frame data exceeds container capacity"),
+            Self::CameraMath(step) => write!(formatter, "camera arithmetic failed {step}"),
+            Self::ObjectIndexOutOfRange(error) => {
+                write!(formatter, "object index out of range: {error}")
+            }
+            Self::AffineConversion => write!(formatter, "affine conversion failed"),
+            Self::SceneFrameRender(error) => {
+                write!(formatter, "scene frame rendering failed: {error}")
+            }
+            Self::ManifestConstruction(error) => {
+                write!(formatter, "manifest construction failed: {error}")
+            }
+            Self::ObjectState(step) => {
+                write!(formatter, "object state arithmetic failed {step}")
+            }
+            Self::RawCapacityExceeded => {
+                write!(formatter, "raw frame data exceeds container capacity")
+            }
             Self::TrackMatrix(rotation) => {
                 write!(
-                    f,
-                    "track matrix for rotation {rotation:?} could not be built"
+                    formatter,
+                    "track matrix for rotation {rotation} could not be built"
                 )
             }
-            Self::IsoEncodingFailed(e) => write!(f, "ISO encoding failed: {e}"),
-            Self::AviEncodingFailed(e) => write!(f, "AVI encoding failed: {e}"),
-            Self::DefectApplicationFailed(e) => write!(f, "defect application failed: {e}"),
+            Self::IsoEncodingFailed(error) => write!(formatter, "ISO encoding failed: {error}"),
+            Self::AviEncodingFailed(error) => write!(formatter, "AVI encoding failed: {error}"),
+            Self::DefectApplicationFailed(error) => {
+                write!(formatter, "defect application failed: {error}")
+            }
         }
     }
 }
 
-impl core::error::Error for GenerationError {}
+impl Error for GenerationError {}
 
 /// Result of rendering a video specification: manifest JSON and media bytes.
 #[derive(Clone, Debug)]
 pub struct GeneratedEntry {
     /// Canonical JSON manifest bytes.
-    manifest_json: String,
+    manifest_json: ManifestJson,
     /// Media file bytes (video container).
-    media_bytes: Vec<u8>,
+    media_bytes: MediaBytes,
 }
 
 impl GeneratedEntry {
     /// Creates a new entry with the given manifest JSON and media bytes.
     #[must_use]
-    pub(crate) const fn new(manifest_json: String, media_bytes: Vec<u8>) -> Self {
+    pub(crate) const fn new(manifest_json: ManifestJson, media_bytes: MediaBytes) -> Self {
         Self {
             manifest_json,
             media_bytes,
         }
     }
 
-    /// Returns the manifest JSON as a string slice.
+    /// Returns the canonical JSON manifest.
     #[must_use]
-    pub fn manifest_json(&self) -> &str {
+    pub const fn manifest_json(&self) -> &ManifestJson {
         &self.manifest_json
     }
 
-    /// Returns the media bytes as a slice.
+    /// Returns the media container's bytes.
     #[must_use]
-    pub fn media_bytes(&self) -> &[u8] {
+    pub const fn media_bytes(&self) -> &MediaBytes {
         &self.media_bytes
     }
 }
@@ -185,7 +204,7 @@ impl GeneratedEntry {
 fn render_frames_to_manifest(
     spec: &VideoSpec,
     scene: &Scene,
-) -> Result<(Vec<Vec<u8>>, Vec<ManifestFrame>), GenerationError> {
+) -> Result<(EncodedFrames, Vec<ManifestFrame>), GenerationError> {
     let mut manifest_frames = Vec::new();
     let mut encoded_frames = Vec::new();
 
@@ -199,24 +218,69 @@ fn render_frames_to_manifest(
         let rendered_frame = &frame_buffer;
 
         let encoded = match spec.encoding() {
-            Encoding::Raw => rendered_frame.data().to_vec(),
+            Encoding::Raw => EncodedFrame::raw(rendered_frame),
             Encoding::Mjpeg { quality, chroma } => encode_jpeg(rendered_frame, quality, chroma),
         };
         encoded_frames.push(encoded);
 
         let camera_affine = compute_camera_affine(&scene.camera, frame_index)?;
         let camera_manifest = ManifestAffine::from_affine(
-            camera_affine
+            &camera_affine
                 .to_affine()
-                .map_err(|_| GenerationError::AffineConversion)?,
+                .map_err(|Overflow| GenerationError::AffineConversion)?,
         );
 
         let objects = frame_objects(scene, frame_index)?;
-        let manifest_frame = ManifestFrame::new(camera_manifest, objects);
+        let manifest_frame = ManifestFrame::new(&camera_manifest, objects);
         manifest_frames.push(manifest_frame);
     }
 
-    Ok((encoded_frames, manifest_frames))
+    Ok((EncodedFrames(encoded_frames), manifest_frames))
+}
+
+/// The manifest name of a background.
+const fn background_name_of(background: &Background) -> BackgroundName {
+    match background {
+        Background::Solid(_) => BackgroundName::Solid,
+        Background::Checker {
+            cell: _cell,
+            even: _a,
+            odd: _b,
+        } => BackgroundName::Checker,
+        Background::Gradient {
+            from: _from,
+            to: _to,
+            direction: _direction,
+        } => BackgroundName::Gradient,
+        Background::Blobs {
+            seed: _seed,
+            count: _count,
+            radii: _radii,
+        } => BackgroundName::Blobs,
+        Background::Grid {
+            spacing: _spacing,
+            line: _line,
+            ground: _ground,
+        } => BackgroundName::Grid,
+    }
+}
+
+/// The manifest name of a shape.
+const fn shape_name_of(shape: &Shape) -> ShapeName {
+    match shape {
+        Shape::Disc { radius: _radius } => ShapeName::Disc,
+        Shape::Rect {
+            half_width: _half_width,
+            half_height: _half_height,
+        } => ShapeName::Rect,
+        Shape::Polygon {
+            vertices: _vertices,
+        } => ShapeName::Polygon,
+        Shape::Cross {
+            arm: _arm,
+            thickness: _thickness,
+        } => ShapeName::Cross,
+    }
 }
 
 /// Renders a video specification to produce manifest and media bytes.
@@ -235,12 +299,9 @@ pub fn render(spec: &VideoSpec) -> Result<GeneratedEntry, GenerationError> {
     let scene = spec.scene();
 
     // Check raw capacity for raw coding
-    if matches!(spec.encoding(), Encoding::Raw)
-        && !synthvid_encode::raw_frames_fit_classic_container(
-            scene.dimensions.width,
-            scene.dimensions.height,
-            scene.frame_count.get().get(),
-        )
+    if spec.encoding() == Encoding::Raw
+        && synthvid_encode::raw_frames_fit_classic_container(scene.dimensions, scene.frame_count)
+            == ContainerFit::TooLarge
     {
         return Err(GenerationError::RawCapacityExceeded);
     }
@@ -248,13 +309,7 @@ pub fn render(spec: &VideoSpec) -> Result<GeneratedEntry, GenerationError> {
     let (encoded_frames, manifest_frames) = render_frames_to_manifest(spec, scene)?;
 
     // Build manifest header
-    let background_name = match scene.background {
-        Background::Solid(_) => BackgroundName::Solid,
-        Background::Checker { .. } => BackgroundName::Checker,
-        Background::Gradient { .. } => BackgroundName::Gradient,
-        Background::Blobs { .. } => BackgroundName::Blobs,
-        Background::Grid { .. } => BackgroundName::Grid,
-    };
+    let background_name = background_name_of(&scene.background);
 
     let header = ManifestHeader::new(
         spec.name().clone(),
@@ -267,12 +322,7 @@ pub fn render(spec: &VideoSpec) -> Result<GeneratedEntry, GenerationError> {
     // Build manifest objects declaration with proper error handling
     let mut manifest_objects = Vec::new();
     for (idx, obj) in scene.objects.iter().enumerate() {
-        let shape_name = match &obj.shape {
-            Shape::Disc { .. } => ShapeName::Disc,
-            Shape::Rect { .. } => ShapeName::Rect,
-            Shape::Polygon { .. } => ShapeName::Polygon,
-            Shape::Cross { .. } => ShapeName::Cross,
-        };
+        let shape_name = shape_name_of(&obj.shape);
         let obj_idx =
             ObjectIndex::new(u32::try_from(idx).map_err(GenerationError::ObjectIndexOutOfRange)?);
 
@@ -281,40 +331,10 @@ pub fn render(spec: &VideoSpec) -> Result<GeneratedEntry, GenerationError> {
 
     // Create the manifest
     let manifest = Manifest::new(header, manifest_objects, manifest_frames)
-        .ok_or(GenerationError::ManifestConstruction)?;
+        .map_err(GenerationError::ManifestConstruction)?;
     let manifest_json = manifest.to_canonical_json();
 
-    // Build the media container
-    let mut media_bytes = match spec.container() {
-        Container::Iso { rotation } => {
-            let dims = scene.dimensions;
-            let track_matrix = build_track_matrix_from_rotation(rotation, dims)?;
-            encode_iso(
-                scene.frame_rate,
-                None,
-                &encoded_frames,
-                dims.width,
-                dims.height,
-                match spec.encoding() {
-                    Encoding::Raw => IsoCodec::UncompressedRgb,
-                    Encoding::Mjpeg { .. } => IsoCodec::MotionJpeg,
-                },
-                track_matrix,
-            )
-            .map_err(GenerationError::IsoEncodingFailed)?
-        }
-        Container::Avi => encode_avi(
-            scene.frame_rate,
-            &encoded_frames,
-            scene.dimensions.width,
-            scene.dimensions.height,
-            match spec.encoding() {
-                Encoding::Raw => AviCodec::UncompressedRgb,
-                Encoding::Mjpeg { .. } => AviCodec::MotionJpeg,
-            },
-        )
-        .map_err(GenerationError::AviEncodingFailed)?,
-    };
+    let mut media_bytes = build_container(spec, &encoded_frames)?;
 
     // Apply defect if present
     if let Some(defect) = spec.defect() {
@@ -322,7 +342,55 @@ pub fn render(spec: &VideoSpec) -> Result<GeneratedEntry, GenerationError> {
             .map_err(GenerationError::DefectApplicationFailed)?;
     }
 
-    Ok(GeneratedEntry::new(manifest_json, media_bytes))
+    Ok(GeneratedEntry::new(manifest_json, MediaBytes(media_bytes)))
+}
+
+/// Builds the media container around the encoded frames.
+fn build_container(
+    spec: &VideoSpec,
+    encoded_frames: &EncodedFrames,
+) -> Result<ContainerFile, GenerationError> {
+    let scene = spec.scene();
+    Ok(match spec.container() {
+        Container::Iso { rotation } => {
+            let dims = scene.dimensions;
+            let track_matrix = build_track_matrix_from_rotation(rotation, dims)?;
+            encode_iso(
+                synthvid_encode::FrameRates {
+                    playback: scene.frame_rate,
+                    capture: None,
+                },
+                &encoded_frames.0,
+                synthvid_encode::TrackParams {
+                    width: dims.width,
+                    height: dims.height,
+                    codec: match spec.encoding() {
+                        Encoding::Raw => IsoCodec::UncompressedRgb,
+                        Encoding::Mjpeg {
+                            quality: _quality,
+                            chroma: _chroma,
+                        } => IsoCodec::MotionJpeg,
+                    },
+                    track_matrix,
+                },
+            )
+            .map_err(GenerationError::IsoEncodingFailed)?
+        }
+        Container::Avi => encode_avi(
+            scene.frame_rate,
+            &encoded_frames.0,
+            scene.dimensions.width,
+            scene.dimensions.height,
+            match spec.encoding() {
+                Encoding::Raw => AviCodec::UncompressedRgb,
+                Encoding::Mjpeg {
+                    quality: _quality,
+                    chroma: _chroma,
+                } => AviCodec::MotionJpeg,
+            },
+        )
+        .map_err(GenerationError::AviEncodingFailed)?,
+    })
 }
 
 /// Computes a camera affine transform for a frame.
@@ -333,62 +401,67 @@ fn compute_camera_affine(
     use synthvid_scene::{position_at, rotation_at, zoom_at};
 
     let centre = position_at(&camera.motion, frame)
-        .map_err(|_| GenerationError::CameraMath(CameraStep::Centre))?;
+        .map_err(|Overflow| GenerationError::CameraMath(CameraStep::Centre))?;
     let angle = rotation_at(&camera.rotation, frame)
-        .map_err(|_| GenerationError::CameraMath(CameraStep::Rotation))?;
-    let magnification =
-        zoom_at(&camera.zoom, frame).map_err(|_| GenerationError::CameraMath(CameraStep::Zoom))?;
+        .map_err(|Overflow| GenerationError::CameraMath(CameraStep::Rotation))?;
+    let magnification = zoom_at(&camera.zoom, frame)
+        .map_err(|Overflow| GenerationError::CameraMath(CameraStep::Zoom))?;
 
     let zoom = magnification.get();
     let angle_value = angle.get();
     let turn = angle_value
         .checked_neg()
-        .map_err(|_| GenerationError::CameraMath(CameraStep::NegateAngle))?;
+        .map_err(|Overflow| GenerationError::CameraMath(CameraStep::NegateAngle))?;
     let cos = synthvid_scene::cos_turns(turn)
-        .map_err(|_| GenerationError::CameraMath(CameraStep::Cosine))?;
+        .map_err(|Overflow| GenerationError::CameraMath(CameraStep::Cosine))?;
     let sin = synthvid_scene::sin_turns(turn)
-        .map_err(|_| GenerationError::CameraMath(CameraStep::Sine))?;
+        .map_err(|Overflow| GenerationError::CameraMath(CameraStep::Sine))?;
     let neg_sin = sin
         .checked_neg()
-        .map_err(|_| GenerationError::CameraMath(CameraStep::LinearTerms))?;
+        .map_err(|Overflow| GenerationError::CameraMath(CameraStep::LinearTerms))?;
 
-    let a = zoom
+    let scale_cos = zoom
         .checked_mul(cos)
-        .map_err(|_| GenerationError::CameraMath(CameraStep::LinearTerms))?;
-    let b = zoom
+        .map_err(|Overflow| GenerationError::CameraMath(CameraStep::LinearTerms))?;
+    let scale_neg_sin = zoom
         .checked_mul(neg_sin)
-        .map_err(|_| GenerationError::CameraMath(CameraStep::LinearTerms))?;
-    let c = zoom
+        .map_err(|Overflow| GenerationError::CameraMath(CameraStep::LinearTerms))?;
+    let scale_sin = zoom
         .checked_mul(sin)
-        .map_err(|_| GenerationError::CameraMath(CameraStep::LinearTerms))?;
+        .map_err(|Overflow| GenerationError::CameraMath(CameraStep::LinearTerms))?;
 
-    let ax = a
-        .checked_mul(centre.x)
-        .map_err(|_| GenerationError::CameraMath(CameraStep::TranslationX))?;
-    let bx = b
-        .checked_mul(centre.y)
-        .map_err(|_| GenerationError::CameraMath(CameraStep::TranslationX))?;
+    let ax = scale_cos
+        .checked_mul(centre.across)
+        .map_err(|Overflow| GenerationError::CameraMath(CameraStep::TranslationX))?;
+    let bx = scale_neg_sin
+        .checked_mul(centre.down)
+        .map_err(|Overflow| GenerationError::CameraMath(CameraStep::TranslationX))?;
     let sum_x = ax
         .checked_add(bx)
-        .map_err(|_| GenerationError::CameraMath(CameraStep::TranslationX))?;
+        .map_err(|Overflow| GenerationError::CameraMath(CameraStep::TranslationX))?;
     let tx = sum_x
         .checked_neg()
-        .map_err(|_| GenerationError::CameraMath(CameraStep::TranslationX))?;
+        .map_err(|Overflow| GenerationError::CameraMath(CameraStep::TranslationX))?;
 
-    let cx = c
-        .checked_mul(centre.x)
-        .map_err(|_| GenerationError::CameraMath(CameraStep::TranslationY))?;
-    let dx = a
-        .checked_mul(centre.y)
-        .map_err(|_| GenerationError::CameraMath(CameraStep::TranslationY))?;
+    let cx = scale_sin
+        .checked_mul(centre.across)
+        .map_err(|Overflow| GenerationError::CameraMath(CameraStep::TranslationY))?;
+    let dx = scale_cos
+        .checked_mul(centre.down)
+        .map_err(|Overflow| GenerationError::CameraMath(CameraStep::TranslationY))?;
     let sum_y = cx
         .checked_add(dx)
-        .map_err(|_| GenerationError::CameraMath(CameraStep::TranslationY))?;
+        .map_err(|Overflow| GenerationError::CameraMath(CameraStep::TranslationY))?;
     let ty = sum_y
         .checked_neg()
-        .map_err(|_| GenerationError::CameraMath(CameraStep::TranslationY))?;
+        .map_err(|Overflow| GenerationError::CameraMath(CameraStep::TranslationY))?;
 
-    Ok(synthvid_scene::Similarity::new(a, b, tx, ty))
+    Ok(synthvid_scene::Similarity {
+        xx: scale_cos,
+        xy: scale_neg_sin,
+        tx,
+        ty,
+    })
 }
 
 /// Builds the track matrix from a display rotation and dimensions.
@@ -396,8 +469,6 @@ fn build_track_matrix_from_rotation(
     rotation: DisplayRotation,
     dimensions: Dimensions,
 ) -> Result<TrackMatrix, GenerationError> {
-    use DisplayRotation;
-
     match rotation {
         DisplayRotation::Identity => Ok(TrackMatrix::identity()),
         DisplayRotation::Rot90 => {
@@ -411,3 +482,6 @@ fn build_track_matrix_from_rotation(
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

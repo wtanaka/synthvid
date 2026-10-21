@@ -1,6 +1,8 @@
 //! JPEG marker writing functions.
 
+use crate::byte_views::ByteSink;
 use crate::config::{ChromaSampling, Quality};
+
 use crate::huffman::{
     get_ac_chroma_bits, get_ac_chroma_values, get_ac_luma_bits, get_ac_luma_values,
     get_dc_chroma_bits, get_dc_chroma_values, get_dc_luma_bits, get_dc_luma_values,
@@ -18,31 +20,25 @@ use synthvid_scene::{Frame, Height, Width};
 /// `ALL`.
 const _: [(); 3] = [(); JpegComponent::ALL.len()];
 
-/// APP0 segment length calculations.
-/// The length field includes the 2-byte length field itself, but excludes the 2-byte marker code.
-/// Length of the APP0 identifier field ("JFIF\0").
-const APP0_IDENTIFIER_LEN: u16 = 5;
-/// Length of the APP0 version field.
-const APP0_VERSION_LEN: u16 = 2;
-/// Length of the APP0 aspect ratio units field.
-const APP0_UNITS_LEN: u16 = 1;
-/// Length of the APP0 X density field.
-const APP0_DENSITY_X_LEN: u16 = 2;
-/// Length of the APP0 Y density field.
-const APP0_DENSITY_Y_LEN: u16 = 2;
-/// Length of the APP0 thumbnail dimensions field.
-const APP0_THUMBNAIL_DIMS_LEN: u16 = 2;
-/// Total APP0 segment length including the 2-byte length field itself.
-const APP0_SEGMENT_LEN: u16 = 2 // the length field itself
-    + APP0_IDENTIFIER_LEN
-    + APP0_VERSION_LEN
-    + APP0_UNITS_LEN
-    + APP0_DENSITY_X_LEN
-    + APP0_DENSITY_Y_LEN
-    + APP0_THUMBNAIL_DIMS_LEN;
+/// Total APP0 segment length. The length field includes the 2-byte length
+/// field itself, but excludes the 2-byte marker code:
+///
+/// | Field                               | Bytes |
+/// | ----------------------------------- | ----- |
+/// | the length field itself             | 2     |
+/// | identifier (`"JFIF\0"`)             | 5     |
+/// | version                             | 2     |
+/// | aspect ratio units                  | 1     |
+/// | X density                           | 2     |
+/// | Y density                           | 2     |
+/// | thumbnail dimensions                | 2     |
+///
+/// `2 + 5 + 2 + 1 + 2 + 2 + 2 = 16`.
+const APP0_SEGMENT_LEN: u16 = 16;
 
 /// Writes the APP0 JFIF marker.
-pub(super) fn write_app0(output: &mut Vec<u8>) {
+pub(super) fn write_app0(sink: ByteSink<'_>) {
+    let ByteSink(output) = sink;
     output.extend_from_slice(&[0xFF, 0xE0]);
     // Length
     output.extend_from_slice(&APP0_SEGMENT_LEN.to_be_bytes());
@@ -60,53 +56,44 @@ pub(super) fn write_app0(output: &mut Vec<u8>) {
     output.extend_from_slice(&[0x00, 0x00]);
 }
 
-/// DQT segment length calculations (length field includes the 2-byte length field itself).
-/// Length of the DQT class and destination field.
-const DQT_CLASS_DEST_LEN: u16 = 1;
-/// Length of a single DQT quantization table.
-const DQT_QUANT_TABLE_LEN: u16 = 64;
-/// Total DQT segment length including the 2-byte length field itself.
-const DQT_SEGMENT_LEN: u16 = 2 // the length field itself
-    + DQT_CLASS_DEST_LEN
-    + DQT_QUANT_TABLE_LEN;
+/// Total DQT segment length, including the 2-byte length field itself:
+/// the length field (2), the table class and destination (1), and one
+/// 64-entry quantization table (64). `2 + 1 + 64 = 67`.
+const DQT_SEGMENT_LEN: u16 = 67;
 
 /// Writes the DQT (Define Quantization Table) markers.
-pub(super) fn write_dqt(output: &mut Vec<u8>, quality: Quality) {
+pub(super) fn write_dqt(sink: ByteSink<'_>, quality: Quality) {
+    let ByteSink(output) = sink;
     // Luminance table
     output.extend_from_slice(&[0xFF, 0xDB]);
     output.extend_from_slice(&DQT_SEGMENT_LEN.to_be_bytes());
-    JpegComponent::Y.write_dqt_entry(output); // Table class and destination (8-bit, table 0)
+    JpegComponent::Luma.write_dqt_entry(ByteSink(&mut *output)); // Table class and destination (8-bit, table 0)
 
-    let luma_table = quant::scale_table(quality, JpegComponent::Y.huffman_class());
+    let luma_table = quant::scale_table(quality, JpegComponent::Luma.huffman_class());
     output.extend_from_slice(luma_table.as_zigzag_bytes().as_marker_bytes());
 
     // Chrominance table
     output.extend_from_slice(&[0xFF, 0xDB]);
     output.extend_from_slice(&DQT_SEGMENT_LEN.to_be_bytes());
-    JpegComponent::Cb.write_dqt_entry(output); // Table class and destination (8-bit, table 1)
+    JpegComponent::Cb.write_dqt_entry(ByteSink(&mut *output)); // Table class and destination (8-bit, table 1)
 
     let chroma_table = quant::scale_table(quality, JpegComponent::Cb.huffman_class());
     output.extend_from_slice(chroma_table.as_zigzag_bytes().as_marker_bytes());
 }
 
-/// SOF0 segment length calculations (length field includes the 2-byte length field itself).
-/// Length of the SOF0 precision field.
-const SOF0_PRECISION_LEN: u16 = 1;
-/// Length of the SOF0 image height field.
-const SOF0_HEIGHT_LEN: u16 = 2;
-/// Length of the SOF0 image width field.
-const SOF0_WIDTH_LEN: u16 = 2;
-/// Length of the SOF0 number of components field.
-const SOF0_COMPONENTS_LEN: u16 = 1;
-/// Length of all SOF0 component info fields (3 components, 3 bytes each).
-const SOF0_COMPONENT_INFO_LEN: u16 = 3 * 3;
-/// Total SOF0 segment length including the 2-byte length field itself.
-const SOF0_SEGMENT_LEN: u16 = 2 // the length field itself
-    + SOF0_PRECISION_LEN
-    + SOF0_HEIGHT_LEN
-    + SOF0_WIDTH_LEN
-    + SOF0_COMPONENTS_LEN
-    + SOF0_COMPONENT_INFO_LEN;
+/// Total SOF0 segment length, including the 2-byte length field itself:
+///
+/// | Field                                         | Bytes     |
+/// | --------------------------------------------- | --------- |
+/// | the length field itself                       | 2         |
+/// | precision                                     | 1         |
+/// | image height                                  | 2         |
+/// | image width                                   | 2         |
+/// | number of components                          | 1         |
+/// | component info (3 components, 3 bytes each)   | 3 * 3 = 9 |
+///
+/// `2 + 1 + 2 + 2 + 1 + 9 = 17`.
+const SOF0_SEGMENT_LEN: u16 = 17;
 
 /// The SOF0 marker's 4-byte height-then-width field, in that wire order.
 ///
@@ -119,10 +106,11 @@ const SOF0_SEGMENT_LEN: u16 = 2 // the length field itself
 /// `.get().get()` on each first, which discards that distinction and
 /// leaves nothing but variable names (`h`/`w`) to tell them apart when
 /// building the output array.
-const fn sof0_dimension_bytes(height: Height, width: Width) -> [u8; 4] {
+fn write_sof0_dimensions(sink: ByteSink<'_>, height: Height, width: Width) {
+    let ByteSink(output) = sink;
     let [h_hi, h_lo] = height.get().get().to_be_bytes();
     let [w_hi, w_lo] = width.get().get().to_be_bytes();
-    [h_hi, h_lo, w_hi, w_lo]
+    output.extend_from_slice(&[h_hi, h_lo, w_hi, w_lo]);
 }
 
 /// Writes the SOF0 (Start of Frame) marker.
@@ -134,87 +122,58 @@ const fn sof0_dimension_bytes(height: Height, width: Width) -> [u8; 4] {
 /// rather than from a `width`/`height` pair `encode_jpeg` would otherwise
 /// compute once and pass to both, means the header and the scan cannot end
 /// up with two different ideas of the frame's size.
-pub(super) fn write_sof0(output: &mut Vec<u8>, frame: &Frame, chroma_sampling: ChromaSampling) {
+pub(super) fn write_sof0(sink: ByteSink<'_>, frame: &Frame, chroma_sampling: ChromaSampling) {
+    let ByteSink(output) = sink;
     output.extend_from_slice(&[0xFF, 0xC0]);
     // Length: 2 (length) + 1 (precision) + 2 (height) + 2 (width) + 1 (components) + 3*3 (component info)
     output.extend_from_slice(&SOF0_SEGMENT_LEN.to_be_bytes());
     output.push(0x08); // 8-bit precision
 
     // Height and width (big-endian), in that wire order.
-    output.extend_from_slice(&sof0_dimension_bytes(frame.height(), frame.width()));
+    write_sof0_dimensions(ByteSink(&mut *output), frame.height(), frame.width());
 
     // Number of components
     output.push(0x03); // Y, Cb, Cr -- see JpegComponent::ALL
 
     for component in JpegComponent::ALL {
-        component.write_sof_component(output, chroma_sampling);
+        component.write_sof_component(ByteSink(&mut *output), chroma_sampling);
     }
 }
 
-/// Narrows a Huffman values table's length to `u16`. Total in practice:
-/// this crate's four value tables (`get_{dc,ac}_{luma,chroma}_values`) are
-/// fixed-size arrays of at most 162 entries, far below `u16::MAX`.
-fn narrow_table_len(len: usize) -> u16 {
-    match u16::try_from(len) {
-        Ok(n) => n,
-        // Unreachable: see this function's doc comment.
-        Err(_) if len == 0 => 0,
-        Err(_) => u16::MAX,
-    }
-}
+/// Total length of the DC DHT segment: the 2-byte length field, then for
+/// each of the two DC tables (luma, then chroma) one class-and-destination
+/// byte, one 16-entry bits array, and its 12-entry values array.
+/// `2 + (1 + 16 + 12) + (1 + 16 + 12) = 60`. The tests below pin both
+/// values tables at 12 entries.
+const DC_DHT_SEGMENT_LEN: u16 = 60;
 
-/// Computes a DHT segment's total length: the 2-byte length field, one
-/// class-and-destination byte, one 16-entry bits array, and one values
-/// array, twice over (once for luma, once for chroma). Total: the widest
-/// case (`luma_len`/`chroma_len` both 162, the AC tables' size) is
-/// `2 + 1 + 16 + 162 + 1 + 16 + 162 = 360`, far below `u16::MAX`.
-fn dht_segment_len(table_lens: [u16; 2]) -> u16 {
-    /// The class-and-destination byte plus the 16-entry bits array, summed
-    /// once as a `const` item: entirely compile-time arithmetic between two
-    /// fixed literals, not a runtime operation that could overflow.
-    const PER_TABLE_OVERHEAD: u16 = DHT_CLASS_DEST_LEN + DHT_BITS_LEN;
-
-    let mut total = 2_u16;
-    for table_len in table_lens {
-        let table_total = match PER_TABLE_OVERHEAD.checked_add(table_len) {
-            Some(v) => v,
-            None if table_len == 0 => PER_TABLE_OVERHEAD,
-            None => u16::MAX,
-        };
-        total = match total.checked_add(table_total) {
-            Some(v) => v,
-            None if table_total == 0 => total,
-            None => u16::MAX,
-        };
-    }
-    total
-}
+/// Total length of the AC DHT segment, laid out as [`DC_DHT_SEGMENT_LEN`]
+/// is but with the two 162-entry AC values tables.
+/// `2 + (1 + 16 + 162) + (1 + 16 + 162) = 360`. The tests below pin both
+/// values tables at 162 entries.
+const AC_DHT_SEGMENT_LEN: u16 = 360;
 
 /// Writes the DHT (Define Huffman Table) markers.
-pub(super) fn write_dht(output: &mut Vec<u8>) {
+pub(super) fn write_dht(sink: ByteSink<'_>) {
+    let ByteSink(output) = sink;
     // DC tables (both luma and chroma in one DHT segment)
     let dc_bits_luma = get_dc_luma_bits();
     let dc_values_luma = get_dc_luma_values();
     let dc_bits_chroma = get_dc_chroma_bits();
     let dc_values_chroma = get_dc_chroma_values();
 
-    // Calculate lengths for DC table segment
-    let dc_luma_len = narrow_table_len(dc_values_luma.len());
-    let dc_chroma_len = narrow_table_len(dc_values_chroma.len());
-    let dc_segment_len: u16 = dht_segment_len([dc_luma_len, dc_chroma_len]);
-
     output.extend_from_slice(&[0xFF, 0xC4]); // DHT marker
-    output.extend_from_slice(&dc_segment_len.to_be_bytes());
+    output.extend_from_slice(&DC_DHT_SEGMENT_LEN.to_be_bytes());
 
     // DC luma table (class 0, destination 0)
-    JpegComponent::Y.write_dht_dc_entry(output);
-    output.extend_from_slice(dc_bits_luma);
-    output.extend_from_slice(dc_values_luma);
+    JpegComponent::Luma.write_dht_dc_entry(ByteSink(&mut *output));
+    output.extend_from_slice(&dc_bits_luma.0);
+    output.extend_from_slice(dc_values_luma.0);
 
     // DC chroma table (class 0, destination 1)
-    JpegComponent::Cb.write_dht_dc_entry(output);
-    output.extend_from_slice(dc_bits_chroma);
-    output.extend_from_slice(dc_values_chroma);
+    JpegComponent::Cb.write_dht_dc_entry(ByteSink(&mut *output));
+    output.extend_from_slice(&dc_bits_chroma.0);
+    output.extend_from_slice(dc_values_chroma.0);
 
     // AC tables
     let ac_bits_luma = get_ac_luma_bits();
@@ -222,53 +181,45 @@ pub(super) fn write_dht(output: &mut Vec<u8>) {
     let ac_bits_chroma = get_ac_chroma_bits();
     let ac_values_chroma = get_ac_chroma_values();
 
-    // Calculate lengths for AC table segment
-    let ac_luma_len = narrow_table_len(ac_values_luma.len());
-    let ac_chroma_len = narrow_table_len(ac_values_chroma.len());
-    let ac_segment_len: u16 = dht_segment_len([ac_luma_len, ac_chroma_len]);
-
     output.extend_from_slice(&[0xFF, 0xC4]); // DHT marker
-    output.extend_from_slice(&ac_segment_len.to_be_bytes());
+    output.extend_from_slice(&AC_DHT_SEGMENT_LEN.to_be_bytes());
 
     // AC luma table (class 1, destination 0)
-    JpegComponent::Y.write_dht_ac_entry(output);
-    output.extend_from_slice(ac_bits_luma);
-    output.extend_from_slice(ac_values_luma);
+    JpegComponent::Luma.write_dht_ac_entry(ByteSink(&mut *output));
+    output.extend_from_slice(&ac_bits_luma.0);
+    output.extend_from_slice(ac_values_luma.0);
 
     // AC chroma table (class 1, destination 1)
-    JpegComponent::Cb.write_dht_ac_entry(output);
-    output.extend_from_slice(ac_bits_chroma);
-    output.extend_from_slice(ac_values_chroma);
+    JpegComponent::Cb.write_dht_ac_entry(ByteSink(&mut *output));
+    output.extend_from_slice(&ac_bits_chroma.0);
+    output.extend_from_slice(ac_values_chroma.0);
 }
 
-/// SOS segment length calculations (length field includes the 2-byte length field itself).
-/// Length of the SOS number of components field.
-const SOS_COMPONENTS_COUNT_LEN: u16 = 1;
-/// Length of all SOS component info fields (3 components, 2 bytes each).
-const SOS_COMPONENT_INFO_LEN: u16 = 3 * 2;
-/// Length of the SOS spectral selection fields.
-const SOS_SPECTRAL_SELECTION_LEN: u16 = 3;
-/// Total SOS segment length including the 2-byte length field itself.
-const SOS_SEGMENT_LEN: u16 = 2 // the length field itself
-    + SOS_COMPONENTS_COUNT_LEN
-    + SOS_COMPONENT_INFO_LEN
-    + SOS_SPECTRAL_SELECTION_LEN;
+/// Total SOS segment length, including the 2-byte length field itself:
+///
+/// | Field                                         | Bytes     |
+/// | --------------------------------------------- | --------- |
+/// | the length field itself                       | 2         |
+/// | number of components                          | 1         |
+/// | component info (3 components, 2 bytes each)   | 3 * 2 = 6 |
+/// | spectral selection                            | 3         |
+///
+/// `2 + 1 + 6 + 3 = 12`.
+const SOS_SEGMENT_LEN: u16 = 12;
 
 /// Writes the SOS (Start of Scan) marker.
-pub(super) fn write_sos(output: &mut Vec<u8>) {
+pub(super) fn write_sos(sink: ByteSink<'_>) {
+    let ByteSink(output) = sink;
     output.extend_from_slice(&[0xFF, 0xDA]);
     output.extend_from_slice(&SOS_SEGMENT_LEN.to_be_bytes());
     output.push(0x03); // Number of components -- see JpegComponent::ALL
 
     for component in JpegComponent::ALL {
-        component.write_sos_component(output);
+        component.write_sos_component(ByteSink(&mut *output));
     }
 
     output.extend_from_slice(&[0x00, 0x3F, 0x00]); // Start/end of spectral selection
 }
 
-/// DHT segment length calculations (length field includes the 2-byte length field itself).
-/// Length of a DHT table's class-and-destination byte.
-const DHT_CLASS_DEST_LEN: u16 = 1;
-/// Length of a DHT table's 16-entry code-length-count array.
-const DHT_BITS_LEN: u16 = 16;
+#[cfg(test)]
+mod tests;

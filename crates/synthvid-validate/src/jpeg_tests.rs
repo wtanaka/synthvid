@@ -7,88 +7,93 @@
 //! Like the JSON oracle tests in [`crate::tests`], these skip gracefully
 //! (rather than fail) when their external tool is not available.
 
-use std::io::Write;
+use core::fmt;
+use core::num::NonZeroU32;
+use std::io::Write as _;
 use std::process::{Command, Stdio};
-use synthvid_encode::{encode_jpeg, ChromaSampling, Quality};
-use synthvid_scene::{Dimensions, Frame, Height, Rgb8, Width};
+use synthvid_encode::{encode_jpeg, ChromaSampling, EncodedFrame, Quality};
+use synthvid_scene::{Channel, Dimensions, Frame, Height, PixelBuffer, Rgb8, Width};
+use synthvid_testkit::{ensure, ensure_eq, Fail, OrFail as _};
 
-use crate::support::is_command_available;
+use crate::support::{availability, Availability, OracleFailure, Program};
+
+/// The bytes of an encoded JPEG.
+struct Jpeg(EncodedFrame);
+
+/// Raw RGB pixel bytes a decoder returned.
+#[derive(Debug)]
+struct DecodedPixels(Vec<u8>);
+
+/// The mean absolute per-byte difference between two images.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct MeanAbsoluteError(u32);
+
+impl fmt::Display for MeanAbsoluteError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
 
 /// Builds a checkerboard-pattern frame: 4x4-pixel black/white blocks.
-fn make_checkerboard_frame(width: u16, height: u16) -> Frame {
-    let dims = frame_dims(width, height);
-    let mut data = Vec::with_capacity(
-        usize::from(width)
-            .saturating_mul(usize::from(height))
-            .saturating_mul(3),
-    );
-    for y in 0..u32::from(height) {
-        for x in 0..u32::from(width) {
-            let block_sum = x.saturating_div(4).saturating_add(y.saturating_div(4));
+fn make_checkerboard_frame(width: Width, height: Height) -> Result<Frame, Fail> {
+    let columns = NonZeroU32::from(width.get()).get();
+    let rows = NonZeroU32::from(height.get()).get();
+    let mut data = Vec::new();
+    for row in 0..rows {
+        for column in 0..columns {
+            let block_sum = column
+                .checked_div(4)
+                .or_fail()?
+                .checked_add(row.checked_div(4).or_fail()?)
+                .or_fail()?;
             let value = if block_sum.is_multiple_of(2) {
                 255_u8
             } else {
                 0_u8
             };
-            data.push(value);
-            data.push(value);
-            data.push(value);
+            data.extend([value; 3]);
         }
     }
-    Frame::new(dims, data).expect("buffer matches dimensions")
+    Frame::new(Dimensions::new(width, height), PixelBuffer(data)).or_fail()
 }
 
 /// Builds a diagonal gradient frame: red varies with `x`, green with `y`,
 /// blue with `width - 1 - x` -- a non-uniform pattern, since a solid color
 /// would hide many of the bugs this codebase has actually hit (see this
 /// crate's own encoder module docs on preferring an awkward concrete input
-/// over a convenient one).
-fn make_gradient_frame(width: u16, height: u16) -> Frame {
-    let dims = frame_dims(width, height);
-    let mut data = Vec::with_capacity(
-        usize::from(width)
-            .saturating_mul(usize::from(height))
-            .saturating_mul(3),
-    );
-    for y in 0..u32::from(height) {
-        for x in 0..u32::from(width) {
-            let r = u8::try_from(x.saturating_mul(8)).unwrap_or(u8::MAX);
-            let g = u8::try_from(y.saturating_mul(8)).unwrap_or(u8::MAX);
-            let b = u8::try_from(
-                u32::from(width)
-                    .saturating_sub(1)
-                    .saturating_sub(x)
-                    .saturating_mul(8),
-            )
-            .unwrap_or(u8::MAX);
-            data.push(r);
-            data.push(g);
-            data.push(b);
+/// over a convenient one). Each channel is eight times its coordinate,
+/// clamped to 255.
+fn make_gradient_frame(width: Width, height: Height) -> Result<Frame, Fail> {
+    let columns = NonZeroU32::from(width.get()).get();
+    let rows = NonZeroU32::from(height.get()).get();
+    let top = u32::from(u8::MAX);
+    let mut data = Vec::new();
+    for row in 0..rows {
+        for column in 0..columns {
+            let red = u8::try_from(column.checked_mul(8).or_fail()?.min(top)).or_fail()?;
+            let green = u8::try_from(row.checked_mul(8).or_fail()?.min(top)).or_fail()?;
+            let mirrored = columns
+                .checked_sub(1)
+                .or_fail()?
+                .checked_sub(column)
+                .or_fail()?;
+            let blue = u8::try_from(mirrored.checked_mul(8).or_fail()?.min(top)).or_fail()?;
+            data.extend([red, green, blue]);
         }
     }
-    Frame::new(dims, data).expect("buffer matches dimensions")
+    Frame::new(Dimensions::new(width, height), PixelBuffer(data)).or_fail()
 }
 
-/// Builds a solid-color frame.
-fn make_solid_frame(width: u16, height: u16, color: Rgb8) -> Frame {
-    Frame::from_color(frame_dims(width, height), color).expect("creating frame should succeed")
-}
-
-fn frame_dims(width: u16, height: u16) -> Dimensions {
-    let w = Width::new(width).expect("test width is nonzero");
-    let h = Height::new(height).expect("test height is nonzero");
-    Dimensions::new(w, h)
-}
-
-/// Tries to decode `jpeg_bytes` with `djpeg`, an independently implemented
+/// Tries to decode `jpeg` with `djpeg`, an independently implemented
 /// JPEG decoder (from libjpeg-turbo/mozjpeg), feeding the bytes over
 /// stdin and writing decoded output to `/dev/null`.
 ///
 /// Returns `Ok(Some(()))` if `djpeg` was used and decoding succeeded,
-/// `Ok(None)` if `djpeg` is not available, `Err(msg)` if decoding failed.
-fn decode_jpeg_with_djpeg(jpeg_bytes: &[u8]) -> Result<Option<()>, String> {
-    if !is_command_available("djpeg") {
-        return Ok(None);
+/// `Ok(None)` if `djpeg` is not available, `Err(failure)` if decoding failed.
+fn decode_jpeg_with_djpeg(jpeg: &Jpeg) -> Result<Option<()>, OracleFailure> {
+    match availability(Program("djpeg")) {
+        Availability::Installed => {}
+        Availability::Missing => return Ok(None),
     }
 
     let mut child = Command::new("djpeg")
@@ -98,36 +103,37 @@ fn decode_jpeg_with_djpeg(jpeg_bytes: &[u8]) -> Result<Option<()>, String> {
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| format!("failed to spawn djpeg: {e}"))?;
+        .map_err(|error| OracleFailure(format!("failed to spawn djpeg: {error}")))?;
 
     if let Some(mut stdin) = child.stdin.take() {
         stdin
-            .write_all(jpeg_bytes)
-            .map_err(|e| format!("failed to write to djpeg stdin: {e}"))?;
+            .write_all(jpeg.0.as_bytes())
+            .map_err(|error| OracleFailure(format!("failed to write to djpeg stdin: {error}")))?;
     }
 
     let output = child
         .wait_with_output()
-        .map_err(|e| format!("failed to wait for djpeg: {e}"))?;
+        .map_err(|error| OracleFailure(format!("failed to wait for djpeg: {error}")))?;
 
     if output.status.success() {
         Ok(Some(()))
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        Err(format!("djpeg decoding failed: {stderr}"))
+        Err(OracleFailure(format!("djpeg decoding failed: {stderr}")))
     }
 }
 
-/// Tries to decode `jpeg_bytes` with Python's PIL/Pillow, an independently
+/// Tries to decode `jpeg` with Python's PIL/Pillow, an independently
 /// implemented JPEG decoder, feeding the bytes over stdin and reading raw
 /// RGB pixel bytes back from stdout.
 ///
 /// Returns `Ok(Some(pixels))` if PIL was used and decoding succeeded,
-/// `Ok(None)` if python3/PIL is not available, `Err(msg)` if decoding
+/// `Ok(None)` if python3/PIL is not available, `Err(failure)` if decoding
 /// failed.
-fn decode_jpeg_with_pil(jpeg_bytes: &[u8]) -> Result<Option<Vec<u8>>, String> {
-    if !is_command_available("python3") {
-        return Ok(None);
+fn decode_jpeg_with_pil(jpeg: &Jpeg) -> Result<Option<DecodedPixels>, OracleFailure> {
+    match availability(Program("python3")) {
+        Availability::Installed => {}
+        Availability::Missing => return Ok(None),
     }
 
     // Every statement here is a simple statement: a `for` loop cannot
@@ -146,72 +152,106 @@ fn decode_jpeg_with_pil(jpeg_bytes: &[u8]) -> Result<Option<Vec<u8>>, String> {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| format!("failed to spawn python3: {e}"))?;
+        .map_err(|error| OracleFailure(format!("failed to spawn python3: {error}")))?;
 
     if let Some(mut stdin) = child.stdin.take() {
         stdin
-            .write_all(jpeg_bytes)
-            .map_err(|e| format!("failed to write to python3 stdin: {e}"))?;
+            .write_all(jpeg.0.as_bytes())
+            .map_err(|error| OracleFailure(format!("failed to write to python3 stdin: {error}")))?;
     }
 
     let output = child
         .wait_with_output()
-        .map_err(|e| format!("failed to wait for python3: {e}"))?;
+        .map_err(|error| OracleFailure(format!("failed to wait for python3: {error}")))?;
 
     if output.status.success() {
-        Ok(Some(output.stdout))
+        Ok(Some(DecodedPixels(output.stdout)))
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        Err(format!("PIL decoding failed: {stderr}"))
+        Err(OracleFailure(format!("PIL decoding failed: {stderr}")))
     }
 }
 
-/// The mean absolute per-byte difference between `decoded` and `expected`,
-/// pixel data of identical length assumed.
-fn mean_absolute_error(decoded: &[u8], expected: &[u8]) -> u32 {
+/// The mean absolute per-byte difference between `decoded` and the pixel
+/// data of `frame`, pixel data of identical length assumed. Comparing no
+/// bytes at all is no difference.
+fn mean_absolute_error(decoded: &DecodedPixels, frame: &Frame) -> Result<MeanAbsoluteError, Fail> {
     let mut error_sum: u32 = 0;
     let mut count: u32 = 0;
-    for (&d, &e) in decoded.iter().zip(expected.iter()) {
-        error_sum = error_sum.saturating_add(i32::from(d).abs_diff(i32::from(e)));
-        count = count.saturating_add(1);
+    for (&decoded_byte, &expected_byte) in decoded.0.iter().zip(&frame.data().0) {
+        error_sum = error_sum
+            .checked_add(u32::from(decoded_byte.abs_diff(expected_byte)))
+            .or_fail()?;
+        count = count.checked_add(1).or_fail()?;
     }
-    error_sum.checked_div(count).unwrap_or(0)
+    if count == 0 {
+        return Ok(MeanAbsoluteError(0));
+    }
+    error_sum
+        .checked_div(count)
+        .map(MeanAbsoluteError)
+        .or_fail()
+}
+
+/// Decodes `jpeg` with PIL. `Ok(None)` means python3/PIL is not installed,
+/// which is a skip; a rejection is a failure.
+fn decoded_by_pil(jpeg: &Jpeg) -> Result<Option<DecodedPixels>, Fail> {
+    let decoded_result = decode_jpeg_with_pil(jpeg);
+    ensure!(
+        decoded_result.is_ok(),
+        "PIL rejected the encoded JPEG: {decoded_result:?}"
+    );
+    decoded_result.or_fail()
 }
 
 /// A real, independent JPEG decoder accepts a 4:4:4 baseline JPEG this
 /// crate's encoder produces.
 #[test]
-fn test_encoded_jpeg_yuv444_decodes_with_djpeg() {
-    let frame = make_solid_frame(
-        24,
-        24,
-        Rgb8 {
-            r: 100,
-            g: 150,
-            b: 200,
-        },
-    );
-    let quality = Quality::new(90).expect("90 is a valid quality");
-    let jpeg_bytes = encode_jpeg(&frame, quality, ChromaSampling::Yuv444);
+fn encoded_jpeg_yuv444_decodes_with_djpeg() {
+    assert_eq!(check_encoded_jpeg_yuv444_decodes_with_djpeg(), Ok(()));
+}
 
-    match decode_jpeg_with_djpeg(&jpeg_bytes) {
-        Ok(Some(()) | None) => {}
-        Err(e) => panic!("{e}"),
-    }
+fn check_encoded_jpeg_yuv444_decodes_with_djpeg() -> Result<(), Fail> {
+    let frame = Frame::from_color(
+        Dimensions::new(Width::new(24).or_fail()?, Height::new(24).or_fail()?),
+        Rgb8 {
+            red: Channel(100),
+            green: Channel(150),
+            blue: Channel(200),
+        },
+    )
+    .or_fail()?;
+    let quality = Quality::new(90).or_fail()?;
+    let jpeg = Jpeg(encode_jpeg(&frame, quality, ChromaSampling::Yuv444));
+
+    // Ok(None) means djpeg is not installed, which is a skip.
+    let result = decode_jpeg_with_djpeg(&jpeg);
+    ensure!(
+        result.is_ok(),
+        "djpeg rejected the encoded JPEG: {result:?}"
+    );
+    Ok(())
 }
 
 /// A real, independent JPEG decoder accepts a 4:2:0 (chroma-subsampled)
 /// baseline JPEG this crate's encoder produces.
 #[test]
-fn test_encoded_jpeg_yuv420_decodes_with_djpeg() {
-    let frame = make_gradient_frame(32, 32);
-    let quality = Quality::new(85).expect("85 is a valid quality");
-    let jpeg_bytes = encode_jpeg(&frame, quality, ChromaSampling::Yuv420);
+fn encoded_jpeg_yuv420_decodes_with_djpeg() {
+    assert_eq!(check_encoded_jpeg_yuv420_decodes_with_djpeg(), Ok(()));
+}
 
-    match decode_jpeg_with_djpeg(&jpeg_bytes) {
-        Ok(Some(()) | None) => {}
-        Err(e) => panic!("{e}"),
-    }
+fn check_encoded_jpeg_yuv420_decodes_with_djpeg() -> Result<(), Fail> {
+    let frame = make_gradient_frame(Width::new(32).or_fail()?, Height::new(32).or_fail()?)?;
+    let quality = Quality::new(85).or_fail()?;
+    let jpeg = Jpeg(encode_jpeg(&frame, quality, ChromaSampling::Yuv420));
+
+    // Ok(None) means djpeg is not installed, which is a skip.
+    let result = decode_jpeg_with_djpeg(&jpeg);
+    ensure!(
+        result.is_ok(),
+        "djpeg rejected the encoded JPEG: {result:?}"
+    );
+    Ok(())
 }
 
 /// A real, independent JPEG decoder accepts a 4:2:0 JPEG whose frame size
@@ -219,146 +259,152 @@ fn test_encoded_jpeg_yuv420_decodes_with_djpeg() {
 /// edge-padding path (`Plane::extract_block`'s out-of-bounds padding, and
 /// `encode_scan`'s partial trailing MCU row/column).
 #[test]
-fn test_encoded_jpeg_yuv420_non_multiple_of_16_decodes_with_djpeg() {
-    let frame = make_gradient_frame(50, 37);
-    let quality = Quality::new(75).expect("75 is a valid quality");
-    let jpeg_bytes = encode_jpeg(&frame, quality, ChromaSampling::Yuv420);
+fn encoded_jpeg_yuv420_non_multiple_of_16_decodes_with_djpeg() {
+    assert_eq!(
+        check_encoded_jpeg_yuv420_non_multiple_of_16_decodes_with_djpeg(),
+        Ok(())
+    );
+}
 
-    match decode_jpeg_with_djpeg(&jpeg_bytes) {
-        Ok(Some(()) | None) => {}
-        Err(e) => panic!("{e}"),
-    }
+fn check_encoded_jpeg_yuv420_non_multiple_of_16_decodes_with_djpeg() -> Result<(), Fail> {
+    let frame = make_gradient_frame(Width::new(50).or_fail()?, Height::new(37).or_fail()?)?;
+    let quality = Quality::new(75).or_fail()?;
+    let jpeg = Jpeg(encode_jpeg(&frame, quality, ChromaSampling::Yuv420));
+
+    // Ok(None) means djpeg is not installed, which is a skip.
+    let result = decode_jpeg_with_djpeg(&jpeg);
+    ensure!(
+        result.is_ok(),
+        "djpeg rejected the encoded JPEG: {result:?}"
+    );
+    Ok(())
 }
 
 /// A 4:4:4 checkerboard round-trips through a real decoder with a small
 /// mean absolute pixel error, bounding how much a high-quality encode is
 /// allowed to distort a sharp-edged pattern.
 #[test]
-fn test_encoded_jpeg_yuv444_pixel_values_with_pil() {
-    let width = 16;
-    let height = 16;
-    let frame = make_checkerboard_frame(width, height);
-    let quality = Quality::new(95).expect("95 is a valid quality");
-    let jpeg_bytes = encode_jpeg(&frame, quality, ChromaSampling::Yuv444);
+fn encoded_jpeg_yuv444_pixel_values_with_pil() {
+    assert_eq!(check_encoded_jpeg_yuv444_pixel_values_with_pil(), Ok(()));
+}
 
-    let Some(decoded) = (match decode_jpeg_with_pil(&jpeg_bytes) {
-        Ok(decoded) => decoded,
-        Err(e) => panic!("{e}"),
-    }) else {
-        return; // python3/PIL not available, skip.
+fn check_encoded_jpeg_yuv444_pixel_values_with_pil() -> Result<(), Fail> {
+    let frame = make_checkerboard_frame(Width::new(16).or_fail()?, Height::new(16).or_fail()?)?;
+    let quality = Quality::new(95).or_fail()?;
+    let jpeg = Jpeg(encode_jpeg(&frame, quality, ChromaSampling::Yuv444));
+
+    let Some(decoded) = decoded_by_pil(&jpeg)? else {
+        return Ok(());
     };
+    // 16 x 16 pixels, three bytes each.
+    ensure_eq!(decoded.0.len(), 768);
 
-    let expected_len = usize::from(width)
-        .saturating_mul(usize::from(height))
-        .saturating_mul(3);
-    assert_eq!(decoded.len(), expected_len);
-
-    let expected: Vec<u8> = frame.data().to_vec();
-    let mae = mean_absolute_error(&decoded, &expected);
-    assert!(
-        mae < 20,
+    let mae = mean_absolute_error(&decoded, &frame)?;
+    ensure!(
+        mae < MeanAbsoluteError(20),
         "mean absolute error {mae} exceeds threshold for 4:4:4"
     );
+    Ok(())
 }
 
 /// A 4:2:0 solid color round-trips through a real decoder with a small
 /// mean absolute pixel error, allowing slightly more slack than 4:4:4
 /// since chroma subsampling adds its own averaging error.
 #[test]
-fn test_encoded_jpeg_yuv420_pixel_values_with_pil() {
-    let width = 24;
-    let height = 24;
-    let frame = make_solid_frame(
-        width,
-        height,
+fn encoded_jpeg_yuv420_pixel_values_with_pil() {
+    assert_eq!(check_encoded_jpeg_yuv420_pixel_values_with_pil(), Ok(()));
+}
+
+fn check_encoded_jpeg_yuv420_pixel_values_with_pil() -> Result<(), Fail> {
+    let frame = Frame::from_color(
+        Dimensions::new(Width::new(24).or_fail()?, Height::new(24).or_fail()?),
         Rgb8 {
-            r: 128,
-            g: 192,
-            b: 64,
+            red: Channel(128),
+            green: Channel(192),
+            blue: Channel(64),
         },
-    );
-    let quality = Quality::new(90).expect("90 is a valid quality");
-    let jpeg_bytes = encode_jpeg(&frame, quality, ChromaSampling::Yuv420);
+    )
+    .or_fail()?;
+    let quality = Quality::new(90).or_fail()?;
+    let jpeg = Jpeg(encode_jpeg(&frame, quality, ChromaSampling::Yuv420));
 
-    let Some(decoded) = (match decode_jpeg_with_pil(&jpeg_bytes) {
-        Ok(decoded) => decoded,
-        Err(e) => panic!("{e}"),
-    }) else {
-        return; // python3/PIL not available, skip.
+    let Some(decoded) = decoded_by_pil(&jpeg)? else {
+        return Ok(());
     };
+    // 24 x 24 pixels, three bytes each.
+    ensure_eq!(decoded.0.len(), 1728);
 
-    let expected_len = usize::from(width)
-        .saturating_mul(usize::from(height))
-        .saturating_mul(3);
-    assert_eq!(decoded.len(), expected_len);
-
-    let expected: Vec<u8> = frame.data().to_vec();
-    let mae = mean_absolute_error(&decoded, &expected);
-    assert!(
-        mae < 20,
+    let mae = mean_absolute_error(&decoded, &frame)?;
+    ensure!(
+        mae < MeanAbsoluteError(20),
         "mean absolute error {mae} exceeds threshold for 4:2:0"
     );
+    Ok(())
 }
 
 /// A high-quality (100) 4:4:4 gradient nearly round-trips exactly, since
 /// quality 100 disables almost all quantization.
 #[test]
-fn test_encoded_jpeg_high_quality_preserves_gradient_with_pil() {
-    let width = 32;
-    let height = 32;
-    let frame = make_gradient_frame(width, height);
-    let quality = Quality::new(100).expect("100 is a valid quality");
-    let jpeg_bytes = encode_jpeg(&frame, quality, ChromaSampling::Yuv444);
+fn encoded_jpeg_high_quality_preserves_gradient_with_pil() {
+    assert_eq!(
+        check_encoded_jpeg_high_quality_preserves_gradient_with_pil(),
+        Ok(())
+    );
+}
 
-    let Some(decoded) = (match decode_jpeg_with_pil(&jpeg_bytes) {
-        Ok(decoded) => decoded,
-        Err(e) => panic!("{e}"),
-    }) else {
-        return; // python3/PIL not available, skip.
+fn check_encoded_jpeg_high_quality_preserves_gradient_with_pil() -> Result<(), Fail> {
+    let frame = make_gradient_frame(Width::new(32).or_fail()?, Height::new(32).or_fail()?)?;
+    let quality = Quality::new(100).or_fail()?;
+    let jpeg = Jpeg(encode_jpeg(&frame, quality, ChromaSampling::Yuv444));
+
+    let Some(decoded) = decoded_by_pil(&jpeg)? else {
+        return Ok(());
     };
+    // 32 x 32 pixels, three bytes each.
+    ensure_eq!(decoded.0.len(), 3072);
 
-    let expected_len = usize::from(width)
-        .saturating_mul(usize::from(height))
-        .saturating_mul(3);
-    assert_eq!(decoded.len(), expected_len);
-
-    let expected: Vec<u8> = frame.data().to_vec();
-    let mae = mean_absolute_error(&decoded, &expected);
-    assert!(
-        mae < 15,
+    let mae = mean_absolute_error(&decoded, &frame)?;
+    ensure!(
+        mae < MeanAbsoluteError(15),
         "mean absolute error {mae} exceeds threshold for high quality 4:4:4"
     );
+    Ok(())
 }
 
 /// The encoded bytes carry a well-formed SOI marker, an APP0/JFIF marker,
 /// and an EOI marker at the expected positions -- checked directly against
 /// the byte stream, then sanity-checked with PIL if available.
 #[test]
-fn test_encoded_jpeg_has_jfif_markers() {
-    let frame = make_solid_frame(
-        24,
-        24,
+fn encoded_jpeg_has_jfif_markers() {
+    assert_eq!(check_encoded_jpeg_has_jfif_markers(), Ok(()));
+}
+
+fn check_encoded_jpeg_has_jfif_markers() -> Result<(), Fail> {
+    let frame = Frame::from_color(
+        Dimensions::new(Width::new(24).or_fail()?, Height::new(24).or_fail()?),
         Rgb8 {
-            r: 200,
-            g: 100,
-            b: 50,
+            red: Channel(200),
+            green: Channel(100),
+            blue: Channel(50),
         },
-    );
-    let quality = Quality::new(80).expect("80 is a valid quality");
-    let jpeg_bytes = encode_jpeg(&frame, quality, ChromaSampling::Yuv444);
+    )
+    .or_fail()?;
+    let quality = Quality::new(80).or_fail()?;
+    let jpeg = Jpeg(encode_jpeg(&frame, quality, ChromaSampling::Yuv444));
+    let jpeg_bytes = jpeg.0.as_bytes();
 
-    assert_eq!(jpeg_bytes.first().copied(), Some(0xFF));
-    assert_eq!(jpeg_bytes.get(1).copied(), Some(0xD8));
+    ensure_eq!(jpeg_bytes.first().copied(), Some(0xFF));
+    ensure_eq!(jpeg_bytes.get(1).copied(), Some(0xD8));
 
-    let eoi_start = jpeg_bytes.len().saturating_sub(2);
-    assert_eq!(jpeg_bytes.get(eoi_start).copied(), Some(0xFF));
-    assert_eq!(jpeg_bytes.last().copied(), Some(0xD9));
+    let eoi_start = jpeg_bytes.len().checked_sub(2).or_fail()?;
+    ensure_eq!(jpeg_bytes.get(eoi_start).copied(), Some(0xFF));
+    ensure_eq!(jpeg_bytes.last().copied(), Some(0xD9));
 
-    let found_app0 = jpeg_bytes.windows(2).any(|w| w == [0xFF, 0xE0]);
-    assert!(found_app0, "APP0 (JFIF) marker not found");
+    let found_app0 = jpeg_bytes.windows(2).any(|window| window == [0xFF, 0xE0]);
+    ensure!(found_app0, "APP0 (JFIF) marker not found");
 
-    match decode_jpeg_with_pil(&jpeg_bytes) {
-        Ok(Some(_) | None) => {}
-        Err(e) => panic!("{e}"),
-    }
+    // Ok(None) means python3/PIL is not installed, which is a skip.
+    let result = decode_jpeg_with_pil(&jpeg);
+    ensure!(result.is_ok(), "PIL rejected the encoded JPEG: {result:?}");
+    Ok(())
 }

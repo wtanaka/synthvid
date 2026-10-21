@@ -2,6 +2,22 @@
 
 use core::num::NonZeroU8;
 
+#[path = "bitstream_types.rs"]
+mod bitstream_types;
+
+pub use bitstream_types::{BitPattern, ByteBuffer};
+use bitstream_types::{ByteFill, PartialByte};
+
+/// A single bit value, named so that a call site cannot confuse one bit
+/// state with the other.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum Bit {
+    /// The bit `0`.
+    Zero,
+    /// The bit `1`.
+    One,
+}
+
 /// Number of bits to write (1-32).
 ///
 /// Stored as `NonZeroU8`, not `u32`: the valid range (1..=32) always fits
@@ -92,32 +108,16 @@ impl BitPos {
     /// One more bit was just written. Returns the new position, and
     /// whether the current byte is now full (was `B7`, wrapping back to
     /// `B0`).
-    const fn advance(self) -> (Self, bool) {
+    const fn advance(self) -> (Self, ByteFill) {
         match self {
-            Self::B0 => (Self::B1, false),
-            Self::B1 => (Self::B2, false),
-            Self::B2 => (Self::B3, false),
-            Self::B3 => (Self::B4, false),
-            Self::B4 => (Self::B5, false),
-            Self::B5 => (Self::B6, false),
-            Self::B6 => (Self::B7, false),
-            Self::B7 => (Self::B0, true),
-        }
-    }
-
-    /// How many more bits are needed to fill the current byte. Only
-    /// meaningful (and only called) when not [`Self::ZERO`]; used solely
-    /// to pad the final byte's remaining bits before flushing.
-    const fn pending(self) -> u8 {
-        match self {
-            Self::B0 => 8,
-            Self::B1 => 7,
-            Self::B2 => 6,
-            Self::B3 => 5,
-            Self::B4 => 4,
-            Self::B5 => 3,
-            Self::B6 => 2,
-            Self::B7 => 1,
+            Self::B0 => (Self::B1, ByteFill::Partial),
+            Self::B1 => (Self::B2, ByteFill::Partial),
+            Self::B2 => (Self::B3, ByteFill::Partial),
+            Self::B3 => (Self::B4, ByteFill::Partial),
+            Self::B4 => (Self::B5, ByteFill::Partial),
+            Self::B5 => (Self::B6, ByteFill::Partial),
+            Self::B6 => (Self::B7, ByteFill::Partial),
+            Self::B7 => (Self::B0, ByteFill::Full),
         }
     }
 }
@@ -126,10 +126,10 @@ impl BitPos {
 #[derive(Debug, Clone)]
 pub struct BitstreamWriter {
     /// Output buffer.
-    buffer: Vec<u8>,
+    buffer: ByteBuffer,
     /// Current byte being built, bit-shifted in from the low end as each
     /// new bit arrives.
-    current_byte: u8,
+    current_byte: PartialByte,
     /// Number of bits used in `current_byte`.
     bit_pos: BitPos,
 }
@@ -139,8 +139,8 @@ impl BitstreamWriter {
     #[must_use]
     pub const fn new() -> Self {
         Self {
-            buffer: Vec::new(),
-            current_byte: 0,
+            buffer: ByteBuffer(Vec::new()),
+            current_byte: PartialByte(0),
             bit_pos: BitPos::ZERO,
         }
     }
@@ -155,29 +155,37 @@ impl BitstreamWriter {
     /// bounded well within its type's range, with no masking arithmetic
     /// that could in principle overflow or need a fallible narrowing
     /// conversion to justify.
-    pub fn write_bits(&mut self, value: u32, n_bits: BitCount) {
-        let n_bits = n_bits.get();
-        // `i` ranges over `0..n_bits`, and `n_bits` is at most 32, so
-        // shifting the 32-bit `value` right by `i` is always in range
-        // (shifting a `u32` by 32 or more is what panics; `i` never
-        // reaches `n_bits` itself, let alone 32).
-        for i in (0..n_bits).rev() {
-            let bit = (value >> i) & 1 == 1;
+    pub fn write_bits(&mut self, value: BitPattern, n_bits: BitCount) {
+        let BitPattern(pattern) = value;
+        let bit_count = n_bits.get();
+        // `position` ranges over `0..bit_count`, and `bit_count` is at most 32, so
+        // shifting the 32-bit `pattern` right by `position` is always in range
+        // (shifting a `u32` by 32 or more is what panics; `position` never
+        // reaches `bit_count` itself, let alone 32).
+        for position in (0..bit_count).rev() {
+            let bit = if (pattern >> position) & 1 == 1 {
+                Bit::One
+            } else {
+                Bit::Zero
+            };
             self.write_bit(bit);
         }
     }
 
     /// Writes a single bit, most-significant-bit-first within the current
     /// byte, flushing that byte once it fills.
-    fn write_bit(&mut self, bit: bool) {
-        // `u8::from(bool)` is total (0 or 1), unlike a `try_from` on an
-        // arbitrary integer -- there is no fallible case to handle here
-        // at all.
-        self.current_byte = (self.current_byte << 1) | u8::from(bit);
-        let (next, full) = self.bit_pos.advance();
+    fn write_bit(&mut self, bit: Bit) {
+        // The match is total over both bit values, so there is no fallible
+        // case to handle here at all.
+        let shifted = self.current_byte.0 << 1_i32;
+        self.current_byte = PartialByte(match bit {
+            Bit::Zero => shifted,
+            Bit::One => shifted | 1,
+        });
+        let (next, fill) = self.bit_pos.advance();
         self.bit_pos = next;
 
-        if full {
+        if fill == ByteFill::Full {
             self.flush_byte();
         }
     }
@@ -187,15 +195,15 @@ impl BitstreamWriter {
     /// became full, so there is no separate "is it actually full" check
     /// here to get out of sync with that call site.
     fn flush_byte(&mut self) {
-        let byte = self.current_byte;
-        self.buffer.push(byte);
+        let PartialByte(byte) = self.current_byte;
+        self.buffer.0.push(byte);
 
         // Byte stuffing: if we wrote 0xFF, add 0x00
         if byte == 0xFF {
-            self.buffer.push(0x00);
+            self.buffer.0.push(0x00);
         }
 
-        self.current_byte = 0;
+        self.current_byte = PartialByte(0);
         self.bit_pos = BitPos::ZERO;
     }
 
@@ -210,24 +218,25 @@ impl BitstreamWriter {
     /// `flush` would let any code elsewhere in this crate pad partway
     /// through a scan and keep writing afterward, producing a well-formed
     /// but corrupted bitstream with no compiler error. The only real call
-    /// is `into_vec`'s, in this same module, which immediately consumes
+    /// is `into_bytes`'s, in this same module, which immediately consumes
     /// `self` afterward -- module-private is as narrow as this crate's
     /// visibility can state that.
     fn flush(&mut self) {
-        if self.bit_pos != BitPos::ZERO {
-            for _ in 0..self.bit_pos.pending() {
-                self.write_bit(true);
-            }
+        // Each write moves the position one step toward `B0`, and the write
+        // that leaves `B7` flushes the byte and resets it to `B0`, so this
+        // loop writes exactly the bits that complete the current byte.
+        while self.bit_pos != BitPos::ZERO {
+            self.write_bit(Bit::One);
         }
     }
 
-    /// Returns the complete, padded bitstream as a vector of bytes. The
+    /// Returns the complete, padded bitstream as a byte buffer. The
     /// only way to flush and pad the final byte, since `flush` itself is
     /// private to this module: consuming `self` here means no further
     /// bits can be written after padding, unlike a `pub fn flush(&mut
     /// self)` that left the writer usable afterward.
     #[must_use]
-    pub fn into_vec(mut self) -> Vec<u8> {
+    pub fn into_bytes(mut self) -> ByteBuffer {
         self.flush();
         self.buffer
     }
@@ -240,43 +249,4 @@ impl Default for BitstreamWriter {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_write_single_bit() {
-        let mut writer = BitstreamWriter::new();
-        writer.write_bits(1, BitCount::new(1).unwrap());
-        let result = writer.into_vec();
-        // After writing 1 bit (value 1): current_byte = 0b10000000 = 0x80, bit_pos = 1
-        // On flush: padding = 8 - 1 = 7 bits, filled with 1s per JPEG spec
-        // So current_byte becomes 0b11111111 = 0xFF, which triggers byte stuffing (0xFF -> 0xFF 0x00)
-        assert_eq!(result, vec![0xFF, 0x00]);
-    }
-
-    #[test]
-    fn test_write_byte_aligned() {
-        let mut writer = BitstreamWriter::new();
-        writer.write_bits(0xFF, BitCount::new(8).unwrap());
-        let result = writer.into_vec();
-        // 0xFF should be stuffed as 0xFF 0x00
-        assert_eq!(result, vec![0xFF, 0x00]);
-    }
-
-    #[test]
-    fn test_write_multiple_bytes() {
-        let mut writer = BitstreamWriter::new();
-        writer.write_bits(0xAB, BitCount::new(8).unwrap());
-        writer.write_bits(0xCD, BitCount::new(8).unwrap());
-        let result = writer.into_vec();
-        assert_eq!(result, vec![0xAB, 0xCD]);
-    }
-
-    #[test]
-    fn test_byte_stuffing() {
-        let mut writer = BitstreamWriter::new();
-        writer.write_bits(0xFF, BitCount::new(8).unwrap());
-        let result = writer.into_vec();
-        assert_eq!(result, vec![0xFF, 0x00]);
-    }
-}
+mod tests;

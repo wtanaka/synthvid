@@ -1,8 +1,12 @@
 //! Sample table box writing for ISO base media containers.
 
+use crate::avi_helpers::FrameCount;
+use crate::byte_views::{ByteSink, FrameList};
 use crate::iso::{IsoCodec, IsoError};
 use crate::iso_helpers::{write_box, write_u16_be, write_u32_be};
-use synthvid_scene::{FrameRate, Height, Width};
+use crate::iso_types::{BoxType, ByteOffset, U16Be, U32Be};
+use crate::media::EncodedFrame;
+use synthvid_scene::{Dimensions, FrameRate, Height, Width};
 
 /// Information about stco chunk offsets for later patching.
 ///
@@ -11,57 +15,59 @@ use synthvid_scene::{FrameRate, Height, Width};
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct StcoOffsetInfo {
     /// Starting position in buffer of the first offset entry.
-    pub(crate) first_offset_pos: usize,
+    pub(crate) first_offset_pos: ByteOffset,
 }
 
 /// Writes the stbl box (sample table).
 pub(crate) fn write_stbl(
-    buffer: &mut Vec<u8>,
-    frames: &[Vec<u8>],
-    width: Width,
-    height: Height,
+    buffer: &mut ByteSink<'_>,
+    frames: FrameList<'_>,
+    dimensions: Dimensions,
     codec: IsoCodec,
     media_rate: FrameRate,
 ) -> Result<StcoOffsetInfo, IsoError> {
+    let Dimensions { width, height } = dimensions;
     write_box(
         buffer,
-        *b"stbl",
-        |buffer| -> Result<StcoOffsetInfo, IsoError> {
+        BoxType(*b"stbl"),
+        |stbl_buffer| -> Result<StcoOffsetInfo, IsoError> {
             // Write stsd (sample description)
-            write_stsd(buffer, width, height, codec)?;
+            write_stsd(stbl_buffer, width, height, codec)?;
 
             // Write stts (decoding time to sample)
-            let frame_count = u32::try_from(frames.len()).map_err(|_| IsoError::SizeOverflow)?;
-            write_stts(buffer, frame_count, media_rate)?;
+            let frame_count = u32::try_from(frames.0.len()).map_err(IsoError::size_overflow)?;
+            write_stts(stbl_buffer, FrameCount::new(frame_count), media_rate)?;
 
             // Write stsc (sample to chunk)
-            write_stsc(buffer)?;
+            write_stsc(stbl_buffer)?;
 
             // Write stsz (sample sizes)
-            write_stsz(buffer, frames)?;
+            write_stsz(stbl_buffer, frames)?;
 
             // Write stco (chunk offsets) and return offset info for later patching
-            write_stco(buffer, frames.len())
+            write_stco(stbl_buffer, FrameCount::new(frame_count))
         },
     )
 }
 
 /// Writes the stsd box (sample description).
 fn write_stsd(
-    buffer: &mut Vec<u8>,
+    buffer: &mut ByteSink<'_>,
     width: Width,
     height: Height,
     codec: IsoCodec,
 ) -> Result<(), IsoError> {
-    write_box(buffer, *b"stsd", |buffer| {
-        buffer.push(0); // Version 0
-        buffer.extend_from_slice(&[0, 0, 0]); // Flags
-        write_u32_be(buffer, 1); // Entry count
+    write_box(buffer, BoxType(*b"stsd"), |stsd_buffer| {
+        stsd_buffer.0.push(0); // Version 0
+        stsd_buffer.0.extend_from_slice(&[0, 0, 0]); // Flags
+        write_u32_be(stsd_buffer, U32Be(1)); // Entry count
 
         // Write sample entry
         match codec {
-            IsoCodec::UncompressedRgb => write_rgb_sample_entry(buffer, width, height)?,
-            IsoCodec::MotionJpeg => write_mjpeg_sample_entry(buffer, width, height)?,
+            IsoCodec::UncompressedRgb => {
+                write_rgb_sample_entry(stsd_buffer, width, height)?;
+            }
+            IsoCodec::MotionJpeg => write_mjpeg_sample_entry(stsd_buffer, width, height)?,
         }
 
         Ok(())
@@ -70,34 +76,34 @@ fn write_stsd(
 
 /// Writes an uncompressed RGB sample entry.
 fn write_rgb_sample_entry(
-    buffer: &mut Vec<u8>,
+    buffer: &mut ByteSink<'_>,
     width: Width,
     height: Height,
 ) -> Result<(), IsoError> {
-    write_box(buffer, *b"raw ", |buffer| {
-        buffer.extend_from_slice(&[0; 6]); // Reserved
-        write_u16_be(buffer, 1); // Data reference index
+    write_box(buffer, BoxType(*b"raw "), |raw_buffer| {
+        raw_buffer.0.extend_from_slice(&[0; 6]); // Reserved
+        write_u16_be(raw_buffer, U16Be(1)); // Data reference index
 
         // VisualSampleEntry fixed fields per ISO/IEC 14496-12 §8.5.2.1
-        write_u16_be(buffer, 0); // pre_defined
-        write_u16_be(buffer, 0); // reserved
-        write_u32_be(buffer, 0); // pre_defined[0]
-        write_u32_be(buffer, 0); // pre_defined[1]
-        write_u32_be(buffer, 0); // pre_defined[2]
+        write_u16_be(raw_buffer, U16Be(0)); // pre_defined
+        write_u16_be(raw_buffer, U16Be(0)); // reserved
+        write_u32_be(raw_buffer, U32Be(0)); // pre_defined[0]
+        write_u32_be(raw_buffer, U32Be(0)); // pre_defined[1]
+        write_u32_be(raw_buffer, U32Be(0)); // pre_defined[2]
 
-        write_u16_be(buffer, width.get().get());
-        write_u16_be(buffer, height.get().get());
-        write_u32_be(buffer, 0x0048_0000); // Horizontal resolution (72 dpi in 16.16)
-        write_u32_be(buffer, 0x0048_0000); // Vertical resolution (72 dpi in 16.16)
-        write_u32_be(buffer, 0); // Reserved (data_size)
-        write_u16_be(buffer, 1); // Frame count
+        write_u16_be(raw_buffer, U16Be(width.get().get()));
+        write_u16_be(raw_buffer, U16Be(height.get().get()));
+        write_u32_be(raw_buffer, U32Be(0x0048_0000)); // Horizontal resolution (72 dpi in 16.16)
+        write_u32_be(raw_buffer, U32Be(0x0048_0000)); // Vertical resolution (72 dpi in 16.16)
+        write_u32_be(raw_buffer, U32Be(0)); // Reserved (data_size)
+        write_u16_be(raw_buffer, U16Be(1)); // Frame count
 
         // Compressor name: 32-byte Pascal string (1-byte length + up to 31 bytes + padding)
-        buffer.extend_from_slice(b"\x00"); // Length (0, empty string)
-        buffer.extend_from_slice(&[0; 31]); // Padding to 32 bytes total
+        raw_buffer.0.extend_from_slice(b"\x00"); // Length (0, empty string)
+        raw_buffer.0.extend_from_slice(&[0; 31]); // Padding to 32 bytes total
 
-        write_u16_be(buffer, 24); // Depth (24-bit RGB)
-        write_u16_be(buffer, 0xffff); // Pre-defined (-1, no color table)
+        write_u16_be(raw_buffer, U16Be(24)); // Depth (24-bit RGB)
+        write_u16_be(raw_buffer, U16Be(0xffff)); // Pre-defined (-1, no color table)
 
         Ok(())
     })
@@ -105,34 +111,34 @@ fn write_rgb_sample_entry(
 
 /// Writes a motion-JPEG sample entry.
 fn write_mjpeg_sample_entry(
-    buffer: &mut Vec<u8>,
+    buffer: &mut ByteSink<'_>,
     width: Width,
     height: Height,
 ) -> Result<(), IsoError> {
-    write_box(buffer, *b"mjpg", |buffer| {
-        buffer.extend_from_slice(&[0; 6]); // Reserved
-        write_u16_be(buffer, 1); // Data reference index
+    write_box(buffer, BoxType(*b"mjpg"), |mjpg_buffer| {
+        mjpg_buffer.0.extend_from_slice(&[0; 6]); // Reserved
+        write_u16_be(mjpg_buffer, U16Be(1)); // Data reference index
 
         // VisualSampleEntry fixed fields per ISO/IEC 14496-12 §8.5.2.1
-        write_u16_be(buffer, 0); // pre_defined
-        write_u16_be(buffer, 0); // reserved
-        write_u32_be(buffer, 0); // pre_defined[0]
-        write_u32_be(buffer, 0); // pre_defined[1]
-        write_u32_be(buffer, 0); // pre_defined[2]
+        write_u16_be(mjpg_buffer, U16Be(0)); // pre_defined
+        write_u16_be(mjpg_buffer, U16Be(0)); // reserved
+        write_u32_be(mjpg_buffer, U32Be(0)); // pre_defined[0]
+        write_u32_be(mjpg_buffer, U32Be(0)); // pre_defined[1]
+        write_u32_be(mjpg_buffer, U32Be(0)); // pre_defined[2]
 
-        write_u16_be(buffer, width.get().get());
-        write_u16_be(buffer, height.get().get());
-        write_u32_be(buffer, 0x0048_0000); // Horizontal resolution (72 dpi in 16.16)
-        write_u32_be(buffer, 0x0048_0000); // Vertical resolution (72 dpi in 16.16)
-        write_u32_be(buffer, 0); // Reserved (data_size)
-        write_u16_be(buffer, 1); // Frame count
+        write_u16_be(mjpg_buffer, U16Be(width.get().get()));
+        write_u16_be(mjpg_buffer, U16Be(height.get().get()));
+        write_u32_be(mjpg_buffer, U32Be(0x0048_0000)); // Horizontal resolution (72 dpi in 16.16)
+        write_u32_be(mjpg_buffer, U32Be(0x0048_0000)); // Vertical resolution (72 dpi in 16.16)
+        write_u32_be(mjpg_buffer, U32Be(0)); // Reserved (data_size)
+        write_u16_be(mjpg_buffer, U16Be(1)); // Frame count
 
         // Compressor name: 32-byte Pascal string (1-byte length + up to 31 bytes + padding)
-        buffer.extend_from_slice(b"\x00"); // Length (0, empty string)
-        buffer.extend_from_slice(&[0; 31]); // Padding to 32 bytes total
+        mjpg_buffer.0.extend_from_slice(b"\x00"); // Length (0, empty string)
+        mjpg_buffer.0.extend_from_slice(&[0; 31]); // Padding to 32 bytes total
 
-        write_u16_be(buffer, 24); // Depth (24-bit)
-        write_u16_be(buffer, 0xffff); // Pre-defined (-1, no color table)
+        write_u16_be(mjpg_buffer, U16Be(24)); // Depth (24-bit)
+        write_u16_be(mjpg_buffer, U16Be(0xffff)); // Pre-defined (-1, no color table)
 
         Ok(())
     })
@@ -145,24 +151,28 @@ fn write_mjpeg_sample_entry(
 /// The `media_rate` parameter is the media's native rate: either the capture rate
 /// (when a distinct one is provided) or the playback rate (when no distinct capture rate).
 fn write_stts(
-    buffer: &mut Vec<u8>,
-    frame_count: u32,
+    buffer: &mut ByteSink<'_>,
+    frame_count: FrameCount,
     media_rate: FrameRate,
 ) -> Result<(), IsoError> {
-    write_box(buffer, *b"stts", |buffer| -> Result<(), IsoError> {
-        buffer.push(0); // Version 0
-        buffer.extend_from_slice(&[0, 0, 0]); // Flags
-        write_u32_be(buffer, 1); // Entry count
-        write_u32_be(buffer, frame_count); // Sample count
+    write_box(
+        buffer,
+        BoxType(*b"stts"),
+        |stts_buffer| -> Result<(), IsoError> {
+            stts_buffer.0.push(0); // Version 0
+            stts_buffer.0.extend_from_slice(&[0, 0, 0]); // Flags
+            write_u32_be(stts_buffer, U32Be(1)); // Entry count
+            write_u32_be(stts_buffer, U32Be(frame_count.get())); // Sample count
 
-        // Sample delta is media rate denominator; combined with mdhd timescale
-        // (which is the numerator), this gives exact media frame rate: timescale / sample_delta
-        let sample_delta =
-            u32::try_from(media_rate.ratio().denom().get()).map_err(|_| IsoError::SizeOverflow)?;
-        write_u32_be(buffer, sample_delta);
+            // Sample delta is media rate denominator; combined with mdhd timescale
+            // (which is the numerator), this gives exact media frame rate: timescale / sample_delta
+            let sample_delta =
+                u32::try_from(media_rate.ratio().denom().get()).map_err(IsoError::size_overflow)?;
+            write_u32_be(stts_buffer, U32Be(sample_delta));
 
-        Ok(())
-    })
+            Ok(())
+        },
+    )
 }
 
 /// Writes the stsc box (sample to chunk).
@@ -173,34 +183,38 @@ fn write_stts(
 /// `frame_count` separate chunk offsets is exactly the kind of
 /// declared-vs-actual mismatch this file has already been bitten by
 /// several times; the two tables must agree on the same chunk layout.
-fn write_stsc(buffer: &mut Vec<u8>) -> Result<(), IsoError> {
-    write_box(buffer, *b"stsc", |buffer| {
-        buffer.push(0); // Version 0
-        buffer.extend_from_slice(&[0, 0, 0]); // Flags
-        write_u32_be(buffer, 1); // Entry count
-        write_u32_be(buffer, 1); // First chunk (1-based)
-        write_u32_be(buffer, 1); // Samples per chunk
-        write_u32_be(buffer, 1); // Sample description ID
+fn write_stsc(buffer: &mut ByteSink<'_>) -> Result<(), IsoError> {
+    write_box(buffer, BoxType(*b"stsc"), |stsc_buffer| {
+        stsc_buffer.0.push(0); // Version 0
+        stsc_buffer.0.extend_from_slice(&[0, 0, 0]); // Flags
+        write_u32_be(stsc_buffer, U32Be(1)); // Entry count
+        write_u32_be(stsc_buffer, U32Be(1)); // First chunk (1-based)
+        write_u32_be(stsc_buffer, U32Be(1)); // Samples per chunk
+        write_u32_be(stsc_buffer, U32Be(1)); // Sample description ID
         Ok(())
     })
 }
 
 /// Writes the stsz box (sample sizes).
-fn write_stsz(buffer: &mut Vec<u8>, frames: &[Vec<u8>]) -> Result<(), IsoError> {
-    write_box(buffer, *b"stsz", |buffer| -> Result<(), IsoError> {
-        buffer.push(0); // Version 0
-        buffer.extend_from_slice(&[0, 0, 0]); // Flags
-        write_u32_be(buffer, 0); // Sample size (0 = variable)
-        let frame_count = u32::try_from(frames.len()).map_err(|_| IsoError::SizeOverflow)?;
-        write_u32_be(buffer, frame_count); // Sample count
+fn write_stsz(buffer: &mut ByteSink<'_>, frames: FrameList<'_>) -> Result<(), IsoError> {
+    write_box(
+        buffer,
+        BoxType(*b"stsz"),
+        |stsz_buffer| -> Result<(), IsoError> {
+            stsz_buffer.0.push(0); // Version 0
+            stsz_buffer.0.extend_from_slice(&[0, 0, 0]); // Flags
+            write_u32_be(stsz_buffer, U32Be(0)); // Sample size (0 = variable)
+            let frame_count = u32::try_from(frames.0.len()).map_err(IsoError::size_overflow)?;
+            write_u32_be(stsz_buffer, U32Be(frame_count)); // Sample count
 
-        for frame in frames {
-            let frame_size = u32::try_from(frame.len()).map_err(|_| IsoError::SizeOverflow)?;
-            write_u32_be(buffer, frame_size);
-        }
+            for EncodedFrame(frame) in frames.0 {
+                let frame_size = u32::try_from(frame.len()).map_err(IsoError::size_overflow)?;
+                write_u32_be(stsz_buffer, U32Be(frame_size));
+            }
 
-        Ok(())
-    })
+            Ok(())
+        },
+    )
 }
 
 /// Writes the stco box (chunk offsets).
@@ -208,25 +222,29 @@ fn write_stsz(buffer: &mut Vec<u8>, frames: &[Vec<u8>]) -> Result<(), IsoError> 
 /// Records the buffer positions where chunk offsets are written (as placeholders),
 /// which are patched later with actual byte offsets once mdat position is known.
 /// Returns a `StcoOffsetInfo` containing the buffer positions for later patching.
-fn write_stco(buffer: &mut Vec<u8>, frame_count: usize) -> Result<StcoOffsetInfo, IsoError> {
+fn write_stco(
+    buffer: &mut ByteSink<'_>,
+    frame_count: FrameCount,
+) -> Result<StcoOffsetInfo, IsoError> {
     write_box(
         buffer,
-        *b"stco",
-        |buffer| -> Result<StcoOffsetInfo, IsoError> {
-            buffer.push(0); // Version 0
-            buffer.extend_from_slice(&[0, 0, 0]); // Flags
-            let frame_count_u32 = u32::try_from(frame_count).map_err(|_| IsoError::SizeOverflow)?;
-            write_u32_be(buffer, frame_count_u32); // Entry count
+        BoxType(*b"stco"),
+        |stco_buffer| -> Result<StcoOffsetInfo, IsoError> {
+            stco_buffer.0.push(0); // Version 0
+            stco_buffer.0.extend_from_slice(&[0, 0, 0]); // Flags
+            write_u32_be(stco_buffer, U32Be(frame_count.get())); // Entry count
 
             // Record the position where offsets start so we can patch them later
-            let first_offset_pos = buffer.len();
+            let first_offset_pos = stco_buffer.0.len();
 
             // Write placeholder offsets (0 for now, will be patched after mdat is written)
-            for _ in 0..frame_count {
-                write_u32_be(buffer, 0); // Placeholder offset
+            for _ in 0..frame_count.get() {
+                write_u32_be(stco_buffer, U32Be(0)); // Placeholder offset
             }
 
-            Ok(StcoOffsetInfo { first_offset_pos })
+            Ok(StcoOffsetInfo {
+                first_offset_pos: ByteOffset(first_offset_pos),
+            })
         },
     )
 }

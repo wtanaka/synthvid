@@ -7,6 +7,7 @@ members = [
     "crates/synthvid-catalog",
     "crates/synthvid-validate",
     "crates/synthvid-cli",
+    "crates/synthvid-testkit",
 ]
 
 [workspace.package]

@@ -8,6 +8,7 @@ version = "0.0.1-alpha.0"
 dependencies = [
  "synthvid-encode",
  "synthvid-scene",
+ "synthvid-testkit",
  "synthvid-video",
 ]
 
@@ -16,8 +17,8 @@ name = "synthvid-cli"
 version = "0.0.1-alpha.0"
 dependencies = [
  "synthvid-catalog",
- "synthvid-encode",
  "synthvid-scene",
+ "synthvid-testkit",
  "synthvid-video",
 ]
 
@@ -26,10 +27,18 @@ name = "synthvid-encode"
 version = "0.0.1-alpha.0"
 dependencies = [
  "synthvid-scene",
+ "synthvid-testkit",
 ]
 
 [[package]]
 name = "synthvid-scene"
+version = "0.0.1-alpha.0"
+dependencies = [
+ "synthvid-testkit",
+]
+
+[[package]]
+name = "synthvid-testkit"
 version = "0.0.1-alpha.0"
 
 [[package]]
@@ -38,6 +47,7 @@ version = "0.0.1-alpha.0"
 dependencies = [
  "synthvid-encode",
  "synthvid-scene",
+ "synthvid-testkit",
  "synthvid-video",
 ]
 
@@ -47,4 +57,5 @@ version = "0.0.1-alpha.0"
 dependencies = [
  "synthvid-encode",
  "synthvid-scene",
+ "synthvid-testkit",
 ]

@@ -6,8 +6,16 @@
 //! name bytewise ascending. Every line is terminated by `\n` including the last.
 
 use crate::sha256::Digest;
-use core::cmp::Ordering;
+use core::error::Error;
 use core::fmt;
+use core::num::ParseIntError;
+
+#[path = "lockfile_fields.rs"]
+mod lockfile_fields;
+
+pub use lockfile_fields::{
+    ArtifactBytes, CorpusArtifact, LockfileText, RawDigest, RawLength, RawLine, RawName,
+};
 
 /// Error returned when attempting to construct an invalid [`LockfileName`].
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -29,7 +37,7 @@ impl fmt::Display for LockfileNameError {
     }
 }
 
-impl core::error::Error for LockfileNameError {}
+impl Error for LockfileNameError {}
 
 /// A validated artifact name for use in a lockfile.
 ///
@@ -37,7 +45,9 @@ impl core::error::Error for LockfileNameError {}
 /// media file names (e.g., `0256x0256-1-30fps-...-nodef-media.mp4`).
 /// Must match `[a-z0-9-]+\.[a-z]+` (lowercase letters, digits, hyphens, one dot,
 /// and a lowercase extension).
-#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+///
+/// Ordered bytewise by the name, which is the order a lockfile lists them in.
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct LockfileName(String);
 
 impl LockfileName {
@@ -47,19 +57,22 @@ impl LockfileName {
     ///
     /// Returns `Err(LockfileNameError::InvalidAlphabet)` if the name does not
     /// match the required format.
-    pub fn new(s: impl AsRef<str>) -> Result<Self, LockfileNameError> {
-        let s = s.as_ref();
-        if s.is_empty() {
+    pub fn new<Name>(name: Name) -> Result<Self, LockfileNameError>
+    where
+        Name: AsRef<str>,
+    {
+        let text = name.as_ref();
+        if text.is_empty() {
             return Err(LockfileNameError::InvalidAlphabet);
         }
 
         // Must contain exactly one dot
-        let dot_count = s.bytes().filter(|&b| b == b'.').count();
+        let dot_count = text.bytes().filter(|&byte| byte == b'.').count();
         if dot_count != 1 {
             return Err(LockfileNameError::InvalidAlphabet);
         }
 
-        let parts: Vec<&str> = s.split('.').collect();
+        let parts: Vec<&str> = text.split('.').collect();
         if parts.len() != 2 {
             return Err(LockfileNameError::InvalidAlphabet);
         }
@@ -75,7 +88,7 @@ impl LockfileName {
         if stem.is_empty()
             || !stem
                 .bytes()
-                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
         {
             return Err(LockfileNameError::InvalidAlphabet);
         }
@@ -84,30 +97,18 @@ impl LockfileName {
         if ext.is_empty()
             || !ext
                 .bytes()
-                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
         {
             return Err(LockfileNameError::InvalidAlphabet);
         }
 
-        Ok(Self(s.to_owned()))
+        Ok(Self(text.to_owned()))
     }
 
     /// Returns the validated lockfile name as a string slice.
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
-    }
-}
-
-impl Ord for LockfileName {
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.0.cmp(&other.0)
-    }
-}
-
-impl PartialOrd for LockfileName {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
     }
 }
 
@@ -158,28 +159,18 @@ impl LockfileEntry {
             length,
         }
     }
+}
 
-    /// Serializes this entry to its line-oriented form: `name digest length\n`.
-    #[must_use]
-    pub fn to_line(&self) -> String {
-        format!(
-            "{} {} {}\n",
+/// Writes this entry in its line-oriented form: `name digest length\n`.
+impl fmt::Display for LockfileEntry {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(
+            f,
+            "{} {} {}",
             self.name.as_str(),
             self.digest,
             self.length.get()
         )
-    }
-}
-
-impl Ord for LockfileEntry {
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.name.cmp(&other.name)
-    }
-}
-
-impl PartialOrd for LockfileEntry {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
     }
 }
 
@@ -202,7 +193,7 @@ pub enum LockfileDifference {
     /// A corpus artifact name does not validate as a lockfile name.
     InvalidName {
         /// The raw, unvalidated artifact name.
-        name: String,
+        name: RawName,
     },
     /// The artifact exists in both but the digest differs.
     DigestMismatch {
@@ -248,10 +239,8 @@ impl fmt::Display for LockfileDifference {
             } => {
                 write!(
                     f,
-                    "digest mismatch in {}: expected {}, got {}",
-                    name.as_str(),
-                    expected,
-                    actual
+                    "digest mismatch in {}: expected {expected}, got {actual}",
+                    name.as_str()
                 )
             }
             Self::LengthMismatch {
@@ -278,7 +267,7 @@ impl fmt::Display for LockfileDifference {
     }
 }
 
-impl core::error::Error for LockfileDifference {}
+impl Error for LockfileDifference {}
 
 /// Error returned when parsing a lockfile.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -286,27 +275,29 @@ pub enum ParseLockfileError {
     /// A line has the wrong number of fields (expected 3).
     MalformedLine {
         /// Lockfile line.
-        line: String,
+        line: RawLine,
     },
     /// An artifact name does not validate as a lockfile name.
     InvalidName {
         /// Invalid name.
-        name: String,
+        name: RawName,
     },
     /// A digest is not exactly 64 hex characters.
     InvalidDigest {
         /// Invalid digest.
-        digest: String,
+        digest: RawDigest,
     },
     /// A digest contains invalid hex characters.
     InvalidDigestHex {
         /// Digest with invalid hex.
-        digest: String,
+        digest: RawDigest,
     },
     /// A length field cannot be parsed as a u64.
     InvalidLength {
         /// Unparseable length.
-        length: String,
+        length: RawLength,
+        /// Why the length did not parse, shown in the message.
+        source: ParseIntError,
     },
 }
 
@@ -325,19 +316,20 @@ impl fmt::Display for ParseLockfileError {
             Self::InvalidDigestHex { digest } => {
                 write!(f, "digest contains invalid hex characters: {digest}")
             }
-            Self::InvalidLength { length } => {
-                write!(f, "length must be a valid u64: {length}")
+            Self::InvalidLength { length, source } => {
+                write!(f, "length must be a valid u64: {length}: {source}")
             }
         }
     }
 }
 
-impl core::error::Error for ParseLockfileError {}
+impl Error for ParseLockfileError {}
 
 /// Generates a lockfile from a collection of entries.
 ///
-/// Sorts entries by name, then serializes each to the line-oriented format.
-/// The result is a single string with each line ending in `\n`.
+/// Sorts entries by name, keeping the given order among entries that share
+/// a name, then serializes each to the line-oriented format. Every line of
+/// the result ends in `\n`.
 ///
 /// # Example
 ///
@@ -352,16 +344,16 @@ impl core::error::Error for ParseLockfileError {}
 /// };
 /// let entry = LockfileEntry::new(name, sha256(b"b"), ContentLength::new(1));
 /// let text = generate_lockfile(vec![entry]);
-/// text.len();
+/// text.0.len();
 /// ```
 #[must_use]
-pub fn generate_lockfile(mut entries: Vec<LockfileEntry>) -> String {
-    entries.sort();
+pub fn generate_lockfile(mut entries: Vec<LockfileEntry>) -> LockfileText {
+    entries.sort_by(|left, right| left.name.cmp(&right.name));
     let mut result = String::new();
     for entry in entries {
-        result.push_str(&entry.to_line());
+        result.push_str(&entry.to_string());
     }
-    result
+    LockfileText(result)
 }
 
 /// Parses a lockfile from its line-oriented format.
@@ -370,84 +362,78 @@ pub fn generate_lockfile(mut entries: Vec<LockfileEntry>) -> String {
 ///
 /// Returns an error if any line is malformed or if a name, digest, or length
 /// is invalid.
-pub fn parse_lockfile(content: &str) -> Result<Vec<LockfileEntry>, ParseLockfileError> {
-    let mut entries = Vec::new();
+pub fn parse_lockfile(content: &LockfileText) -> Result<Vec<LockfileEntry>, ParseLockfileError> {
+    content
+        .0
+        .lines()
+        .filter(|line| !line.is_empty())
+        .map(|line| parse_line(LineText(line)))
+        .collect()
+}
 
-    for line in content.lines() {
-        if line.is_empty() {
-            continue;
+/// One non-empty line of a lockfile's text.
+#[derive(Copy, Clone, Debug)]
+struct LineText<'text>(&'text str);
+
+/// The digest field of a lockfile line, as written.
+#[derive(Copy, Clone, Debug)]
+struct DigestText<'text>(&'text str);
+
+/// Parses one non-empty lockfile line: a name, a digest and a length,
+/// separated by single spaces.
+fn parse_line(line: LineText<'_>) -> Result<LockfileEntry, ParseLockfileError> {
+    let LineText(text) = line;
+    let parts: Vec<&str> = text.split(' ').collect();
+    let [name_str, digest_str, length_str] = parts.as_slice() else {
+        return Err(ParseLockfileError::MalformedLine {
+            line: RawLine(text.to_owned()),
+        });
+    };
+
+    let name = LockfileName::new(name_str).map_err(|LockfileNameError::InvalidAlphabet| {
+        ParseLockfileError::InvalidName {
+            name: RawName((*name_str).to_owned()),
         }
+    })?;
 
-        let parts: Vec<&str> = line.split(' ').collect();
-        if parts.len() != 3 {
-            return Err(ParseLockfileError::MalformedLine {
-                line: line.to_owned(),
-            });
-        }
+    let digest = parse_digest(DigestText(digest_str))?;
 
-        let Some(&name_str) = parts.first() else {
-            return Err(ParseLockfileError::MalformedLine {
-                line: line.to_owned(),
-            });
-        };
-        let Some(&digest_str) = parts.get(1) else {
-            return Err(ParseLockfileError::MalformedLine {
-                line: line.to_owned(),
-            });
-        };
-        let Some(&length_str) = parts.get(2) else {
-            return Err(ParseLockfileError::MalformedLine {
-                line: line.to_owned(),
-            });
-        };
+    let length_u64: u64 =
+        length_str
+            .parse()
+            .map_err(|source| ParseLockfileError::InvalidLength {
+                length: RawLength((*length_str).to_owned()),
+                source,
+            })?;
+    let length = ContentLength::new(length_u64);
 
-        let name = LockfileName::new(name_str).map_err(|_| ParseLockfileError::InvalidName {
-            name: name_str.to_owned(),
-        })?;
+    Ok(LockfileEntry::new(name, digest, length))
+}
 
-        // Parse digest (must be 64 hex characters)
-        if digest_str.len() != 64 {
-            return Err(ParseLockfileError::InvalidDigest {
-                digest: digest_str.to_owned(),
-            });
-        }
-
-        let mut digest_bytes = [0u8; 32];
-        for (i, byte_pair) in digest_str.as_bytes().chunks(2).enumerate() {
-            if i >= 32 {
-                break;
-            }
-            if let Ok(s) = core::str::from_utf8(byte_pair) {
-                if let Ok(b) = u8::from_str_radix(s, 16) {
-                    if let Some(target) = digest_bytes.get_mut(i) {
-                        *target = b;
-                    }
-                } else {
-                    return Err(ParseLockfileError::InvalidDigestHex {
-                        digest: digest_str.to_owned(),
-                    });
-                }
-            } else {
-                return Err(ParseLockfileError::InvalidDigestHex {
-                    digest: digest_str.to_owned(),
-                });
-            }
-        }
-        let digest = Digest::new(digest_bytes);
-
-        // Parse length
-        let length_u64: u64 =
-            length_str
-                .parse()
-                .map_err(|_| ParseLockfileError::InvalidLength {
-                    length: length_str.to_owned(),
-                })?;
-        let length = ContentLength::new(length_u64);
-
-        entries.push(LockfileEntry::new(name, digest, length));
+/// Parses a digest written as exactly 64 hexadecimal digits.
+fn parse_digest(digest: DigestText<'_>) -> Result<Digest, ParseLockfileError> {
+    let DigestText(text) = digest;
+    if text.len() != 64 {
+        return Err(ParseLockfileError::InvalidDigest {
+            digest: RawDigest(text.to_owned()),
+        });
     }
-
-    Ok(entries)
+    let invalid_hex = || ParseLockfileError::InvalidDigestHex {
+        digest: RawDigest(text.to_owned()),
+    };
+    let mut digest_bytes = [0_u8; 32];
+    let mut rest = text;
+    for target in &mut digest_bytes {
+        let Some((pair, tail)) = rest.split_at_checked(2) else {
+            return Err(invalid_hex());
+        };
+        let Ok(byte) = u8::from_str_radix(pair, 16) else {
+            return Err(invalid_hex());
+        };
+        *target = byte;
+        rest = tail;
+    }
+    Ok(Digest::new(digest_bytes))
 }
 
 /// Verifies a corpus against a lockfile.
@@ -459,37 +445,37 @@ pub fn parse_lockfile(content: &str) -> Result<Vec<LockfileEntry>, ParseLockfile
 /// # Arguments
 ///
 /// * `lockfile_entries` - The entries parsed from a lockfile
-/// * `corpus` - Iterator of (name, content bytes) tuples representing the
-///   generated artifacts
-pub fn verify(
-    lockfile_entries: &[LockfileEntry],
-    corpus: impl IntoIterator<Item = (String, Vec<u8>)>,
-) -> Vec<LockfileDifference> {
+/// * `corpus` - The generated artifacts, each a name and its content
+pub fn verify<Corpus>(lockfile_entries: &[LockfileEntry], corpus: Corpus) -> Vec<LockfileDifference>
+where
+    Corpus: IntoIterator<Item = CorpusArtifact>,
+{
     use crate::sha256::sha256;
-    use std::collections::BTreeMap;
-    use std::collections::BTreeSet;
+    extern crate alloc;
+    use alloc::collections::BTreeMap;
+    use alloc::collections::BTreeSet;
 
     let mut differences = Vec::new();
 
     // Build a map of lockfile entries by name for efficient lookup
-    let mut lockfile_map: BTreeMap<LockfileName, &LockfileEntry> = BTreeMap::new();
-    for entry in lockfile_entries {
-        lockfile_map.insert(entry.name.clone(), entry);
-    }
+    let lockfile_map: BTreeMap<LockfileName, &LockfileEntry> = lockfile_entries
+        .iter()
+        .map(|entry| (entry.name.clone(), entry))
+        .collect();
 
     // Track which lockfile entries we've seen
     let mut seen = BTreeSet::new();
 
     // Process each corpus artifact
-    for (name, content) in corpus {
-        let Ok(lockfile_name) = LockfileName::new(&name) else {
+    for CorpusArtifact { name, bytes } in corpus {
+        let Ok(lockfile_name) = LockfileName::new(&name.0) else {
             // Report artifacts with invalid names
             differences.push(LockfileDifference::InvalidName { name });
             continue;
         };
 
-        let content_digest = sha256(&content);
-        let Ok(content_length_u64) = u64::try_from(content.len()) else {
+        let content_digest = sha256(&bytes.0);
+        let Ok(content_length_u64) = u64::try_from(bytes.0.len()) else {
             differences.push(LockfileDifference::LengthOverflow {
                 name: lockfile_name,
             });
@@ -497,7 +483,7 @@ pub fn verify(
         };
         let content_length = ContentLength::new(content_length_u64);
 
-        seen.insert(lockfile_name.clone());
+        seen.extend([lockfile_name.clone()]);
 
         if let Some(lockfile_entry) = lockfile_map.get(&lockfile_name) {
             // Entry exists in lockfile, compare digest and length

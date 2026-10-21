@@ -10,7 +10,8 @@
 #
 # The crate root is held to a stricter rule: it may declare modules and
 # re-export their items, and nothing else. Code placed there has, by
-# definition, no owning concern.
+# definition, no owning concern. A binary's root may also import what its
+# `fn main` names.
 set -eu
 
 limit=700
@@ -33,6 +34,7 @@ for root in crates/*/src/lib.rs crates/*/src/main.rs; do
         | grep -v '^[0-9]*:#!\[' \
         | grep -v '^[0-9]*:#\[cfg(test)\]' \
         | grep -v '^[0-9]*:fn main()' \
+        | { if [ "${root##*/}" = main.rs ]; then grep -v '^[0-9]*:use '; else cat; fi; } \
         || true)
     if [ -n "$offenders" ]; then
         echo "check-module-size: $root must contain only module declarations and re-exports" >&2

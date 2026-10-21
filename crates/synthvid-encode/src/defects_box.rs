@@ -1,5 +1,6 @@
 //! Internal box/chunk parsing helpers for ISO and AVI formats.
 
+use super::defects_types::{ContainerFormat, FieldOffset, FieldValue, FileBytes, RawWord};
 use super::{BoxPath, BoxTag, DefectError};
 use crate::avi::RIFF_CHUNK_ALIGNMENT;
 
@@ -74,9 +75,9 @@ impl PayloadStart {
     }
 
     /// The absolute offset of a field `delta` bytes into this payload.
-    pub(super) fn field_at(self, delta: usize) -> Result<AbsoluteOffset, DefectError> {
+    pub(super) fn field_at(self, delta: FieldOffset) -> Result<AbsoluteOffset, DefectError> {
         self.0
-            .checked_add(delta)
+            .checked_add(delta.0)
             .map(AbsoluteOffset)
             .ok_or(DefectError::SizeOverflow)
     }
@@ -144,40 +145,35 @@ pub(super) enum Endianness {
 /// truncated prefix, etc.) -- those remain plain `&[u8]`/`Vec<u8>`
 /// since they are not "the container" in the same sense.
 #[derive(Debug, Clone, Copy)]
-pub(super) struct ContainerBytes<'a>(&'a [u8]);
+pub(super) struct ContainerBytes<'bytes>(&'bytes [u8]);
 
-impl<'a> ContainerBytes<'a> {
+impl<'bytes> ContainerBytes<'bytes> {
     /// Creates a container bytes wrapper.
-    pub(super) const fn new(bytes: &'a [u8]) -> Self {
+    pub(super) const fn new(bytes: &'bytes [u8]) -> Self {
         Self(bytes)
     }
 
     /// Gets the byte slice.
-    pub(super) const fn as_slice(self) -> &'a [u8] {
+    pub(super) const fn as_slice(self) -> &'bytes [u8] {
         self.0
-    }
-
-    /// Gets the length of the container.
-    pub(super) const fn len(self) -> usize {
-        self.0.len()
     }
 }
 
 /// Box header information: box start, payload start, payload end.
 pub(super) struct BoxInfo {
-    /// Box start byte offset (the position of the box's own header)
+    /// Box start byte offset (the position of the box's own header).
     pub(super) box_start: BoxStart,
-    /// Payload start byte offset
+    /// Payload start byte offset.
     pub(super) payload_start: PayloadStart,
-    /// Payload end byte offset
+    /// Payload end byte offset.
     pub(super) payload_end: PayloadEnd,
-    /// Box tag
+    /// Box tag.
     pub(super) tag: BoxTag,
 }
 
 /// Extended box info with ancestor size field positions (ISO format).
 pub(super) struct IsoBoxWithAncestors {
-    /// The target box
+    /// The target box.
     pub(super) box_info: BoxInfo,
     /// Offsets in the file where each ancestor's size field lives (excluding the RIFF header).
     /// Ordered from root to immediate parent.
@@ -186,7 +182,7 @@ pub(super) struct IsoBoxWithAncestors {
 
 /// Extended box info with ancestor size field positions (AVI format).
 pub(super) struct AviBoxWithAncestors {
-    /// The target box
+    /// The target box.
     pub(super) box_info: BoxInfo,
     /// Offsets in the file where each ancestor's size field lives.
     /// First element (if present) is always the RIFF header size offset (4).
@@ -200,47 +196,50 @@ pub(super) struct AviBoxWithAncestors {
 pub(super) fn extract_4_bytes(
     input: ContainerBytes<'_>,
     offset: AbsoluteOffset,
-) -> Option<[u8; 4]> {
-    let off = offset.get();
-    let buf = input.as_slice();
-    buf.get(off..off.checked_add(4)?)
-        .and_then(|slice| <&[u8; 4]>::try_from(slice).ok())
+) -> Option<RawWord> {
+    input
+        .as_slice()
+        .get(offset.get()..)?
+        .first_chunk::<4>()
         .copied()
+        .map(RawWord)
 }
 
-/// Detects if input is ISO format (big-endian size, tag).
-pub(super) fn is_iso_format(input: ContainerBytes<'_>) -> Result<bool, DefectError> {
-    if input.len() < 8 {
-        return Ok(false);
+/// Detects the format of a container. ISO is recognised by a big-endian first
+/// box size that fits the file; AVI by a `RIFF` tag and an `AVI ` form type.
+pub(super) fn detect_format(input: ContainerBytes<'_>) -> Result<ContainerFormat, DefectError> {
+    if input.as_slice().len() < 8 {
+        return Ok(detect_avi(input));
     }
     let Some(size_bytes) = extract_4_bytes(input, AbsoluteOffset::new(0)) else {
-        return Ok(false);
+        return Ok(detect_avi(input));
     };
-    let size = u32::from_be_bytes(size_bytes);
-    let size_usize = usize::try_from(size).map_err(|_| DefectError::InvalidBoxStructure)?;
-    Ok(size >= 8 && size_usize <= input.len())
+    let size = u32::from_be_bytes(size_bytes.0);
+    let size_usize = usize::try_from(size).map_err(DefectError::invalid_box_structure)?;
+    if size >= 8 && size_usize <= input.as_slice().len() {
+        Ok(ContainerFormat::Iso)
+    } else {
+        Ok(detect_avi(input))
+    }
 }
 
-/// Detects if input is AVI/RIFF format (little-endian "RIFF" tag).
-pub(super) fn is_avi_format(input: ContainerBytes<'_>) -> bool {
-    if input.len() < 12 {
-        return false;
-    }
+/// Tells AVI from neither, once ISO has been ruled out: `RIFF` at offset 0 and
+/// `AVI ` at offset 8.
+fn detect_avi(input: ContainerBytes<'_>) -> ContainerFormat {
     let buf = input.as_slice();
-    // Check for "RIFF" at offset 0
-    if buf.get(0..4) != Some(b"RIFF") {
-        return false;
+    if buf.get(0..4) == Some(b"RIFF") && buf.get(8..12) == Some(b"AVI ") {
+        ContainerFormat::Avi
+    } else {
+        ContainerFormat::Neither
     }
-    // Check for "AVI " at offset 8
-    buf.get(8..12) == Some(b"AVI ")
 }
 
-/// Helper to write a u32 to buffer at given offset, in the specified endianness.
+/// Helper to write a u32 into a buffer at given offset, in the specified endianness.
 /// The buffer indexing requires a raw usize; offset is converted at this boundary.
 pub(super) fn write_u32(
-    buffer: &mut [u8],
+    buffer: &mut FileBytes,
     offset: AbsoluteOffset,
-    value: u32,
+    value: FieldValue,
     endianness: Endianness,
 ) -> Result<(), DefectError> {
     // buffer indexing requires a raw usize; this is the single point where
@@ -248,10 +247,11 @@ pub(super) fn write_u32(
     let off = offset.get();
     let end = off.checked_add(4).ok_or(DefectError::SizeOverflow)?;
     let bytes = match endianness {
-        Endianness::Big => value.to_be_bytes(),
-        Endianness::Little => value.to_le_bytes(),
+        Endianness::Big => value.0.to_be_bytes(),
+        Endianness::Little => value.0.to_le_bytes(),
     };
     buffer
+        .0
         .get_mut(off..end)
         .map(|slice| slice.copy_from_slice(&bytes))
         .ok_or(DefectError::InvalidBoxStructure)
@@ -264,13 +264,13 @@ pub(super) fn parse_iso_box(
 ) -> Result<BoxInfo, DefectError> {
     let off = offset.get();
     let header_end = off.checked_add(8).ok_or(DefectError::SizeOverflow)?;
-    if header_end > input.len() {
+    if header_end > input.as_slice().len() {
         return Err(DefectError::InvalidBoxStructure);
     }
 
     let size_bytes = extract_4_bytes(input, offset).ok_or(DefectError::InvalidBoxStructure)?;
-    let size = u32::from_be_bytes(size_bytes);
-    let size_usize = usize::try_from(size).map_err(|_| DefectError::InvalidBoxStructure)?;
+    let size = u32::from_be_bytes(size_bytes.0);
+    let size_usize = usize::try_from(size).map_err(DefectError::invalid_box_structure)?;
 
     if size_usize < 8 {
         return Err(DefectError::InvalidBoxStructure);
@@ -279,7 +279,7 @@ pub(super) fn parse_iso_box(
     let box_end = off
         .checked_add(size_usize)
         .ok_or(DefectError::SizeOverflow)?;
-    if box_end > input.len() {
+    if box_end > input.as_slice().len() {
         return Err(DefectError::InvalidBoxStructure);
     }
 
@@ -293,7 +293,7 @@ pub(super) fn parse_iso_box(
         box_start: BoxStart::new(off),
         payload_start: PayloadStart::new(off.checked_add(8).ok_or(DefectError::SizeOverflow)?),
         payload_end: PayloadEnd::new(box_end),
-        tag: BoxTag::new(tag_bytes),
+        tag: BoxTag::new(tag_bytes.0),
     })
 }
 
@@ -305,7 +305,7 @@ pub(super) fn parse_avi_chunk(
 ) -> Result<BoxInfo, DefectError> {
     let off = offset.get();
     let header_end = off.checked_add(8).ok_or(DefectError::SizeOverflow)?;
-    if header_end > input.len() {
+    if header_end > input.as_slice().len() {
         return Err(DefectError::InvalidBoxStructure);
     }
 
@@ -315,31 +315,31 @@ pub(super) fn parse_avi_chunk(
         AbsoluteOffset::new(off.checked_add(4).ok_or(DefectError::SizeOverflow)?),
     )
     .ok_or(DefectError::SizeOverflow)?;
-    let size = u32::from_le_bytes(size_bytes);
-    let size_usize = usize::try_from(size).map_err(|_| DefectError::InvalidBoxStructure)?;
+    let size = u32::from_le_bytes(size_bytes.0);
+    let size_usize = usize::try_from(size).map_err(DefectError::invalid_box_structure)?;
 
     let chunk_end = off
         .checked_add(size_usize.checked_add(8).ok_or(DefectError::SizeOverflow)?)
         .ok_or(DefectError::SizeOverflow)?;
-    if chunk_end > input.len() {
+    if chunk_end > input.as_slice().len() {
         return Err(DefectError::InvalidBoxStructure);
     }
 
     // For LIST chunks, read the subtype as the tag instead of the literal "LIST" string
-    let (actual_tag, payload_start) = if tag_bytes == *b"LIST" {
+    let (actual_tag, payload_start) = if tag_bytes.0 == *b"LIST" {
         // Verify we can read the subtype (4 bytes at offset+8)
         let subtype_offset = off.checked_add(8).ok_or(DefectError::SizeOverflow)?;
         let subtype_bytes = extract_4_bytes(input, AbsoluteOffset::new(subtype_offset))
             .ok_or(DefectError::SizeOverflow)?;
         let payload_start_list = off.checked_add(12).ok_or(DefectError::SizeOverflow)?;
         (
-            BoxTag::new(subtype_bytes),
+            BoxTag::new(subtype_bytes.0),
             PayloadStart::new(payload_start_list),
         )
     } else {
         let payload_start_regular = off.checked_add(8).ok_or(DefectError::SizeOverflow)?;
         (
-            BoxTag::new(tag_bytes),
+            BoxTag::new(tag_bytes.0),
             PayloadStart::new(payload_start_regular),
         )
     };
@@ -372,8 +372,7 @@ pub(super) fn find_iso_box(
     input: ContainerBytes<'_>,
     path: &BoxPath,
 ) -> Result<BoxInfo, DefectError> {
-    let is_iso = is_iso_format(input)?;
-    if !is_iso {
+    if detect_format(input)? != ContainerFormat::Iso {
         return Err(DefectError::IncompatibleFileType);
     }
 
@@ -382,14 +381,14 @@ pub(super) fn find_iso_box(
         return Ok(BoxInfo {
             box_start: BoxStart::new(0),
             payload_start: PayloadStart::new(0),
-            payload_end: PayloadEnd::new(input.len()),
+            payload_end: PayloadEnd::new(input.as_slice().len()),
             tag: BoxTag::new(*b"root"),
         });
     }
 
     // Start with the entire file as the container
     let mut container_start = AbsoluteOffset::new(0);
-    let mut container_end = input.len();
+    let mut container_end = input.as_slice().len();
 
     for (depth, target_tag) in path_tags.iter().enumerate() {
         let is_last = depth.checked_add(1) == Some(path_tags.len());
@@ -431,8 +430,7 @@ pub(super) fn find_avi_box(
     input: ContainerBytes<'_>,
     path: &BoxPath,
 ) -> Result<BoxInfo, DefectError> {
-    let is_avi = is_avi_format(input);
-    if !is_avi {
+    if detect_format(input)? != ContainerFormat::Avi {
         return Err(DefectError::IncompatibleFileType);
     }
 
@@ -441,7 +439,7 @@ pub(super) fn find_avi_box(
         return Ok(BoxInfo {
             box_start: BoxStart::new(0),          // RIFF header starts at 0
             payload_start: PayloadStart::new(12), // After RIFF header
-            payload_end: PayloadEnd::new(input.len()),
+            payload_end: PayloadEnd::new(input.as_slice().len()),
             tag: BoxTag::new(*b"root"),
         });
     }
@@ -454,12 +452,12 @@ pub(super) fn find_avi_box(
 
         let mut found_box: Option<BoxInfo> = None;
 
-        while offset.get() < input.len() {
+        while offset.get() < input.as_slice().len() {
             if offset
                 .get()
                 .checked_add(8)
                 .ok_or(DefectError::SizeOverflow)?
-                > input.len()
+                > input.as_slice().len()
             {
                 break;
             }
@@ -478,22 +476,7 @@ pub(super) fn find_avi_box(
             }
 
             // Move to next chunk at this level
-            // An odd-length chunk is followed by one pad byte.
-            let chunk_total = chunk
-                .payload_end
-                .get()
-                .checked_sub(chunk.payload_start.get())
-                .ok_or(DefectError::SizeOverflow)?;
-            let padded_chunk_size = chunk_total
-                .checked_next_multiple_of(RIFF_CHUNK_ALIGNMENT)
-                .ok_or(DefectError::SizeOverflow)?;
-            offset = AbsoluteOffset::new(
-                chunk
-                    .payload_start
-                    .get()
-                    .checked_add(padded_chunk_size)
-                    .ok_or(DefectError::SizeOverflow)?,
-            );
+            offset = next_avi_sibling(&chunk)?;
         }
 
         if !is_last && found_box.is_none() {
@@ -514,8 +497,7 @@ pub(super) fn find_iso_box_with_ancestors(
     input: ContainerBytes<'_>,
     path: &BoxPath,
 ) -> Result<IsoBoxWithAncestors, DefectError> {
-    let is_iso = is_iso_format(input)?;
-    if !is_iso {
+    if detect_format(input)? != ContainerFormat::Iso {
         return Err(DefectError::IncompatibleFileType);
     }
 
@@ -525,7 +507,7 @@ pub(super) fn find_iso_box_with_ancestors(
             box_info: BoxInfo {
                 box_start: BoxStart::new(0),
                 payload_start: PayloadStart::new(0),
-                payload_end: PayloadEnd::new(input.len()),
+                payload_end: PayloadEnd::new(input.as_slice().len()),
                 tag: BoxTag::new(*b"root"),
             },
             ancestor_size_offsets: Vec::new(),
@@ -534,7 +516,7 @@ pub(super) fn find_iso_box_with_ancestors(
 
     // Start with the entire file as the container
     let mut container_start = AbsoluteOffset::new(0);
-    let mut container_end = input.len();
+    let mut container_end = input.as_slice().len();
     let mut ancestor_size_offsets = Vec::new();
 
     for (depth, target_tag) in path_tags.iter().enumerate() {
@@ -582,8 +564,7 @@ pub(super) fn find_avi_box_with_ancestors(
     input: ContainerBytes<'_>,
     path: &BoxPath,
 ) -> Result<AviBoxWithAncestors, DefectError> {
-    let is_avi = is_avi_format(input);
-    if !is_avi {
+    if detect_format(input)? != ContainerFormat::Avi {
         return Err(DefectError::IncompatibleFileType);
     }
 
@@ -593,7 +574,7 @@ pub(super) fn find_avi_box_with_ancestors(
             box_info: BoxInfo {
                 box_start: BoxStart::new(0),          // RIFF header starts at 0
                 payload_start: PayloadStart::new(12), // After RIFF header
-                payload_end: PayloadEnd::new(input.len()),
+                payload_end: PayloadEnd::new(input.as_slice().len()),
                 tag: BoxTag::new(*b"root"),
             },
             ancestor_size_offsets: vec![AbsoluteOffset::new(4)], // RIFF header size offset
@@ -611,12 +592,12 @@ pub(super) fn find_avi_box_with_ancestors(
 
         let mut found_box: Option<BoxInfo> = None;
 
-        while offset.get() < input.len() {
+        while offset.get() < input.as_slice().len() {
             if offset
                 .get()
                 .checked_add(8)
                 .ok_or(DefectError::SizeOverflow)?
-                > input.len()
+                > input.as_slice().len()
             {
                 break;
             }
@@ -634,7 +615,7 @@ pub(super) fn find_avi_box_with_ancestors(
                 // For non-last tags, look inside this chunk (only if it's a LIST chunk)
                 let tag_bytes =
                     extract_4_bytes(input, offset).ok_or(DefectError::InvalidBoxStructure)?;
-                if tag_bytes == *b"LIST" {
+                if tag_bytes.0 == *b"LIST" {
                     // Record this LIST chunk's size field offset (offset + 4)
                     ancestor_size_offsets.push(AbsoluteOffset::new(
                         offset
@@ -649,22 +630,7 @@ pub(super) fn find_avi_box_with_ancestors(
             }
 
             // Move to next chunk at this level
-            // An odd-length chunk is followed by one pad byte.
-            let chunk_total = chunk
-                .payload_end
-                .get()
-                .checked_sub(chunk.payload_start.get())
-                .ok_or(DefectError::SizeOverflow)?;
-            let padded_chunk_size = chunk_total
-                .checked_next_multiple_of(RIFF_CHUNK_ALIGNMENT)
-                .ok_or(DefectError::SizeOverflow)?;
-            offset = AbsoluteOffset::new(
-                chunk
-                    .payload_start
-                    .get()
-                    .checked_add(padded_chunk_size)
-                    .ok_or(DefectError::SizeOverflow)?,
-            );
+            offset = next_avi_sibling(&chunk)?;
         }
 
         if !is_last && found_box.is_none() {
@@ -673,4 +639,24 @@ pub(super) fn find_avi_box_with_ancestors(
     }
 
     Err(DefectError::BoxNotFound(path.clone()))
+}
+
+/// The offset of the chunk after `chunk` at the same level. An odd-length
+/// chunk is followed by one pad byte.
+fn next_avi_sibling(chunk: &BoxInfo) -> Result<AbsoluteOffset, DefectError> {
+    let chunk_total = chunk
+        .payload_end
+        .get()
+        .checked_sub(chunk.payload_start.get())
+        .ok_or(DefectError::SizeOverflow)?;
+    let padded_chunk_size = chunk_total
+        .checked_next_multiple_of(RIFF_CHUNK_ALIGNMENT)
+        .ok_or(DefectError::SizeOverflow)?;
+    Ok(AbsoluteOffset::new(
+        chunk
+            .payload_start
+            .get()
+            .checked_add(padded_chunk_size)
+            .ok_or(DefectError::SizeOverflow)?,
+    ))
 }

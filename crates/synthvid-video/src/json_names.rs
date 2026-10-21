@@ -3,7 +3,8 @@
 //! Provides validated string types for JSON object keys and entry names.
 //! Keys must match `[a-z_]+` and entry names must match `[a-z0-9-]+`.
 
-use std::fmt;
+use core::error::Error;
+use core::fmt;
 
 /// Error returned when attempting to construct an invalid [`JsonKey`].
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -23,7 +24,7 @@ impl fmt::Display for JsonKeyError {
     }
 }
 
-impl core::error::Error for JsonKeyError {}
+impl Error for JsonKeyError {}
 
 /// A validated string that matches `[a-z_]+` for use as a JSON object key.
 ///
@@ -38,11 +39,17 @@ impl JsonKey {
     /// # Errors
     ///
     /// Returns `Err(JsonKeyError::InvalidAlphabet)` if any character is outside the allowed set.
-    pub fn new(s: impl AsRef<str>) -> Result<Self, JsonKeyError> {
-        let s = s.as_ref();
-        (!s.is_empty() && s.bytes().all(|b| b.is_ascii_lowercase() || b == b'_'))
-            .then(|| Self(s.to_owned()))
-            .ok_or(JsonKeyError::InvalidAlphabet)
+    pub fn new<Name>(name: Name) -> Result<Self, JsonKeyError>
+    where
+        Name: AsRef<str>,
+    {
+        let text = name.as_ref();
+        (!text.is_empty()
+            && text
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte == b'_'))
+        .then(|| Self(text.to_owned()))
+        .ok_or(JsonKeyError::InvalidAlphabet)
     }
 
     /// Builds a key from text already known to match the alphabet.
@@ -51,8 +58,8 @@ impl JsonKey {
     /// A public infallible constructor would be the same hole as a public
     /// raw-value setter: it would let a caller assert validity the type is
     /// supposed to establish.
-    pub(crate) fn from_known(s: &'static str) -> Self {
-        Self(s.to_owned())
+    pub(crate) fn from_known(text: &'static str) -> Self {
+        Self(text.to_owned())
     }
 
     /// Returns the validated key as a string slice.
@@ -82,7 +89,7 @@ impl fmt::Display for JsonEntryNameError {
     }
 }
 
-impl core::error::Error for JsonEntryNameError {}
+impl Error for JsonEntryNameError {}
 
 /// A validated string that matches `[a-z0-9-]+` for use as a catalog entry name.
 ///
@@ -97,12 +104,16 @@ impl JsonEntryName {
     /// # Errors
     ///
     /// Returns `Err(JsonEntryNameError::InvalidAlphabet)` if any character is outside the allowed set.
-    pub fn new(s: impl AsRef<str>) -> Result<Self, JsonEntryNameError> {
-        let s = s.as_ref();
-        (!s.is_empty()
-            && s.bytes()
-                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-'))
-        .then(|| Self(s.to_owned()))
+    pub fn new<Name>(name: Name) -> Result<Self, JsonEntryNameError>
+    where
+        Name: AsRef<str>,
+    {
+        let text = name.as_ref();
+        (!text.is_empty()
+            && text
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-'))
+        .then(|| Self(text.to_owned()))
         .ok_or(JsonEntryNameError::InvalidAlphabet)
     }
 
@@ -114,47 +125,4 @@ impl JsonEntryName {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn make_key(s: &str) -> JsonKey {
-        JsonKey::new(s).expect("test key must be valid")
-    }
-
-    fn make_entry_name(s: &str) -> JsonEntryName {
-        JsonEntryName::new(s).expect("test entry name must be valid")
-    }
-
-    #[test]
-    fn test_json_key_valid() {
-        assert_eq!(make_key("background").as_str(), "background");
-        assert_eq!(make_key("frame_count").as_str(), "frame_count");
-        assert_eq!(make_key("a").as_str(), "a");
-        assert_eq!(make_key("_").as_str(), "_");
-    }
-
-    #[test]
-    fn test_json_key_invalid() {
-        assert!(JsonKey::new("Background").is_err(), "uppercase rejected");
-        assert!(JsonKey::new("frame-count").is_err(), "hyphen rejected");
-        assert!(JsonKey::new("").is_err(), "empty rejected");
-        assert!(JsonKey::new("123").is_err(), "digit in key rejected");
-    }
-
-    #[test]
-    fn test_json_entry_name_valid() {
-        assert_eq!(make_entry_name("example").as_str(), "example");
-        assert_eq!(make_entry_name("test-1").as_str(), "test-1");
-        assert_eq!(make_entry_name("a0").as_str(), "a0");
-    }
-
-    #[test]
-    fn test_json_entry_name_invalid() {
-        assert!(JsonEntryName::new("Test").is_err(), "uppercase rejected");
-        assert!(
-            JsonEntryName::new("test_name").is_err(),
-            "underscore rejected"
-        );
-        assert!(JsonEntryName::new("").is_err(), "empty rejected");
-    }
-}
+mod tests;

@@ -5,6 +5,8 @@
 //! ones that are legal, and the serializer interpolated it into the document
 //! without escaping, so a stray quote produced invalid JSON.
 
+use core::fmt;
+
 /// Which backdrop a scene declared.
 ///
 /// A closed set of five, so it is an enum rather than a string. As a `String`
@@ -24,17 +26,16 @@ pub enum BackgroundName {
     Grid,
 }
 
-impl BackgroundName {
-    /// Returns the name as it appears in a manifest.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
+/// Writes the name as it appears in a manifest.
+impl fmt::Display for BackgroundName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
             Self::Solid => "solid",
             Self::Checker => "checker",
             Self::Gradient => "gradient",
             Self::Blobs => "blobs",
             Self::Grid => "grid",
-        }
+        })
     }
 }
 
@@ -53,15 +54,14 @@ pub enum ShapeName {
     Cross,
 }
 
-impl ShapeName {
-    /// Returns the name as it appears in a manifest.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
+/// Writes the name as it appears in a manifest.
+impl fmt::Display for ShapeName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
             Self::Disc => "disc",
             Self::Rect => "rect",
             Self::Polygon => "polygon",
             Self::Cross => "cross",
-        }
+        })
     }
 }

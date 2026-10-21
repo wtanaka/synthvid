@@ -17,18 +17,25 @@
 //! | `video_spec` | the video specification and its encoding and container |
 //! | `render` | rendering one specification (`render`)                    |
 //! | `manifest` | manifest document definition                            |
+//! | `manifest_values` | the exact values a manifest records              |
 //! | `writer` | the canonical JSON writer manifests are built with       |
 //! | `object_state` | the per-frame state of every object, for the manifest |
 //! | `keys`, `json_names`, `names` | closed key and name sets            |
 
 #![forbid(unsafe_code)]
 
+pub mod frame_bounds;
 pub mod json_names;
 pub mod keys;
 pub mod manifest;
+pub mod manifest_error;
+pub mod manifest_values;
 pub mod names;
 pub mod object_state;
 pub mod render;
+pub mod render_output;
+#[cfg(test)]
+pub mod testutil;
 pub mod video_spec;
 pub mod writer;
 
@@ -39,5 +46,6 @@ pub use manifest::{
 };
 pub use names::{BackgroundName, ShapeName};
 pub use render::{render, CameraStep, GeneratedEntry, GenerationError, ObjectStep};
+pub use render_output::{ManifestJson, MediaBytes};
 pub use video_spec::{Container, DisplayRotation, Encoding, VideoSpec};
-pub use writer::{JsonArray, JsonEntryName, JsonKey, JsonObject};
+pub use writer::{JsonArray, JsonEntryName, JsonInt, JsonKey, JsonObject};

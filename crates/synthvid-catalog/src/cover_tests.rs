@@ -3,178 +3,246 @@
 #[cfg(test)]
 mod tests {
     use super::super::*;
-    use std::collections::BTreeSet;
-    use synthvid_encode::defects::Defect;
-    use synthvid_scene::{Dimensions, Height, Width};
+    extern crate alloc;
+    use crate::generator::generate_entry;
+    use alloc::collections::BTreeSet;
+    use core::num::NonZeroU64;
+    use std::path::Path;
+    use synthvid_scene::{Height, Width};
+    use synthvid_testkit::{ensure, ensure_eq, ensure_ne, Fail, OrFail as _};
 
-    #[test]
-    fn test_entry_names_are_unique() {
-        let catalogue = generate_catalogue().unwrap();
+    fn check_entry_names_are_unique() -> Result<(), Fail> {
+        let catalogue = generate_catalogue().or_fail()?;
         let mut names = BTreeSet::new();
         for entry in &catalogue {
             let name = entry.manifest_name();
-            assert!(
+            ensure!(
                 names.insert(name.as_str().to_owned()),
                 "entry names must be unique"
             );
         }
+        Ok(())
     }
 
     #[test]
-    fn test_entry_names_are_stable() {
-        let entry = sample_entry_for_test();
+    fn entry_names_are_unique() {
+        assert_eq!(check_entry_names_are_unique(), Ok(()));
+    }
+
+    fn check_entry_names_are_stable() -> Result<(), Fail> {
+        let entry = sample_entry_for_test().or_fail()?;
 
         let name1 = entry.manifest_name();
         let name2 = entry.manifest_name();
-        assert_eq!(name1.as_str(), name2.as_str(), "entry names must be stable");
+        ensure_eq!(name1.as_str(), name2.as_str(), "entry names must be stable");
+        Ok(())
     }
 
     #[test]
-    fn test_entry_axis_differences_produce_different_names() {
-        let entry1 = sample_entry_for_test();
+    fn entry_names_are_stable() {
+        assert_eq!(check_entry_names_are_stable(), Ok(()));
+    }
+
+    fn check_entry_axis_differences_produce_different_names() -> Result<(), Fail> {
+        let entry1 = sample_entry_for_test().or_fail()?;
 
         let mut entry2 = entry1.clone();
         entry2.frame_rate = FrameRateValue::Sixty; // Change one axis
 
         let name1 = entry1.manifest_name();
         let name2 = entry2.manifest_name();
-        assert_ne!(
+        ensure_ne!(
             name1.as_str(),
             name2.as_str(),
             "different axes must produce different names"
         );
+        Ok(())
     }
 
     #[test]
-    fn test_all_entries_have_names() {
-        let catalogue = generate_catalogue().unwrap();
-        assert!(!catalogue.is_empty(), "catalog must have entries");
+    fn entry_axis_differences_produce_different_names() {
+        assert_eq!(
+            check_entry_axis_differences_produce_different_names(),
+            Ok(())
+        );
+    }
+
+    fn check_all_entries_have_names() -> Result<(), Fail> {
+        let catalogue = generate_catalogue().or_fail()?;
+        ensure!(!catalogue.is_empty(), "catalog must have entries");
         for entry in &catalogue {
-            let _manifest = entry.manifest_name();
-            let _media = entry.media_name();
-            // If we reach here, names were successfully generated
+            ensure!(
+                !entry.manifest_name().as_str().is_empty(),
+                "manifest name must be non-empty"
+            );
+            ensure!(
+                !entry.media_name().to_string().is_empty(),
+                "media name must be non-empty"
+            );
         }
+        Ok(())
     }
 
     #[test]
-    fn test_catalogue_includes_with_scale() {
-        let catalogue = generate_catalogue().unwrap();
-        let has_with_scale = catalogue.iter().any(|e| e.scale == ScaleAxis::WithScale);
-        assert!(has_with_scale, "catalog must include entries with scale");
+    fn all_entries_have_names() {
+        assert_eq!(check_all_entries_have_names(), Ok(()));
+    }
+
+    fn check_catalogue_includes_with_scale() -> Result<(), Fail> {
+        let catalogue = generate_catalogue().or_fail()?;
+        let has_with_scale = catalogue
+            .iter()
+            .any(|entry| entry.scale == ScaleAxis::Declared);
+        ensure!(has_with_scale, "catalog must include entries with scale");
+        Ok(())
     }
 
     #[test]
-    fn test_catalogue_includes_without_scale() {
-        let catalogue = generate_catalogue().unwrap();
-        let has_without_scale = catalogue.iter().any(|e| e.scale == ScaleAxis::NoScale);
-        assert!(
+    fn catalogue_includes_with_scale() {
+        assert_eq!(check_catalogue_includes_with_scale(), Ok(()));
+    }
+
+    fn check_catalogue_includes_without_scale() -> Result<(), Fail> {
+        let catalogue = generate_catalogue().or_fail()?;
+        let has_without_scale = catalogue
+            .iter()
+            .any(|entry| entry.scale == ScaleAxis::Undeclared);
+        ensure!(
             has_without_scale,
             "catalog must include entries without scale"
         );
+        Ok(())
     }
 
     #[test]
-    fn test_catalogue_includes_large_frame_count() {
-        let catalogue = generate_catalogue().unwrap();
-        let has_large = catalogue.iter().any(|e| e.frame_count.get() >= 20000);
-        assert!(
+    fn catalogue_includes_without_scale() {
+        assert_eq!(check_catalogue_includes_without_scale(), Ok(()));
+    }
+
+    fn check_catalogue_includes_large_frame_count() -> Result<(), Fail> {
+        let catalogue = generate_catalogue().or_fail()?;
+        let has_large = catalogue
+            .iter()
+            .any(|entry| entry.frame_count.get() >= 20000);
+        ensure!(
             has_large,
             "catalog must include entries with frame count >= 20000"
         );
+        Ok(())
     }
 
     #[test]
-    fn test_catalogue_includes_all_track_matrices() {
-        let catalogue = generate_catalogue().unwrap();
-        let matrices: BTreeSet<_> = catalogue.iter().map(|e| e.track_matrix).collect();
-        assert!(
+    fn catalogue_includes_large_frame_count() {
+        assert_eq!(check_catalogue_includes_large_frame_count(), Ok(()));
+    }
+
+    fn check_catalogue_includes_all_track_matrices() -> Result<(), Fail> {
+        let catalogue = generate_catalogue().or_fail()?;
+        let matrices: BTreeSet<_> = catalogue.iter().map(|entry| entry.track_matrix).collect();
+        ensure!(
             matrices.contains(&TrackMatrixAxis::Identity),
             "must include identity matrix"
         );
-        assert!(
+        ensure!(
             matrices.contains(&TrackMatrixAxis::Rotate90),
             "must include 90-degree rotation"
         );
-        assert!(
+        ensure!(
             matrices.contains(&TrackMatrixAxis::Rotate180),
             "must include 180-degree rotation"
         );
-        assert!(
+        ensure!(
             matrices.contains(&TrackMatrixAxis::Rotate270),
             "must include 270-degree rotation"
         );
+        Ok(())
     }
 
     #[test]
-    fn test_catalogue_includes_all_defect_variants() {
-        let catalogue = generate_catalogue().unwrap();
+    fn catalogue_includes_all_track_matrices() {
+        assert_eq!(check_catalogue_includes_all_track_matrices(), Ok(()));
+    }
 
-        // Check that all discriminants are present
-        let mut found_truncate_before = false;
-        let mut found_truncate_within = false;
-        let mut found_zero_length = false;
-        let mut found_oversized_len = false;
-        let mut found_undersized_len = false;
-        let mut found_offset_past_end = false;
-        let mut found_duplicate_box = false;
-        let mut found_unknown_box = false;
-        let mut found_zero_frame_rate = false;
-        let mut found_zero_dimension = false;
-        let mut found_absurd_frame_rate = false;
-        let mut found_non_monotonic = false;
-        let mut found_declared_count_mismatch = false;
-        let mut found_reordered_boxes = false;
-        let mut found_none = false;
+    /// The name of a defect variant.
+    #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+    struct VariantName(&'static str);
 
-        for entry in &catalogue {
-            match &entry.defect {
-                None => found_none = true,
-                Some(Defect::TruncateBefore(_)) => found_truncate_before = true,
-                Some(Defect::TruncateWithin { .. }) => found_truncate_within = true,
-                Some(Defect::ZeroLengthPayload(_)) => found_zero_length = true,
-                Some(Defect::OversizedBoxLength(_)) => found_oversized_len = true,
-                Some(Defect::UndersizedBoxLength(_)) => found_undersized_len = true,
-                Some(Defect::OffsetPastEnd(_)) => found_offset_past_end = true,
-                Some(Defect::DuplicateBox(_)) => found_duplicate_box = true,
-                Some(Defect::UnknownBox { .. }) => found_unknown_box = true,
-                Some(Defect::ZeroFrameRate) => found_zero_frame_rate = true,
-                Some(Defect::ZeroDimension(_)) => found_zero_dimension = true,
-                Some(Defect::AbsurdFrameRate(_)) => found_absurd_frame_rate = true,
-                Some(Defect::NonMonotonicTimestamps) => found_non_monotonic = true,
-                Some(Defect::DeclaredCountMismatch { .. }) => found_declared_count_mismatch = true,
-                Some(Defect::ReorderedBoxes(_, _)) => found_reordered_boxes = true,
-            }
+    /// The name of an entry's defect variant, `None` when it has none.
+    ///
+    /// The match is exhaustive, so a new variant cannot be added without
+    /// naming it here.
+    fn defect_variant(defect: Option<&Defect>) -> VariantName {
+        match defect {
+            None => VariantName("None"),
+            Some(Defect::TruncateBefore(_)) => VariantName("TruncateBefore"),
+            Some(Defect::TruncateWithin {
+                address: _address,
+                offset: _offset,
+            }) => VariantName("TruncateWithin"),
+            Some(Defect::ZeroLengthPayload(_)) => VariantName("ZeroLengthPayload"),
+            Some(Defect::OversizedBoxLength(_)) => VariantName("OversizedBoxLength"),
+            Some(Defect::UndersizedBoxLength(_)) => VariantName("UndersizedBoxLength"),
+            Some(Defect::OffsetPastEnd(_)) => VariantName("OffsetPastEnd"),
+            Some(Defect::DuplicateBox(_)) => VariantName("DuplicateBox"),
+            Some(Defect::UnknownBox {
+                after: _after,
+                tag: _tag,
+            }) => VariantName("UnknownBox"),
+            Some(Defect::ZeroFrameRate) => VariantName("ZeroFrameRate"),
+            Some(Defect::ZeroDimension(_)) => VariantName("ZeroDimension"),
+            Some(Defect::AbsurdFrameRate(_)) => VariantName("AbsurdFrameRate"),
+            Some(Defect::NonMonotonicTimestamps) => VariantName("NonMonotonicTimestamps"),
+            Some(Defect::DeclaredCountMismatch {
+                declared: _declared,
+            }) => VariantName("DeclaredCountMismatch"),
+            Some(Defect::ReorderedBoxes(_, _)) => VariantName("ReorderedBoxes"),
         }
+    }
 
-        assert!(found_none, "must include no-defect entries");
-        assert!(found_truncate_before, "must include TruncateBefore");
-        assert!(found_truncate_within, "must include TruncateWithin");
-        assert!(found_zero_length, "must include ZeroLengthPayload");
-        assert!(found_oversized_len, "must include OversizedBoxLength");
-        assert!(found_undersized_len, "must include UndersizedBoxLength");
-        assert!(found_offset_past_end, "must include OffsetPastEnd");
-        assert!(found_duplicate_box, "must include DuplicateBox");
-        assert!(found_unknown_box, "must include UnknownBox");
-        assert!(found_zero_frame_rate, "must include ZeroFrameRate");
-        assert!(found_zero_dimension, "must include ZeroDimension");
-        assert!(found_absurd_frame_rate, "must include AbsurdFrameRate");
-        assert!(found_non_monotonic, "must include NonMonotonicTimestamps");
-        assert!(
-            found_declared_count_mismatch,
-            "must include DeclaredCountMismatch"
-        );
-        assert!(found_reordered_boxes, "must include ReorderedBoxes");
+    fn check_catalogue_includes_all_defect_variants() -> Result<(), Fail> {
+        let catalogue = generate_catalogue().or_fail()?;
+        let found: BTreeSet<VariantName> = catalogue
+            .iter()
+            .map(|entry| defect_variant(entry.defect.as_ref()))
+            .collect();
+        for variant in [
+            "None",
+            "TruncateBefore",
+            "TruncateWithin",
+            "ZeroLengthPayload",
+            "OversizedBoxLength",
+            "UndersizedBoxLength",
+            "OffsetPastEnd",
+            "DuplicateBox",
+            "UnknownBox",
+            "ZeroFrameRate",
+            "ZeroDimension",
+            "AbsurdFrameRate",
+            "NonMonotonicTimestamps",
+            "DeclaredCountMismatch",
+            "ReorderedBoxes",
+        ] {
+            ensure!(
+                found.contains(&VariantName(variant)),
+                "must include {variant}"
+            );
+        }
+        Ok(())
     }
 
     #[test]
-    fn test_media_names_have_correct_extension() {
-        let entry_iso = sample_entry_for_test();
+    fn catalogue_includes_all_defect_variants() {
+        assert_eq!(check_catalogue_includes_all_defect_variants(), Ok(()));
+    }
 
-        let media_name_iso = entry_iso.media_name();
-        let iso_path = std::path::Path::new(media_name_iso.as_str());
-        assert!(
+    fn check_media_names_have_correct_extension() -> Result<(), Fail> {
+        let entry_iso = sample_entry_for_test().or_fail()?;
+
+        let media_name_iso = entry_iso.media_name().to_string();
+        let iso_path = Path::new(media_name_iso.as_str());
+        ensure!(
             matches!(
-                iso_path.extension().and_then(|e| e.to_str()),
+                iso_path.extension().and_then(|extension| extension.to_str()),
                 Some(ext) if ext.eq_ignore_ascii_case("mp4")
             ),
             "ISO container must use .mp4 extension"
@@ -182,82 +250,95 @@ mod tests {
 
         let mut entry_avi = entry_iso;
         entry_avi.container = ContainerAxis::Avi;
-        let media_name_avi = entry_avi.media_name();
-        let avi_path = std::path::Path::new(media_name_avi.as_str());
-        assert!(
+        let media_name_avi = entry_avi.media_name().to_string();
+        let avi_path = Path::new(media_name_avi.as_str());
+        ensure!(
             matches!(
-                avi_path.extension().and_then(|e| e.to_str()),
+                avi_path.extension().and_then(|extension| extension.to_str()),
                 Some(ext) if ext.eq_ignore_ascii_case("avi")
             ),
             "AVI container must use .avi extension"
         );
+        Ok(())
     }
 
     #[test]
-    fn test_pairwise_coverage_dimensions_and_frame_count() {
-        let catalogue = generate_catalogue().unwrap();
+    fn media_names_have_correct_extension() {
+        assert_eq!(check_media_names_have_correct_extension(), Ok(()));
+    }
+
+    fn check_pairwise_coverage_dimensions_and_frame_count() -> Result<(), Fail> {
+        let catalogue = generate_catalogue().or_fail()?;
         let dimensions = [
             cover_axes::make_dimensions(cover_axes::RawSize {
-                width: 16,
-                height: 16,
+                width: NonZeroU16::new(16),
+                height: NonZeroU16::new(16),
             })
-            .unwrap(),
+            .or_fail()?,
             cover_axes::make_dimensions(cover_axes::RawSize {
-                width: 320,
-                height: 240,
+                width: NonZeroU16::new(320),
+                height: NonZeroU16::new(240),
             })
-            .unwrap(),
+            .or_fail()?,
             cover_axes::make_dimensions(cover_axes::RawSize {
-                width: 640,
-                height: 480,
+                width: NonZeroU16::new(640),
+                height: NonZeroU16::new(480),
             })
-            .unwrap(),
+            .or_fail()?,
             cover_axes::make_dimensions(cover_axes::RawSize {
-                width: 1280,
-                height: 720,
+                width: NonZeroU16::new(1280),
+                height: NonZeroU16::new(720),
             })
-            .unwrap(),
+            .or_fail()?,
             cover_axes::make_dimensions(cover_axes::RawSize {
-                width: 1920,
-                height: 1080,
+                width: NonZeroU16::new(1920),
+                height: NonZeroU16::new(1080),
             })
-            .unwrap(),
+            .or_fail()?,
         ];
         let frame_counts = [
-            FrameCountValue::new(1),
-            FrameCountValue::new(10),
-            FrameCountValue::new(100),
-            FrameCountValue::new(1000),
-            FrameCountValue::new(20000),
+            FrameCountValue::new(1).or_fail()?,
+            FrameCountValue::new(10).or_fail()?,
+            FrameCountValue::new(100).or_fail()?,
+            FrameCountValue::new(1000).or_fail()?,
+            FrameCountValue::new(20000).or_fail()?,
         ];
 
         // Every dimension should pair with every frame count that fits the
         // volume cap; the others would render gigabytes.
         for dim in &dimensions {
             for fc in &frame_counts {
-                let pixel_frames = u64::from(dim.width.get().get())
-                    * u64::from(dim.height.get().get())
-                    * u64::from(fc.get());
+                let pixel_frames = NonZeroU64::from(dim.width.get())
+                    .get()
+                    .checked_mul(NonZeroU64::from(dim.height.get()).get())
+                    .or_fail()?
+                    .checked_mul(u64::from(fc.get()))
+                    .or_fail()?;
                 if pixel_frames > 10_000_000 {
-                    assert!(
+                    ensure!(
                         !catalogue
                             .iter()
-                            .any(|e| e.dimensions == *dim && e.frame_count == *fc),
+                            .any(|entry| entry.dimensions == *dim && entry.frame_count == *fc),
                         "catalog must not hold the oversized pair ({dim:?}, {fc:?})"
                     );
                     continue;
                 }
                 let found = catalogue
                     .iter()
-                    .any(|e| e.dimensions == *dim && e.frame_count == *fc);
-                assert!(found, "catalog must have pair ({dim:?}, {fc:?})");
+                    .any(|entry| entry.dimensions == *dim && entry.frame_count == *fc);
+                ensure!(found, "catalog must have pair ({dim:?}, {fc:?})");
             }
         }
+        Ok(())
     }
 
     #[test]
-    fn test_pairwise_coverage_background_and_shape() {
-        let catalogue = generate_catalogue().unwrap();
+    fn pairwise_coverage_dimensions_and_frame_count() {
+        assert_eq!(check_pairwise_coverage_dimensions_and_frame_count(), Ok(()));
+    }
+
+    fn check_pairwise_coverage_background_and_shape() -> Result<(), Fail> {
+        let catalogue = generate_catalogue().or_fail()?;
         let backgrounds = [
             BackgroundAxis::Solid,
             BackgroundAxis::Checker,
@@ -277,15 +358,20 @@ mod tests {
             for sh in &shapes {
                 let found = catalogue
                     .iter()
-                    .any(|e| e.background == *bg && e.shape == *sh);
-                assert!(found, "catalog must have pair ({bg:?}, {sh:?})");
+                    .any(|entry| entry.background == *bg && entry.shape == *sh);
+                ensure!(found, "catalog must have pair ({bg:?}, {sh:?})");
             }
         }
+        Ok(())
     }
 
     #[test]
-    fn test_pairwise_coverage_coding_and_container() {
-        let catalogue = generate_catalogue().unwrap();
+    fn pairwise_coverage_background_and_shape() {
+        assert_eq!(check_pairwise_coverage_background_and_shape(), Ok(()));
+    }
+
+    fn check_pairwise_coverage_coding_and_container() -> Result<(), Fail> {
+        let catalogue = generate_catalogue().or_fail()?;
         let codings = [CodingAxis::Raw, CodingAxis::MotionJpeg];
         let containers = [ContainerAxis::Iso, ContainerAxis::Avi];
 
@@ -294,16 +380,21 @@ mod tests {
             for cont in &containers {
                 let found = catalogue
                     .iter()
-                    .any(|e| e.coding == *cod && e.container == *cont);
-                assert!(found, "catalog must have pair ({cod:?}, {cont:?})");
+                    .any(|entry| entry.coding == *cod && entry.container == *cont);
+                ensure!(found, "catalog must have pair ({cod:?}, {cont:?})");
             }
         }
+        Ok(())
     }
 
     #[test]
-    fn test_pairwise_coverage_scale_and_frame_rate() {
-        let catalogue = generate_catalogue().unwrap();
-        let scales = [ScaleAxis::WithScale, ScaleAxis::NoScale];
+    fn pairwise_coverage_coding_and_container() {
+        assert_eq!(check_pairwise_coverage_coding_and_container(), Ok(()));
+    }
+
+    fn check_pairwise_coverage_scale_and_frame_rate() -> Result<(), Fail> {
+        let catalogue = generate_catalogue().or_fail()?;
+        let scales = [ScaleAxis::Declared, ScaleAxis::Undeclared];
         let frame_rates = [
             FrameRateValue::Thirty,
             FrameRateValue::Sixty,
@@ -318,19 +409,24 @@ mod tests {
             for fr in &frame_rates {
                 let found = catalogue
                     .iter()
-                    .any(|e| e.scale == *sc && e.frame_rate == *fr);
-                assert!(found, "catalog must have pair ({sc:?}, {fr:?})");
+                    .any(|entry| entry.scale == *sc && entry.frame_rate == *fr);
+                ensure!(found, "catalog must have pair ({sc:?}, {fr:?})");
             }
         }
+        Ok(())
     }
 
     #[test]
-    fn test_no_entry_pairs_a_container_with_the_other_formats_defect() {
-        let catalogue = generate_catalogue().unwrap();
+    fn pairwise_coverage_scale_and_frame_rate() {
+        assert_eq!(check_pairwise_coverage_scale_and_frame_rate(), Ok(()));
+    }
+
+    fn check_no_entry_pairs_a_container_with_the_other_formats_defect() -> Result<(), Fail> {
+        let catalogue = generate_catalogue().or_fail()?;
         for entry in &catalogue {
             if let Some(defect) = &entry.defect {
                 if let Some(kind) = cover_axes::defect_container_kind(defect) {
-                    assert_eq!(
+                    ensure_eq!(
                         kind,
                         cover_axes::container_kind(entry.container),
                         "entry {} pairs a container with a defect addressed in the other format: {:?}",
@@ -340,16 +436,25 @@ mod tests {
                 }
             }
         }
+        Ok(())
+    }
+
+    #[test]
+    fn no_entry_pairs_a_container_with_the_other_formats_defect() {
+        assert_eq!(
+            check_no_entry_pairs_a_container_with_the_other_formats_defect(),
+            Ok(())
+        );
     }
 
     /// Every distinct container, coding and defect the catalogue combines,
     /// each as a small entry: the defect's address and the encoding it meets
     /// are what decide whether it applies, not the picture size.
-    fn small_entry_per_defect_combination() -> Vec<Entry> {
-        let size = Dimensions::new(Width::new(16).unwrap(), Height::new(16).unwrap());
+    fn small_entry_per_defect_combination() -> Result<Vec<Entry>, Fail> {
+        let size = Dimensions::new(Width::new(16).or_fail()?, Height::new(16).or_fail()?);
         let mut seen: Vec<(ContainerAxis, CodingAxis, Defect)> = Vec::new();
         let mut small = Vec::new();
-        for mut entry in generate_catalogue().unwrap() {
+        for mut entry in generate_catalogue().or_fail()? {
             let Some(defect) = entry.defect.clone() else {
                 continue;
             };
@@ -359,43 +464,77 @@ mod tests {
             }
             seen.push(combination);
             entry.dimensions = size;
-            entry.frame_count = FrameCountValue::new(3);
+            entry.frame_count = FrameCountValue::new(3).or_fail()?;
             small.push(entry);
         }
-        small
+        Ok(small)
     }
 
-    #[test]
-    fn test_every_defect_applies_to_every_container_and_coding_it_is_paired_with() {
-        for entry in small_entry_per_defect_combination() {
-            let generated = crate::generator::generate_entry(&entry);
-            assert!(
-                generated.is_ok(),
-                "{:?} on {:?} {:?} fails to apply: {:?}",
-                entry.defect,
-                entry.container,
-                entry.coding,
-                generated.err()
-            );
+    fn check_every_defect_applies_to_every_container_and_coding_it_is_paired_with(
+    ) -> Result<(), Fail> {
+        for entry in small_entry_per_defect_combination()? {
+            let generated = generate_entry(&entry);
+            if let Err(cause) = generated {
+                return Err(Fail::here(format_args!(
+                    "{:?} on {:?} {:?} fails to apply: {cause:?}",
+                    entry.defect, entry.container, entry.coding,
+                )));
+            }
         }
+        Ok(())
     }
 
     #[test]
-    fn test_both_formats_get_both_truncations() {
+    fn every_defect_applies_to_every_container_and_coding_it_is_paired_with() {
+        assert_eq!(
+            check_every_defect_applies_to_every_container_and_coding_it_is_paired_with(),
+            Ok(())
+        );
+    }
+
+    fn check_both_formats_get_both_truncations() -> Result<(), Fail> {
         use synthvid_encode::defects::ContainerKind;
-        let catalogue = generate_catalogue().unwrap();
+        let catalogue = generate_catalogue().or_fail()?;
         for kind in [ContainerKind::Iso, ContainerKind::Avi] {
             for want_before in [true, false] {
-                assert!(
-                    catalogue.iter().any(|e| match &e.defect {
-                        Some(Defect::TruncateBefore(a)) => want_before && a.kind() == kind,
-                        Some(Defect::TruncateWithin { address, .. }) =>
-                            !want_before && address.kind() == kind,
-                        _ => false,
+                ensure!(
+                    catalogue.iter().any(|entry| match &entry.defect {
+                        Some(Defect::TruncateBefore(address)) =>
+                            want_before && address.kind() == kind,
+                        Some(Defect::TruncateWithin {
+                            address,
+                            offset: _offset,
+                        }) => !want_before && address.kind() == kind,
+                        Some(Defect::UnknownBox {
+                            after: _after,
+                            tag: _tag,
+                        }) => false,
+                        Some(Defect::DeclaredCountMismatch {
+                            declared: _declared,
+                        }) => false,
+                        Some(
+                            Defect::ZeroLengthPayload(_)
+                            | Defect::OversizedBoxLength(_)
+                            | Defect::UndersizedBoxLength(_)
+                            | Defect::OffsetPastEnd(_)
+                            | Defect::DuplicateBox(_)
+                            | Defect::ZeroFrameRate
+                            | Defect::ZeroDimension(_)
+                            | Defect::AbsurdFrameRate(_)
+                            | Defect::NonMonotonicTimestamps
+                            | Defect::ReorderedBoxes(_, _),
+                        )
+                        | None => false,
                     }),
                     "no {kind:?} entry with truncate-before={want_before}"
                 );
             }
         }
+        Ok(())
+    }
+
+    #[test]
+    fn both_formats_get_both_truncations() {
+        assert_eq!(check_both_formats_get_both_truncations(), Ok(()));
     }
 }

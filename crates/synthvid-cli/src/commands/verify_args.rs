@@ -1,29 +1,32 @@
 //! Command-line arguments of the verify subcommand.
 
 use super::entry_name::{Requested, RequestedName};
+use super::verify_values::FlagValue;
+use super::Argv;
 use core::fmt::{Display, Formatter, Result as FmtResult};
 use core::iter::Peekable;
+use core::slice::Iter;
 use std::path::PathBuf;
 
 /// A flag the verify subcommand takes a value for.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Flag {
-    /// `--corpus DIR`
+    /// `--corpus DIR`.
     Corpus,
-    /// `--lock FILE`
+    /// `--lock FILE`.
     Lock,
-    /// `--only NAME`
+    /// `--only NAME`.
     Only,
 }
 
-impl Flag {
-    /// The flag as typed.
-    const fn as_str(self) -> &'static str {
-        match self {
+/// Writes the flag as typed.
+impl Display for Flag {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+        f.write_str(match self {
             Self::Corpus => "--corpus",
             Self::Lock => "--lock",
             Self::Only => "--only",
-        }
+        })
     }
 }
 
@@ -41,7 +44,7 @@ pub(super) enum UsageError {
 impl Display for UsageError {
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         match self {
-            Self::MissingValue(flag) => write!(f, "{} requires an argument", flag.as_str()),
+            Self::MissingValue(flag) => write!(f, "{flag} requires an argument"),
             Self::UnknownOption(arg) => write!(f, "unknown option: {arg}"),
             Self::CorpusWithRegenerationFlags => {
                 f.write_str("--corpus cannot be combined with --only or --lock")
@@ -71,34 +74,43 @@ pub(super) struct VerifyArgs {
     pub(super) mode: VerifyMode,
 }
 
+/// The verify arguments not yet read, in the order they were typed.
+struct Remaining<'args>(Peekable<Iter<'args, String>>);
+
 /// The value after a flag. A following argument that is itself a flag is not a value.
-fn value_of<'a>(
-    args: &mut Peekable<impl Iterator<Item = &'a String>>,
-    flag: Flag,
-) -> Result<String, UsageError> {
-    args.next_if(|next| !next.starts_with("--"))
+fn value_of(args: &mut Remaining<'_>, flag: Flag) -> Result<FlagValue, UsageError> {
+    args.0
+        .next_if(|next| !next.starts_with("--"))
         .cloned()
+        .map(FlagValue)
         .ok_or(UsageError::MissingValue(flag))
 }
 
 /// Parses arguments for the verify subcommand.
-pub(super) fn parse_verify_args(args: &[String]) -> Result<VerifyArgs, UsageError> {
-    let mut corpus_dir = None;
-    let mut lock_file = None;
+pub(super) fn parse_verify_args(args: Argv<'_>) -> Result<VerifyArgs, UsageError> {
+    let mut corpus_dir: Option<String> = None;
+    // The lock file used when `--lock` is not given.
+    let mut lock_file = PathBuf::from("catalog.lock");
+    let mut lock_given = false;
     let mut only_names: Vec<RequestedName> = Vec::new();
 
-    let mut args_iter = args.iter().peekable();
-    while let Some(arg) = args_iter.next() {
+    let mut args_iter = Remaining(args.0.iter().peekable());
+    while let Some(arg) = args_iter.0.next() {
         match arg.as_str() {
-            "--corpus" => corpus_dir = Some(value_of(&mut args_iter, Flag::Corpus)?),
-            "--lock" => lock_file = Some(value_of(&mut args_iter, Flag::Lock)?),
-            "--only" => only_names.push(RequestedName::new(value_of(&mut args_iter, Flag::Only)?)),
+            "--corpus" => corpus_dir = Some(value_of(&mut args_iter, Flag::Corpus)?.0),
+            "--lock" => {
+                lock_file = PathBuf::from(value_of(&mut args_iter, Flag::Lock)?.0);
+                lock_given = true;
+            }
+            "--only" => {
+                only_names.push(RequestedName::new(value_of(&mut args_iter, Flag::Only)?.0));
+            }
             _ => return Err(UsageError::UnknownOption(arg.clone())),
         }
     }
 
     let mode = if let Some(dir) = corpus_dir {
-        if !only_names.is_empty() || lock_file.is_some() {
+        if !only_names.is_empty() || lock_given {
             return Err(UsageError::CorpusWithRegenerationFlags);
         }
         VerifyMode::Corpus(PathBuf::from(dir))
@@ -109,7 +121,7 @@ pub(super) fn parse_verify_args(args: &[String]) -> Result<VerifyArgs, UsageErro
             Requested::Named(only_names)
         };
         VerifyMode::Regenerate {
-            lock_file: PathBuf::from(lock_file.unwrap_or_else(|| "catalog.lock".to_owned())),
+            lock_file,
             requested,
         }
     };

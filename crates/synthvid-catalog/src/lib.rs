@@ -43,11 +43,14 @@ pub mod sha256;
 
 pub use generator::{generate_entry, EntryError};
 pub use lockfile::{
-    generate_lockfile, parse_lockfile, verify, ContentLength, LockfileDifference, LockfileEntry,
-    LockfileName, LockfileNameError, ParseLockfileError,
+    generate_lockfile, parse_lockfile, verify, ArtifactBytes, ContentLength, CorpusArtifact,
+    LockfileDifference, LockfileEntry, LockfileName, LockfileNameError, LockfileText,
+    ParseLockfileError, RawName,
 };
 pub use scene_builder::SceneBuildError;
 pub use sha256::{sha256, DIGEST_SIZE};
 
+#[cfg(test)]
 mod object_state_tests;
+#[cfg(test)]
 mod video_spec_tests;

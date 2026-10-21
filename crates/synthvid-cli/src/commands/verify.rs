@@ -1,16 +1,26 @@
-//! Verification command implementation.
+//! Verification: the pure core that compares a corpus or a regenerated catalogue
+//! with a lockfile.
+//!
+//! Nothing here reads a file or writes a line. `plan_verify` takes the inputs
+//! the shell has already loaded and returns a [`Report`]; `shell.rs` carries it
+//! out.
+
+extern crate alloc;
 
 use super::entry_digests::{entry_digests, EntryDigestError, EntryDigests};
-use super::entry_name::{EntryFiles, EntryName, EntrySelection, Requested, UnknownEntryName};
+use super::entry_name::{EntryFiles, EntryName, EntrySelection, Requested};
+use super::message::Message;
+use super::modes::Coverage;
+use super::report::{OutText, Report, Step};
 use super::verify_args::{parse_verify_args, VerifyMode};
-use core::fmt::{Display, Formatter, Result as FmtResult};
-use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
-use std::io::{self, Write};
-use std::path::Path;
+use super::verify_input::{CorpusFiles, CorpusSnapshot, InputError, LoadedVerify, LockfileText};
+use super::verify_values::EntryCount;
+use super::{Argv, Outcome};
+use alloc::collections::{BTreeMap, BTreeSet};
 use synthvid_catalog::{
-    cover::{generate_catalogue, CatalogError, Entry},
-    parse_lockfile, LockfileDifference, LockfileEntry, LockfileName, ParseLockfileError,
+    cover::{generate_catalogue, Entry},
+    parse_lockfile, ArtifactBytes, CorpusArtifact, LockfileDifference, LockfileEntry, LockfileName,
+    RawName,
 };
 
 /// An entry that could not be checked, and why.
@@ -22,115 +32,168 @@ pub(super) struct RegenerationFailure {
     pub(super) error: EntryDigestError,
 }
 
-/// Report from regenerating and comparing entries.
+/// The differences a regeneration check found, in the order they are reported.
+pub(super) struct Differences(pub(super) Vec<LockfileDifference>);
+
+/// The entries a regeneration check could not check, in catalogue order.
+pub(super) struct Failures(pub(super) Vec<RegenerationFailure>);
+
+/// The entries whose two files both matched, in catalogue order.
+pub(super) struct Matched(pub(super) Vec<EntryName>);
+
+/// What comparing regenerated entries with a lockfile found.
 pub(super) struct RegenerationReport {
     /// All differences found between generated and expected entries.
-    pub(super) differences: Vec<LockfileDifference>,
+    pub(super) differences: Differences,
     /// Entries that could not be checked.
-    pub(super) failures: Vec<RegenerationFailure>,
+    pub(super) failures: Failures,
+    /// Entries whose two files both matched.
+    pub(super) matched: Matched,
     /// Count of entries that were generated and compared.
-    pub(super) checked: usize,
+    pub(super) checked: EntryCount,
 }
 
-/// The result of a verification run.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum VerifyOutcome {
-    /// Everything checked matched.
-    Success,
-    /// A difference, a failure, or an unreadable input was found.
-    Failure,
-}
+impl RegenerationReport {
+    /// The steps that print this report: an `ok` line on stdout for each
+    /// matching entry, each difference and failure on stderr, and the summary
+    /// on stdout.
+    fn into_report(self) -> Report {
+        let outcome = if self.differences.0.is_empty() && self.failures.0.is_empty() {
+            Outcome::Success
+        } else {
+            Outcome::Failure
+        };
+        let summary = if self.failures.0.is_empty() {
+            format!("verified {} entries\n", self.checked)
+        } else {
+            format!(
+                "verified {} entries, {} could not be checked\n",
+                self.checked,
+                self.failures.0.len()
+            )
+        };
 
-impl VerifyOutcome {
-    /// The process exit code for this outcome.
-    const fn exit_code(self) -> i32 {
-        match self {
-            Self::Success => 0,
-            Self::Failure => 1,
-        }
+        let mut steps: Vec<Step> = self
+            .matched
+            .0
+            .into_iter()
+            .map(|name| Step::Stdout(OutText(format!("ok {name}\n"))))
+            .collect();
+        steps.extend(
+            self.differences
+                .0
+                .into_iter()
+                .map(|difference| Step::Stderr(Message::Difference(difference))),
+        );
+        steps.extend(self.failures.0.into_iter().map(|failure| {
+            Step::Stderr(Message::FailedToCheck {
+                name: failure.entry_name,
+                error: failure.error,
+            })
+        }));
+        steps.push(Step::Stdout(OutText(summary)));
+        Report::new(steps, outcome)
     }
 }
 
-/// Why a corpus on disk could not be verified.
-#[derive(Debug)]
-pub(super) enum CorpusError {
-    /// The corpus lockfile could not be read or parsed.
-    Lockfile(LockfileLoadError),
-    /// The corpus directory could not be listed.
-    ReadDirectory(io::Error),
-    /// An entry of the corpus directory could not be read.
-    ReadDirectoryEntry(io::Error),
-    /// A corpus file could not be read.
-    ReadFile {
-        /// The file's name.
-        name: String,
-        /// Why reading failed.
-        source: io::Error,
-    },
-    /// Writing the report failed.
-    Output(io::Error),
-}
-
-impl Display for CorpusError {
-    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
-        match self {
-            Self::Lockfile(e) => write!(f, "{e}"),
-            Self::ReadDirectory(e) => write!(f, "failed to read corpus directory: {e}"),
-            Self::ReadDirectoryEntry(e) => write!(f, "failed to read directory entry: {e}"),
-            Self::ReadFile { name, source } => write!(f, "failed to read file {name}: {source}"),
-            Self::Output(e) => write!(f, "failed to write output: {e}"),
-        }
+/// Plans a verify run. `load` performs the reads that the arguments call for;
+/// a usage error is reported before anything is read.
+pub(super) fn plan_verify(args: Argv<'_>, load: impl FnOnce(VerifyMode) -> LoadedVerify) -> Report {
+    match parse_verify_args(args) {
+        Ok(parsed) => plan_loaded(load(parsed.mode)),
+        Err(error) => Report::failed(Message::VerifyUsage(error)),
     }
 }
 
-/// Verifies the files of a corpus directory against its `catalog.lock`, writing one line
-/// per difference to `err`.
-fn run_corpus<E: Write>(corpus_dir: &Path, err: &mut E) -> Result<VerifyOutcome, CorpusError> {
-    let lockfile_entries =
-        read_lockfile(&corpus_dir.join("catalog.lock")).map_err(CorpusError::Lockfile)?;
-
-    let mut corpus: Vec<(String, Vec<u8>)> = Vec::new();
-    for dir_entry in fs::read_dir(corpus_dir).map_err(CorpusError::ReadDirectory)? {
-        let dir_entry = dir_entry.map_err(CorpusError::ReadDirectoryEntry)?;
-        let name = dir_entry.file_name().to_string_lossy().into_owned();
-        if name == "catalog.lock" {
-            continue;
-        }
-        let content = fs::read(dir_entry.path()).map_err(|source| CorpusError::ReadFile {
-            name: name.clone(),
-            source,
-        })?;
-        corpus.push((name, content));
+/// Plans the report for inputs that have already been loaded.
+fn plan_loaded(loaded: LoadedVerify) -> Report {
+    match loaded {
+        LoadedVerify::Corpus(snapshot) => plan_corpus(snapshot),
+        LoadedVerify::Regenerate {
+            requested,
+            lockfile,
+        } => plan_regenerate(lockfile, &requested),
     }
+}
 
-    let differences = synthvid_catalog::verify(&lockfile_entries, corpus);
-    for difference in &differences {
-        writeln!(err, "{difference}").map_err(CorpusError::Output)?;
-    }
-    Ok(if differences.is_empty() {
-        VerifyOutcome::Success
+/// Plans a corpus check. The first failure to read the lockfile, parse it, or
+/// read the directory ends the check; otherwise every difference is one stderr
+/// line.
+fn plan_corpus(snapshot: CorpusSnapshot) -> Report {
+    let (lockfile, listing) = match snapshot {
+        CorpusSnapshot::Unreadable(cause) => return Report::failed(Message::Input(cause)),
+        CorpusSnapshot::Listed { lockfile, files } => (lockfile, files),
+    };
+    let entries = match parse_entries(&lockfile) {
+        Ok(entries) => entries,
+        Err(message) => return Report::failed(*message),
+    };
+    let files = match listing {
+        Ok(files) => files,
+        Err(cause) => return Report::failed(Message::Input(cause)),
+    };
+    corpus_report(&entries, files)
+}
+
+/// Compares a corpus's files with the lockfile's entries.
+fn corpus_report(entries: &[LockfileEntry], files: CorpusFiles) -> Report {
+    let differences = synthvid_catalog::verify(
+        entries,
+        files.0.into_iter().map(|file| CorpusArtifact {
+            name: RawName(file.name.0),
+            bytes: ArtifactBytes(file.bytes.0),
+        }),
+    );
+    let outcome = if differences.is_empty() {
+        Outcome::Success
     } else {
-        VerifyOutcome::Failure
-    })
+        Outcome::Failure
+    };
+    let steps = differences
+        .into_iter()
+        .map(|difference| Step::Stderr(Message::Difference(difference)))
+        .collect();
+    Report::new(steps, outcome)
 }
 
-/// Turns a finished run into an outcome, reporting an error on `err`.
-fn finish<E: Write>(result: Result<VerifyOutcome, impl Display>, err: &mut E) -> VerifyOutcome {
-    match result {
-        Ok(outcome) => outcome,
-        Err(error) => {
-            // Last resort: if `err` itself is unwritable there is nowhere left to report to.
-            writeln!(err, "{error}").ok();
-            VerifyOutcome::Failure
-        }
+/// Plans an in-memory regeneration check of the requested entries.
+fn plan_regenerate(lockfile: Result<LockfileText, InputError>, requested: &Requested) -> Report {
+    let entries = match checked_entries(lockfile) {
+        Ok(entries) => entries,
+        Err(message) => return Report::failed(*message),
+    };
+    let selection = match EntrySelection::resolve(requested, &entries) {
+        Ok(selection) => selection,
+        Err(unknown) => return Report::failed(Message::UnknownEntry(unknown.name)),
+    };
+    let catalogue = match generate_catalogue() {
+        Ok(catalogue) => catalogue,
+        Err(cause) => return Report::failed(Message::CatalogFailed(cause)),
+    };
+    verify_entries_regenerated(catalogue, &entries, &selection, entry_digests).into_report()
+}
+
+/// Parses a lockfile's text into its entries.
+fn parse_entries(text: &LockfileText) -> Result<Vec<LockfileEntry>, Box<Message>> {
+    parse_lockfile(text).map_err(|cause| Box::new(Message::LockfileParse(cause)))
+}
+
+/// Reads the entries of a lockfile, refusing one that lists a name twice.
+fn checked_entries(
+    lockfile: Result<LockfileText, InputError>,
+) -> Result<Vec<LockfileEntry>, Box<Message>> {
+    lockfile
+        .map_err(|cause| Box::new(Message::Input(cause)))
+        .and_then(|text| parse_entries(&text))
+        .and_then(unique_entries)
+}
+
+/// The entries, unless a name is listed twice.
+fn unique_entries(entries: Vec<LockfileEntry>) -> Result<Vec<LockfileEntry>, Box<Message>> {
+    if let Some(name) = first_duplicate_name(&entries).cloned() {
+        return Err(Box::new(Message::LockfileDuplicate(name)));
     }
-}
-
-/// Implements disk-based corpus verification.
-fn verify_corpus_impl(corpus_dir: &Path) -> VerifyOutcome {
-    let mut err = io::stderr().lock();
-    let result = run_corpus(corpus_dir, &mut err);
-    finish(result, &mut err)
+    Ok(entries)
 }
 
 /// Compares an expected and actual lockfile entry.
@@ -167,75 +230,14 @@ fn compare_entry(
     differences
 }
 
-/// Why a lockfile could not be used.
-#[derive(Debug)]
-pub(super) enum LockfileLoadError {
-    /// The file could not be read.
-    Read(io::Error),
-    /// The file is not a valid lockfile.
-    Parse(ParseLockfileError),
-    /// The same name is listed more than once.
-    DuplicateName(LockfileName),
-}
-
-impl Display for LockfileLoadError {
-    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
-        match self {
-            Self::Read(e) => write!(f, "failed to read lockfile: {e}"),
-            Self::Parse(e) => write!(f, "failed to parse lockfile: {e}"),
-            Self::DuplicateName(name) => {
-                write!(f, "lockfile lists {} more than once", name.as_str())
-            }
-        }
-    }
-}
-
 /// The first name a lockfile lists twice, if any.
+#[must_use]
 fn first_duplicate_name(lockfile: &[LockfileEntry]) -> Option<&LockfileName> {
     let mut seen = BTreeSet::new();
     lockfile
         .iter()
         .map(|entry| &entry.name)
         .find(|name| !seen.insert(*name))
-}
-
-/// Reads and parses a lockfile.
-fn read_lockfile(path: &Path) -> Result<Vec<LockfileEntry>, LockfileLoadError> {
-    let content = fs::read_to_string(path).map_err(LockfileLoadError::Read)?;
-    parse_lockfile(&content).map_err(LockfileLoadError::Parse)
-}
-
-/// Reads and parses a lockfile, refusing one that lists a name twice.
-fn load_lockfile(path: &Path) -> Result<Vec<LockfileEntry>, LockfileLoadError> {
-    let entries = read_lockfile(path)?;
-    let duplicate = first_duplicate_name(&entries).cloned();
-    duplicate.map_or(Ok(entries), |name| {
-        Err(LockfileLoadError::DuplicateName(name))
-    })
-}
-
-/// Why an in-memory verification could not run to a verdict.
-#[derive(Debug)]
-pub(super) enum RegenerateError {
-    /// The lockfile could not be used.
-    Lockfile(LockfileLoadError),
-    /// A requested entry name is not in the lockfile.
-    UnknownEntry(UnknownEntryName),
-    /// The catalogue could not be built.
-    Catalogue(CatalogError),
-    /// Writing the report failed.
-    Output(io::Error),
-}
-
-impl Display for RegenerateError {
-    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
-        match self {
-            Self::Lockfile(e) => write!(f, "{e}"),
-            Self::UnknownEntry(e) => write!(f, "{e}"),
-            Self::Catalogue(e) => write!(f, "failed to generate catalog: {e}"),
-            Self::Output(e) => write!(f, "failed to write output: {e}"),
-        }
-    }
 }
 
 /// Finds lockfile entries that were not produced by the catalogue.
@@ -246,7 +248,7 @@ fn missing_entries(
 ) -> Vec<LockfileDifference> {
     lockfile
         .iter()
-        .filter(|entry| selection.covers_file(&entry.name))
+        .filter(|entry| selection.covers_file(&entry.name) == Coverage::Covered)
         .filter(|entry| !produced.contains(&entry.name))
         .map(|entry| LockfileDifference::Missing {
             name: entry.name.clone(),
@@ -254,29 +256,29 @@ fn missing_entries(
         .collect()
 }
 
-/// Compares generated entries against lockfile entries, writing `ok NAME` to `progress`
-/// for each entry whose files both match.
-fn verify_entries_regenerated<F, W>(
+/// Compares generated entries against lockfile entries. Each entry the
+/// selection covers is generated and its two files compared with the lockfile;
+/// a failure to generate it is kept as a failure, not as a missing entry.
+fn verify_entries_regenerated<F>(
     catalogue: Vec<Entry>,
     lockfile: &[LockfileEntry],
     selection: &EntrySelection,
     generate: F,
-    progress: &mut W,
-) -> io::Result<RegenerationReport>
+) -> RegenerationReport
 where
     F: Fn(&Entry) -> Result<EntryDigests, EntryDigestError>,
-    W: Write,
 {
     let expected: BTreeMap<&LockfileName, &LockfileEntry> =
         lockfile.iter().map(|entry| (&entry.name, entry)).collect();
     let mut differences: Vec<LockfileDifference> = Vec::new();
     let mut failures: Vec<RegenerationFailure> = Vec::new();
-    let mut checked: usize = 0;
+    let mut matched: Vec<EntryName> = Vec::new();
+    let mut compared: Vec<EntryName> = Vec::new();
     let mut declared: BTreeSet<LockfileName> = BTreeSet::new();
 
     for entry in catalogue {
         let entry_name = EntryName::of_entry(&entry);
-        if !selection.covers_entry(&entry_name) {
+        if selection.covers_entry(&entry_name) == Coverage::Uncovered {
             continue;
         }
 
@@ -284,8 +286,9 @@ where
         // is reported once, as a failure, and not again as missing. A name that is not a valid
         // lockfile name is reported by `generate` as the failure.
         if let Ok(files) = EntryFiles::of(&entry) {
-            declared.insert(files.manifest);
-            declared.insert(files.media);
+            declared.extend([files.manifest, files.media]);
+        } else {
+            // A failure is reported by `generate` below, not here.
         }
 
         match generate(&entry) {
@@ -298,11 +301,11 @@ where
                     expected.get(&digests.media.name).copied(),
                     &digests.media,
                 ));
+                compared.push(entry_name.clone());
                 if entry_differences.is_empty() {
-                    writeln!(progress, "ok {entry_name}")?;
+                    matched.push(entry_name);
                 }
                 differences.append(&mut entry_differences);
-                checked = checked.saturating_add(1);
             }
             Err(error) => failures.push(RegenerationFailure { entry_name, error }),
         }
@@ -310,102 +313,15 @@ where
 
     differences.append(&mut missing_entries(lockfile, &declared, selection));
 
-    Ok(RegenerationReport {
-        differences,
-        failures,
-        checked,
-    })
-}
-
-/// An error and its causes, each once, separated by colons.
-fn error_chain(error: &(dyn core::error::Error + 'static)) -> String {
-    let mut text = error.to_string();
-    let mut cause = error.source();
-    while let Some(inner) = cause {
-        text.push_str(": ");
-        text.push_str(&inner.to_string());
-        cause = inner.source();
-    }
-    text
-}
-
-/// Runs the in-memory verification, writing results to `out` and problems to `err`.
-fn run_regenerate<O: Write, E: Write>(
-    lock_file: &Path,
-    requested: &Requested,
-    out: &mut O,
-    err: &mut E,
-) -> Result<VerifyOutcome, RegenerateError> {
-    let lockfile_entries = load_lockfile(lock_file).map_err(RegenerateError::Lockfile)?;
-    let selection = EntrySelection::resolve(requested, &lockfile_entries)
-        .map_err(RegenerateError::UnknownEntry)?;
-    let catalogue = generate_catalogue().map_err(RegenerateError::Catalogue)?;
-
-    let report =
-        verify_entries_regenerated(catalogue, &lockfile_entries, &selection, entry_digests, out)
-            .map_err(RegenerateError::Output)?;
-
-    for diff in &report.differences {
-        writeln!(err, "{diff}").map_err(RegenerateError::Output)?;
-    }
-    for failure in &report.failures {
-        writeln!(
-            err,
-            "failed to check {}: {}",
-            failure.entry_name,
-            error_chain(&failure.error)
-        )
-        .map_err(RegenerateError::Output)?;
-    }
-
-    if report.failures.is_empty() {
-        writeln!(out, "verified {} entries", report.checked)
-    } else {
-        writeln!(
-            out,
-            "verified {} entries, {} could not be checked",
-            report.checked,
-            report.failures.len()
-        )
-    }
-    .map_err(RegenerateError::Output)?;
-
-    Ok(
-        if report.differences.is_empty() && report.failures.is_empty() {
-            VerifyOutcome::Success
-        } else {
-            VerifyOutcome::Failure
-        },
-    )
-}
-
-/// Implements in-memory regeneration verification.
-fn verify_regenerate_impl(lock_file: &Path, requested: &Requested) -> VerifyOutcome {
-    let mut out = io::stdout().lock();
-    let mut err = io::stderr().lock();
-    let result = run_regenerate(lock_file, requested, &mut out, &mut err);
-    finish(result, &mut err)
-}
-
-/// Dispatches verify subcommand to the appropriate implementation.
-pub(super) fn dispatch(mode: VerifyMode) -> i32 {
-    let outcome = match mode {
-        VerifyMode::Corpus(corpus_dir) => verify_corpus_impl(&corpus_dir),
-        VerifyMode::Regenerate {
-            lock_file,
-            requested,
-        } => verify_regenerate_impl(&lock_file, &requested),
-    };
-    outcome.exit_code()
-}
-
-/// Runs the verify subcommand: parses its arguments and dispatches.
-pub(super) fn run(args: &[String]) -> i32 {
-    match parse_verify_args(args) {
-        Ok(parsed) => dispatch(parsed.mode),
-        Err(error) => finish(Err(error), &mut io::stderr().lock()).exit_code(),
+    RegenerationReport {
+        differences: Differences(differences),
+        failures: Failures(failures),
+        matched: Matched(matched),
+        checked: EntryCount(compared.len()),
     }
 }
 
+#[cfg(test)]
+mod loaded_tests;
 #[cfg(test)]
 mod tests;

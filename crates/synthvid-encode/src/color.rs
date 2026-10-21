@@ -60,60 +60,57 @@ impl ChromaRed {
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct YCbCr {
     /// Luma component (brightness).
-    y: u8,
+    luma: Luma,
     /// Blue-difference chroma component.
-    cb: u8,
+    cb: ChromaBlue,
     /// Red-difference chroma component.
-    cr: u8,
+    cr: ChromaRed,
 }
 
 impl YCbCr {
     /// Creates a new `YCbCr` color value.
     ///
     /// # Arguments
-    /// * `y` - Luma component
+    /// * `luma` - Luma component
     /// * `cb` - Blue-difference chroma component
     /// * `cr` - Red-difference chroma component
     #[must_use]
-    pub const fn new(y: Luma, cb: ChromaBlue, cr: ChromaRed) -> Self {
-        Self {
-            y: y.get(),
-            cb: cb.get(),
-            cr: cr.get(),
-        }
+    pub const fn new(luma: Luma, cb: ChromaBlue, cr: ChromaRed) -> Self {
+        Self { luma, cb, cr }
     }
 
     /// Gets the luma component.
     #[must_use]
-    pub const fn y(self) -> u8 {
-        self.y
+    pub const fn y(self) -> Luma {
+        self.luma
     }
 
     /// Gets the blue-difference chroma component.
     #[must_use]
-    pub const fn cb(self) -> u8 {
+    pub const fn cb(self) -> ChromaBlue {
         self.cb
     }
 
     /// Gets the red-difference chroma component.
     #[must_use]
-    pub const fn cr(self) -> u8 {
+    pub const fn cr(self) -> ChromaRed {
         self.cr
     }
 }
 
-/// Narrows a clamped `i32` to `u8` via a total conversion. `v.clamp(0, 255)`
-/// is always representable in a single byte with the other three bytes of
-/// its little-endian form all zero, so reading that low byte out directly
-/// (rather than `u8::try_from` plus a fallback for a failure case that can
-/// never actually happen after the clamp) needs no fallback at all.
-fn clamp_to_u8(v: i32) -> u8 {
-    let [lo, ..] = v.clamp(0, 255).to_le_bytes();
-    lo
-}
+/// One `coeff * value` term of a [`weighted_sum`]: a fixed-point
+/// coefficient scaled by 256, and a `u8`-sourced channel value.
+#[derive(Debug, Clone, Copy)]
+struct Term(i32, i32);
 
-/// Computes `rounding + sum(coeff * value for (coeff, value) in terms)`,
-/// checked at every step.
+/// A channel's fixed-point weighted sum, before or after it is scaled back
+/// down by 256.
+#[derive(Debug, Clone, Copy)]
+struct Weighted(i32);
+
+/// Computes `rounding + sum(coeff * value for Term(coeff, value) in terms)`,
+/// checked at every step, where `rounding` is 128 (half of the 256 the
+/// coefficients are scaled by, so the later `>> 8` rounds to nearest).
 ///
 /// Takes the whole computation in one call, not separate two-`i32`
 /// -parameter `add`/`mul` helpers: both operations are commutative, so
@@ -134,32 +131,40 @@ fn clamp_to_u8(v: i32) -> u8 {
 /// saturate in the mathematically correct direction, rather than to a
 /// fixed placeholder, purely so nothing downstream could misread an
 /// unreachable overflow as a small or negative result it manifestly isn't.
-fn weighted_sum(terms: [(i32, i32); 3], rounding: i32) -> i32 {
-    let mut total = rounding;
-    for (coeff, value) in terms {
+fn weighted_sum(terms: [Term; 3]) -> Weighted {
+    let mut total = 128_i32;
+    for Term(coeff, value) in terms {
         let product = match coeff.checked_mul(value) {
-            Some(p) => p,
-            None if (coeff < 0) == (value < 0) => i32::MAX,
+            Some(product) => product,
+            None if (coeff < 0_i32) == (value < 0_i32) => i32::MAX,
             None => i32::MIN,
         };
         total = match total.checked_add(product) {
             Some(sum) => sum,
-            None if product < 0 => i32::MIN,
+            None if product < 0_i32 => i32::MIN,
             None => i32::MAX,
         };
     }
-    total
+    Weighted(total)
 }
 
-/// Adds the JPEG chroma bias (128) to `v`. `v` is always a `weighted_sum`
-/// result (magnitude well inside `i32`, see there) right-shifted by 8, so
-/// adding a further 128 can only ever overflow toward positive infinity,
-/// never negative -- unlike [`weighted_sum`]'s general case, there is only
-/// one overflow direction to saturate toward here.
-const fn add_chroma_bias(v: i32) -> i32 {
-    match v.checked_add(128) {
-        Some(sum) => sum,
-        None => i32::MAX,
+impl Weighted {
+    /// Scales the sum back down by 256 (`>> 8`).
+    const fn descaled(self) -> Self {
+        Self(self.0 >> 8)
+    }
+
+    /// Adds the JPEG chroma bias (128). `self` is always a
+    /// [`weighted_sum`] result (magnitude well inside `i32`, see there)
+    /// scaled down by 256, so adding a further 128 can only ever overflow
+    /// toward positive infinity, never negative -- unlike
+    /// [`weighted_sum`]'s general case, there is only one overflow
+    /// direction to saturate toward here.
+    const fn with_chroma_bias(self) -> Self {
+        Self(match self.0.checked_add(128) {
+            Some(sum) => sum,
+            None => i32::MAX,
+        })
     }
 }
 
@@ -171,9 +176,9 @@ const fn add_chroma_bias(v: i32) -> i32 {
 /// -- see `weighted_sum`, below.
 #[must_use]
 pub fn rgb_to_ycbcr(rgb: Rgb8) -> YCbCr {
-    let r_val = i32::from(rgb.r);
-    let g_val = i32::from(rgb.g);
-    let b_val = i32::from(rgb.b);
+    let r_val = i32::from(rgb.red.0);
+    let g_val = i32::from(rgb.green.0);
+    let b_val = i32::from(rgb.blue.0);
 
     // Standard JPEG coefficients (scaled by 256 for integer arithmetic, rounded to nearest)
     // Y = 0.299*R + 0.587*G + 0.114*B (scaled: 77*R + 150*G + 29*B, sum=256)
@@ -181,56 +186,35 @@ pub fn rgb_to_ycbcr(rgb: Rgb8) -> YCbCr {
     // Cr = 0.5*R - 0.418688*G - 0.081312*B + 128 (scaled: 128*R - 107*G - 21*B, then +128 offset)
     // Each uses (sum + 128) >> 8 for rounding, then chroma adds the 128 offset.
 
+    // Narrows a clamped sum to `u8` via a total conversion. `v.clamp(0, 255)`
+    // is always representable in a single byte with the other three bytes
+    // of its little-endian form all zero, so reading that low byte out
+    // directly (rather than `u8::try_from` plus a fallback for a failure
+    // case that can never actually happen after the clamp) needs no
+    // fallback at all.
+    let clamp_to_u8 = |Weighted(weighted): Weighted| {
+        let [lo, ..] = weighted.clamp(0_i32, 255_i32).to_le_bytes();
+        lo
+    };
+
     // Compute luma. Bounded to [0, 255] by construction (see doc comment
     // above), so no clamp is needed before narrowing.
-    let luma_raw = weighted_sum([(77, r_val), (150, g_val), (29, b_val)], 128) >> 8;
-    let y = clamp_to_u8(luma_raw);
+    let luma_raw = weighted_sum([Term(77, r_val), Term(150, g_val), Term(29, b_val)]).descaled();
+    let luma = clamp_to_u8(luma_raw);
 
     // Compute blue chroma. This can reach exactly 256 at (r, g, b) =
     // (0, 0, 255) -- one past u8 range -- so, unlike luma, it still needs
     // an explicit clamp; `clamp_to_u8` saturates that single tie to 255
     // rather than silently wrapping.
-    let blue_raw = weighted_sum([(-43, r_val), (-85, g_val), (128, b_val)], 128) >> 8;
-    let cb = clamp_to_u8(add_chroma_bias(blue_raw));
+    let blue_raw = weighted_sum([Term(-43, r_val), Term(-85, g_val), Term(128, b_val)]).descaled();
+    let cb = clamp_to_u8(blue_raw.with_chroma_bias());
 
     // Compute red chroma. Symmetric edge case at (r, g, b) = (255, 0, 0).
-    let red_raw = weighted_sum([(128, r_val), (-107, g_val), (-21, b_val)], 128) >> 8;
-    let cr = clamp_to_u8(add_chroma_bias(red_raw));
+    let red_raw = weighted_sum([Term(128, r_val), Term(-107, g_val), Term(-21, b_val)]).descaled();
+    let cr = clamp_to_u8(red_raw.with_chroma_bias());
 
-    YCbCr::new(Luma::new(y), ChromaBlue::new(cb), ChromaRed::new(cr))
+    YCbCr::new(Luma::new(luma), ChromaBlue::new(cb), ChromaRed::new(cr))
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_rgb_to_ycbcr_converts_white() {
-        let ycbcr = rgb_to_ycbcr(Rgb8::new(255, 255, 255));
-        // White (255, 255, 255) should give exactly luma 255 with proper rounding
-        // and neutral chroma (128, 128) since white has no color bias
-        assert_eq!(ycbcr.y(), 255);
-        assert_eq!(ycbcr.cb(), 128);
-        assert_eq!(ycbcr.cr(), 128);
-    }
-
-    #[test]
-    fn test_rgb_to_ycbcr_converts_black() {
-        let ycbcr = rgb_to_ycbcr(Rgb8::new(0, 0, 0));
-        assert_eq!(ycbcr.y(), 0);
-        assert_eq!(ycbcr.cb(), 128);
-        assert_eq!(ycbcr.cr(), 128);
-    }
-
-    #[test]
-    fn test_rgb_to_ycbcr_small_red_value() {
-        // Test proper rounding of chroma with small values
-        // rgb_to_ycbcr(Rgb8::new(1, 0, 0)): blue_sum = -43*1 + -85*0 + 128*0 = -43
-        // (-43 + 128) >> 8 = 85 >> 8 = 0, so blue_raw = 0, cb = 0 + 128 = 128
-        let ycbcr = rgb_to_ycbcr(Rgb8::new(1, 0, 0));
-        assert_eq!(ycbcr.cb(), 128);
-        // Similarly for red: red_sum = 128*1 + -107*0 + -21*0 = 128
-        // (128 + 128) >> 8 = 256 >> 8 = 1, so red_raw = 1, cr = 1 + 128 = 129
-        assert_eq!(ycbcr.cr(), 129);
-    }
-}
+mod tests;

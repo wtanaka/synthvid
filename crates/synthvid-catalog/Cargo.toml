@@ -14,5 +14,8 @@ synthvid-scene = { path = "../synthvid-scene" }
 synthvid-encode = { path = "../synthvid-encode" }
 synthvid-video = { path = "../synthvid-video" }
 
+[dev-dependencies]
+synthvid-testkit = { path = "../synthvid-testkit" }
+
 [lints]
 workspace = true

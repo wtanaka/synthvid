@@ -5,21 +5,22 @@
 //! point `sin` and `cos` are deliberately not used: their results differ
 //! between targets.
 
-use core::num::{NonZeroI64, NonZeroU32};
+use core::num::{NonZeroI128, NonZeroI64, NonZeroU16};
 
-use crate::ratio::{Overflow, Ratio};
+use crate::ratio::{Numerator, Overflow, Ratio};
 
 /// Denominator scale for trigonometric fixed-point representation (2^15 = 32,768).
-const TRIG_SCALE: i64 = 32_768;
+const TRIG_SCALE: i64 = 0x8000;
 
 /// The value of [`TRIG_SCALE`] as a non-zero denominator, built totally.
 ///
-/// `NonZeroU32::MIN` is one, `saturating_add` on a non-zero value cannot reach
-/// zero, and widening a `NonZeroU32` to a `NonZeroI64` is infallible, so there
-/// is no `Option` to discharge. `trig_scale_denom_matches_trig_scale` pins this
+/// The midpoint of `NonZeroU16::MAX` (`65_535`) and `NonZeroU16::MIN` (`1`)
+/// is exactly `32_768`; a midpoint of two non-zero values is itself non-zero,
+/// and widening a `NonZeroU16` to a `NonZeroI64` is infallible, so there is no
+/// `Option` to discharge. `trig_scale_denom_matches_trig_scale` pins this
 /// to [`TRIG_SCALE`] so the two spellings cannot drift apart.
 fn trig_scale_denom() -> NonZeroI64 {
-    NonZeroI64::from(NonZeroU32::MIN.saturating_add(32_767))
+    NonZeroI64::from(NonZeroU16::MAX.midpoint(NonZeroU16::MIN))
 }
 
 /// Denominator of the degree-7 polynomial coefficients.
@@ -37,6 +38,19 @@ const POLY_A5: i128 = 794;
 /// Coefficient for the septic term u^7 of the polynomial.
 const POLY_A7: i128 = 43;
 
+/// The numerator of a position `u` within a quarter turn.
+#[derive(Copy, Clone, Debug)]
+struct QuarterNumer(i128);
+
+/// The denominator of a position `u` within a quarter turn: the denominator
+/// of the whole angle.
+#[derive(Copy, Clone, Debug)]
+struct QuarterDenom(i128);
+
+/// A sine value in `[0, TRIG_SCALE]`, scaled by [`TRIG_SCALE`].
+#[derive(Copy, Clone, Debug)]
+struct ScaledSine(i64);
+
 /// Evaluates the fixed-point polynomial approximation of `sin(pi/2 * u)` for
 /// `u = u_num / u_den` in `[0, 1]`.
 ///
@@ -49,69 +63,37 @@ const POLY_A7: i128 = 43;
 /// # Algorithm and Error
 ///
 /// Uses the 7th-degree polynomial:
-/// `P(u) = (15,708 * u - 6,459 * u^3 + 794 * u^5 - 43 * u^7) / 10,000`
+/// `P(u) = (15,708 * u - 6,459 * u^3 + 794 * u^5 - 43 * u^7) / 10,000`.
 ///
 /// Exactly satisfies `P(0) = 0`, `P(1) = 1`, and `P'(1) = 0`, ensuring
 /// continuous first derivatives across quadrant transitions.
-fn eval_poly_quarter(u_num: i128, u_den: i128) -> Result<i64, Overflow> {
+fn eval_poly_quarter(
+    quarter_numer: QuarterNumer,
+    quarter_denom: QuarterDenom,
+) -> Result<ScaledSine, Overflow> {
+    let QuarterNumer(u_num) = quarter_numer;
+    let QuarterDenom(u_den) = quarter_denom;
     if u_num <= 0 {
-        return Ok(0);
+        return Ok(ScaledSine(0));
     }
     if u_num >= u_den {
-        return Ok(TRIG_SCALE);
+        return Ok(ScaledSine(TRIG_SCALE));
     }
 
     let scale_128 = i128::from(TRIG_SCALE);
     let half_den = u_den.checked_div(2).ok_or(Overflow)?;
-    let num_x = u_num
+    let num_u = u_num
         .checked_mul(scale_128)
         .ok_or(Overflow)?
         .checked_add(half_den)
         .ok_or(Overflow)?;
-    let x = num_x.checked_div(u_den).ok_or(Overflow)?;
-    let x = if x < 0 {
-        0
-    } else if x > scale_128 {
-        scale_128
-    } else {
-        x
-    };
+    let scaled_u = clamp_to_scale(FixedPoint(num_u.checked_div(u_den).ok_or(Overflow)?));
+    let powers = OddPowers::of(scaled_u)?;
 
-    let x2 = x
-        .checked_mul(x)
-        .ok_or(Overflow)?
-        .checked_div(scale_128)
-        .ok_or(Overflow)?;
-    let x3 = x2
-        .checked_mul(x)
-        .ok_or(Overflow)?
-        .checked_div(scale_128)
-        .ok_or(Overflow)?;
-    let x4 = x2
-        .checked_mul(x2)
-        .ok_or(Overflow)?
-        .checked_div(scale_128)
-        .ok_or(Overflow)?;
-    let x5 = x4
-        .checked_mul(x)
-        .ok_or(Overflow)?
-        .checked_div(scale_128)
-        .ok_or(Overflow)?;
-    let x6 = x3
-        .checked_mul(x3)
-        .ok_or(Overflow)?
-        .checked_div(scale_128)
-        .ok_or(Overflow)?;
-    let x7 = x6
-        .checked_mul(x)
-        .ok_or(Overflow)?
-        .checked_div(scale_128)
-        .ok_or(Overflow)?;
-
-    let term1 = POLY_A1.checked_mul(x).ok_or(Overflow)?;
-    let term3 = POLY_A3.checked_mul(x3).ok_or(Overflow)?;
-    let term5 = POLY_A5.checked_mul(x5).ok_or(Overflow)?;
-    let term7 = POLY_A7.checked_mul(x7).ok_or(Overflow)?;
+    let term1 = POLY_A1.checked_mul(powers.first.0).ok_or(Overflow)?;
+    let term3 = POLY_A3.checked_mul(powers.third.0).ok_or(Overflow)?;
+    let term5 = POLY_A5.checked_mul(powers.fifth.0).ok_or(Overflow)?;
+    let term7 = POLY_A7.checked_mul(powers.seventh.0).ok_or(Overflow)?;
 
     let half_poly = POLY_DENOM.checked_div(2).ok_or(Overflow)?;
     let poly_val = term1
@@ -124,16 +106,72 @@ fn eval_poly_quarter(u_num: i128, u_den: i128) -> Result<i64, Overflow> {
         .checked_add(half_poly)
         .ok_or(Overflow)?;
 
-    let val_128 = poly_val.checked_div(POLY_DENOM).ok_or(Overflow)?;
-    let val_clamped = if val_128 < 0 {
-        0
-    } else if val_128 > scale_128 {
-        scale_128
-    } else {
-        val_128
-    };
+    let FixedPoint(val_clamped) = clamp_to_scale(FixedPoint(
+        poly_val.checked_div(POLY_DENOM).ok_or(Overflow)?,
+    ));
 
-    i64::try_from(val_clamped).map_err(|_| Overflow)
+    i64::try_from(val_clamped)
+        .map(ScaledSine)
+        .map_err(Overflow::from)
+}
+
+/// A fixed-point value scaled by [`TRIG_SCALE`], widened for intermediate
+/// products.
+#[derive(Copy, Clone, Debug)]
+struct FixedPoint(i128);
+
+/// Clamps a fixed-point value to `[0, TRIG_SCALE]`.
+fn clamp_to_scale(value: FixedPoint) -> FixedPoint {
+    let scale_128 = i128::from(TRIG_SCALE);
+    if value.0 < 0 {
+        FixedPoint(0)
+    } else if value.0 > scale_128 {
+        FixedPoint(scale_128)
+    } else {
+        value
+    }
+}
+
+/// The odd powers of a fixed-point value up to the seventh, each rescaled by
+/// [`TRIG_SCALE`] after every multiplication.
+#[derive(Copy, Clone, Debug)]
+struct OddPowers {
+    /// The value itself.
+    first: FixedPoint,
+    /// The value cubed.
+    third: FixedPoint,
+    /// The value to the fifth power.
+    fifth: FixedPoint,
+    /// The value to the seventh power.
+    seventh: FixedPoint,
+}
+
+impl OddPowers {
+    /// Computes the odd powers of `base`, truncating after each product in
+    /// the order `x^2`, `x^3`, `x^4`, `x^5`, `x^6`, `x^7`.
+    fn of(base: FixedPoint) -> Result<Self, Overflow> {
+        let scale_128 = i128::from(TRIG_SCALE);
+        let rescaled = |left: FixedPoint, right: FixedPoint| -> Result<FixedPoint, Overflow> {
+            left.0
+                .checked_mul(right.0)
+                .ok_or(Overflow)?
+                .checked_div(scale_128)
+                .ok_or(Overflow)
+                .map(FixedPoint)
+        };
+        let second = rescaled(base, base)?;
+        let third = rescaled(second, base)?;
+        let fourth = rescaled(second, second)?;
+        let fifth = rescaled(fourth, base)?;
+        let sixth = rescaled(third, third)?;
+        let seventh = rescaled(sixth, base)?;
+        Ok(Self {
+            first: base,
+            third,
+            fifth,
+            seventh,
+        })
+    }
 }
 
 /// Computes the sine of an angle given in turns (where 1 turn = 1 full revolution).
@@ -157,8 +195,8 @@ fn eval_poly_quarter(u_num: i128, u_den: i128) -> Result<i64, Overflow> {
 ///
 /// Returns `Err(Overflow)` if any intermediate arithmetic overflows.
 pub fn sin_turns(angle: Ratio) -> Result<Ratio, Overflow> {
-    let numer = i128::from(angle.numer());
-    let denom = i128::from(angle.denom().get());
+    let numer = i128::from(angle.numer().0);
+    let denom = NonZeroI128::from(angle.denom()).get();
 
     let rem_raw = numer.checked_rem(denom).ok_or(Overflow)?;
     let rem = if rem_raw < 0 {
@@ -185,7 +223,7 @@ pub fn sin_turns(angle: Ratio) -> Result<Ratio, Overflow> {
         (num, -1_i64)
     };
 
-    let val = eval_poly_quarter(u_num, denom)?;
+    let ScaledSine(val) = eval_poly_quarter(QuarterNumer(u_num), QuarterDenom(denom))?;
     let signed_numer = if sign < 0 {
         0_i64.checked_sub(val).ok_or(Overflow)?
     } else {
@@ -193,7 +231,7 @@ pub fn sin_turns(angle: Ratio) -> Result<Ratio, Overflow> {
     };
 
     let scale_denom = trig_scale_denom();
-    Ratio::new(signed_numer, scale_denom)
+    Ratio::new(Numerator(signed_numer), scale_denom)
 }
 
 /// Computes the cosine of an angle given in turns (where 1 turn = 1 full revolution).
@@ -217,8 +255,8 @@ pub fn sin_turns(angle: Ratio) -> Result<Ratio, Overflow> {
 ///
 /// Returns `Err(Overflow)` if any intermediate arithmetic overflows.
 pub fn cos_turns(angle: Ratio) -> Result<Ratio, Overflow> {
-    let numer = i128::from(angle.numer());
-    let denom = i128::from(angle.denom().get());
+    let numer = i128::from(angle.numer().0);
+    let denom = NonZeroI128::from(angle.denom()).get();
 
     let rem_raw = numer.checked_rem(denom).ok_or(Overflow)?;
     let rem = if rem_raw < 0 {
@@ -245,7 +283,7 @@ pub fn cos_turns(angle: Ratio) -> Result<Ratio, Overflow> {
         (num, 1_i64)
     };
 
-    let val = eval_poly_quarter(u_num, denom)?;
+    let ScaledSine(val) = eval_poly_quarter(QuarterNumer(u_num), QuarterDenom(denom))?;
     let signed_numer = if sign < 0 {
         0_i64.checked_sub(val).ok_or(Overflow)?
     } else {
@@ -253,179 +291,8 @@ pub fn cos_turns(angle: Ratio) -> Result<Ratio, Overflow> {
     };
 
     let scale_denom = trig_scale_denom();
-    Ratio::new(signed_numer, scale_denom)
+    Ratio::new(Numerator(signed_numer), scale_denom)
 }
 
 #[cfg(test)]
-mod tests {
-
-    /// `trig_scale_denom` spells `32_768` a second way, to get a `NonZeroI64`
-    /// without an `Option`. If either spelling changes, the scale silently
-    /// stops matching the polynomial coefficients, so pin them together.
-    #[test]
-    fn trig_scale_denom_matches_trig_scale() {
-        assert_eq!(trig_scale_denom().get(), TRIG_SCALE);
-    }
-    use super::*;
-    use crate::testutil::make_ratio;
-
-    #[test]
-    fn test_sin_cos_cardinal_angles() {
-        let zero = Ratio::from_integer(0);
-        let one = Ratio::from_integer(1);
-        let neg_one = Ratio::from_integer(-1);
-
-        let quarter = make_ratio(1, 4).unwrap();
-        let half = make_ratio(1, 2).unwrap();
-        let three_quarters = make_ratio(3, 4).unwrap();
-
-        assert_eq!(sin_turns(zero).ok(), Some(zero), "sin(0) must be 0/1");
-        assert_eq!(cos_turns(zero).ok(), Some(one), "cos(0) must be 1/1");
-
-        assert_eq!(sin_turns(quarter).ok(), Some(one), "sin(1/4) must be 1/1");
-        assert_eq!(cos_turns(quarter).ok(), Some(zero), "cos(1/4) must be 0/1");
-
-        assert_eq!(sin_turns(half).ok(), Some(zero), "sin(1/2) must be 0/1");
-        assert_eq!(cos_turns(half).ok(), Some(neg_one), "cos(1/2) must be -1/1");
-
-        assert_eq!(
-            sin_turns(three_quarters).ok(),
-            Some(neg_one),
-            "sin(3/4) must be -1/1"
-        );
-        assert_eq!(
-            cos_turns(three_quarters).ok(),
-            Some(zero),
-            "cos(3/4) must be 0/1"
-        );
-
-        // Full revolutions and negative angles
-        let neg_quarter = make_ratio(-1, 4).unwrap();
-        let neg_half = make_ratio(-1, 2).unwrap();
-        let neg_three_quarters = make_ratio(-3, 4).unwrap();
-        let two = Ratio::from_integer(2);
-
-        assert_eq!(
-            sin_turns(neg_quarter).ok(),
-            Some(neg_one),
-            "sin(-1/4) must be -1/1"
-        );
-        assert_eq!(
-            cos_turns(neg_quarter).ok(),
-            Some(zero),
-            "cos(-1/4) must be 0/1"
-        );
-
-        assert_eq!(
-            sin_turns(neg_half).ok(),
-            Some(zero),
-            "sin(-1/2) must be 0/1"
-        );
-        assert_eq!(
-            cos_turns(neg_half).ok(),
-            Some(neg_one),
-            "cos(-1/2) must be -1/1"
-        );
-
-        assert_eq!(
-            sin_turns(neg_three_quarters).ok(),
-            Some(one),
-            "sin(-3/4) must be 1/1"
-        );
-        assert_eq!(
-            cos_turns(neg_three_quarters).ok(),
-            Some(zero),
-            "cos(-3/4) must be 0/1"
-        );
-
-        assert_eq!(sin_turns(one).ok(), Some(zero), "sin(1) must be 0/1");
-        assert_eq!(cos_turns(one).ok(), Some(one), "cos(1) must be 1/1");
-
-        assert_eq!(sin_turns(two).ok(), Some(zero), "sin(2) must be 0/1");
-        assert_eq!(cos_turns(two).ok(), Some(one), "cos(2) must be 1/1");
-
-        assert_eq!(sin_turns(neg_one).ok(), Some(zero), "sin(-1) must be 0/1");
-        assert_eq!(cos_turns(neg_one).ok(), Some(one), "cos(-1) must be 1/1");
-
-        // Methods on Ratio
-        assert_eq!(
-            quarter.sin_turns().ok(),
-            Some(one),
-            "quarter.sin_turns() must be 1/1"
-        );
-        assert_eq!(
-            quarter.cos_turns().ok(),
-            Some(zero),
-            "quarter.cos_turns() must be 0/1"
-        );
-    }
-
-    #[test]
-    fn test_sin_cos_frozen_table() {
-        let frozen_entries: [(i64, i64, i64, i64, i64, i64); 16] = [
-            (1, 32, 6393, 32768, 16069, 16384),
-            (3, 32, 18205, 32768, 13623, 16384),
-            (5, 32, 13623, 16384, 18205, 32768),
-            (7, 32, 16069, 16384, 6393, 32768),
-            (9, 32, 16069, 16384, -6393, 32768),
-            (11, 32, 13623, 16384, -18205, 32768),
-            (13, 32, 18205, 32768, -13623, 16384),
-            (15, 32, 6393, 32768, -16069, 16384),
-            (17, 32, -6393, 32768, -16069, 16384),
-            (19, 32, -18205, 32768, -13623, 16384),
-            (21, 32, -13623, 16384, -18205, 32768),
-            (23, 32, -16069, 16384, -6393, 32768),
-            (25, 32, -16069, 16384, 6393, 32768),
-            (27, 32, -13623, 16384, 18205, 32768),
-            (29, 32, -18205, 32768, 13623, 16384),
-            (31, 32, -6393, 32768, 16069, 16384),
-        ];
-
-        for (an, ad, sn, sd, cn, cd) in frozen_entries {
-            let angle = make_ratio(an, ad).unwrap();
-            let expected_sin = make_ratio(sn, sd).unwrap();
-            let expected_cos = make_ratio(cn, cd).unwrap();
-
-            let actual_sin = sin_turns(angle).ok().unwrap();
-            let actual_cos = cos_turns(angle).ok().unwrap();
-
-            assert_eq!(
-                actual_sin, expected_sin,
-                "frozen sin value mismatch for angle"
-            );
-            assert_eq!(
-                actual_cos, expected_cos,
-                "frozen cos value mismatch for angle"
-            );
-        }
-    }
-
-    #[test]
-    fn test_pythagorean_identity_error_bound() {
-        let one = Ratio::from_integer(1);
-        // Maximum documented identity error: 1.1e-4 (11 / 100_000)
-        let error_bound = make_ratio(11, 100_000).unwrap();
-
-        // Test over 128 angles across the unit circle
-        for k in 0..=128_i64 {
-            let angle = make_ratio(k, 128).unwrap();
-            let s = sin_turns(angle).ok().unwrap();
-            let c = cos_turns(angle).ok().unwrap();
-
-            let s2 = s.checked_mul(s).unwrap();
-            let c2 = c.checked_mul(c).unwrap();
-            let sum = s2.checked_add(c2).unwrap();
-            let diff = sum.checked_sub(one).unwrap();
-            let abs_diff = if diff.numer() < 0 {
-                diff.checked_neg().unwrap()
-            } else {
-                diff
-            };
-
-            assert!(
-                abs_diff <= error_bound,
-                "sin^2 + cos^2 must equal 1 within documented error bound 1.1e-4"
-            );
-        }
-    }
-}
+mod tests;

@@ -2,7 +2,7 @@
 //! selection.
 
 use crate::color::rgb_to_ycbcr;
-use synthvid_scene::{Frame, Rgb8};
+use synthvid_scene::{Channel, Frame, Rgb8};
 
 use super::plane::{Plane, PlaneDimensions};
 
@@ -55,7 +55,7 @@ impl YCbCrPlanes {
     pub(super) fn from_frame(frame: &Frame) -> Self {
         let dims = PlaneDimensions::new(frame.width(), frame.height());
         let mut planes = Self {
-            luma: Plane::filled(dims, super::JpegComponent::Y.huffman_class()),
+            luma: Plane::filled(dims, super::JpegComponent::Luma.huffman_class()),
             cb: Plane::filled(dims, super::JpegComponent::Cb.huffman_class()),
             cr: Plane::filled(dims, super::JpegComponent::Cr.huffman_class()),
         };
@@ -63,20 +63,25 @@ impl YCbCrPlanes {
         let mut pixels = planes
             .luma
             .data_mut()
+            .0
             .iter_mut()
-            .zip(planes.cb.data_mut().iter_mut())
-            .zip(planes.cr.data_mut().iter_mut());
+            .zip(planes.cb.data_mut().0.iter_mut())
+            .zip(planes.cr.data_mut().0.iter_mut());
 
-        let (chunks, _remainder) = frame.data().as_chunks::<3>();
+        let (chunks, _) = frame.data().0.as_chunks::<3>();
         for chunk in chunks {
             let Some(((luma, blue), red)) = pixels.next() else {
                 break;
             };
-            let [r, g, b] = *chunk;
-            let ycbcr = rgb_to_ycbcr(Rgb8::new(r, g, b));
-            *luma = ycbcr.y();
-            *blue = ycbcr.cb();
-            *red = ycbcr.cr();
+            let [red_byte, green_byte, blue_byte] = *chunk;
+            let ycbcr = rgb_to_ycbcr(Rgb8 {
+                red: Channel(red_byte),
+                green: Channel(green_byte),
+                blue: Channel(blue_byte),
+            });
+            *luma = ycbcr.y().get();
+            *blue = ycbcr.cb().get();
+            *red = ycbcr.cr().get();
         }
 
         planes
@@ -119,10 +124,10 @@ impl YCbCrPlanes {
 /// `YCbCrPlanes` entirely (nothing would tie the two together). Its
 /// fields are private to this module for the same reason
 /// [`YCbCrPlanes`]'s are.
-pub(super) struct DownsampledChroma<'a> {
+pub(super) struct DownsampledChroma<'planes> {
     /// Original-resolution luma plane, borrowed from the `YCbCrPlanes`
     /// this was downsampled from.
-    luma: &'a Plane,
+    luma: &'planes Plane,
     /// Downsampled Cb plane.
     cb: Plane,
     /// Downsampled Cr plane.
@@ -157,13 +162,13 @@ impl DownsampledChroma<'_> {
 /// rather than a struct literal at each of `encode_scan`'s two sampling
 /// arms that could name the wrong plane for a field (e.g. binding the
 /// downsampled Cr plane to the `cb` field).
-pub(super) struct ActivePlanes<'a> {
+pub(super) struct ActivePlanes<'planes> {
     /// Luma (Y) plane currently in use.
-    luma: &'a Plane,
+    luma: &'planes Plane,
     /// Blue-difference chroma (Cb) plane currently in use.
-    cb: &'a Plane,
+    cb: &'planes Plane,
     /// Red-difference chroma (Cr) plane currently in use.
-    cr: &'a Plane,
+    cr: &'planes Plane,
 }
 
 impl ActivePlanes<'_> {
@@ -176,7 +181,7 @@ impl ActivePlanes<'_> {
     /// and a `JpegComponent` as two separate, unrelated expressions.
     pub(super) const fn plane(&self, component: super::JpegComponent) -> &Plane {
         match component {
-            super::JpegComponent::Y => self.luma,
+            super::JpegComponent::Luma => self.luma,
             super::JpegComponent::Cb => self.cb,
             super::JpegComponent::Cr => self.cr,
         }

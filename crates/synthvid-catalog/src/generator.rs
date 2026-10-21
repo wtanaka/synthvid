@@ -4,7 +4,9 @@
 //! deterministic and produces byte-identical output for identical inputs.
 
 use crate::cover::Entry;
+use crate::cover::ScaleAxis;
 use crate::scene_builder::SceneBuildError;
+use core::error::Error;
 use core::fmt;
 use synthvid_scene::{FrameCount, Scene};
 use synthvid_video::{render, GeneratedEntry, GenerationError};
@@ -22,15 +24,15 @@ pub enum EntryError {
 }
 
 impl fmt::Display for EntryError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Scene(e) => write!(f, "scene could not be built: {e}"),
-            Self::Render(e) => write!(f, "rendering failed: {e}"),
+            Self::Scene(error) => write!(formatter, "scene could not be built: {error}"),
+            Self::Render(error) => write!(formatter, "rendering failed: {error}"),
         }
     }
 }
 
-impl core::error::Error for EntryError {}
+impl Error for EntryError {}
 
 /// Generates a manifest and media file from a catalog entry.
 ///
@@ -58,16 +60,17 @@ pub(crate) fn build_scene(entry: &Entry) -> Result<Scene, SceneBuildError> {
     let background = build_background(entry);
     let object = build_object_from_entry(entry)?;
 
-    Ok(Scene::new(
-        entry.dimensions,
+    Ok(Scene {
+        dimensions: entry.dimensions,
         frame_rate,
-        FrameCount::new(entry.frame_count.get()).map_err(SceneBuildError::FrameCount)?,
-        match entry.scale {
-            crate::cover::ScaleAxis::NoScale => None,
-            crate::cover::ScaleAxis::WithScale => Some(declared_scale()?),
+        frame_count: FrameCount::new(entry.frame_count.get())
+            .map_err(SceneBuildError::FrameCount)?,
+        scale: match entry.scale {
+            ScaleAxis::Undeclared => None,
+            ScaleAxis::Declared => Some(declared_scale()?),
         },
         background,
         camera,
-        vec![object],
-    ))
+        objects: vec![object],
+    })
 }

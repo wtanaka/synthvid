@@ -13,13 +13,21 @@ mod cover_axes;
 #[path = "cover_greedy.rs"]
 mod cover_greedy;
 
+#[path = "cover_names.rs"]
+mod cover_names;
+
+#[path = "cover_values.rs"]
+mod cover_values;
+
 #[cfg(test)]
 #[path = "cover_tests.rs"]
 mod cover_tests;
 
 use crate::scene_builder::SceneBuildError;
-use core::fmt::Write as FmtWrite;
-use std::fmt;
+use core::error::Error;
+use core::fmt;
+use core::num::NonZeroU16;
+use cover_names::DefectName;
 use synthvid_encode::defects::Defect;
 use synthvid_scene::Dimensions;
 use synthvid_video::json_names::JsonEntryName;
@@ -38,6 +46,10 @@ pub enum CatalogError {
     /// value compatible with the values already chosen. Some compatibility
     /// rule rules out a pair without excluding it from the pairs required.
     UnsatisfiableObligation,
+    /// A truncation offset was zero, which would cut nothing.
+    ZeroTruncationOffset,
+    /// A frame count axis value was zero.
+    ZeroFrameCount,
 }
 
 impl fmt::Display for CatalogError {
@@ -49,17 +61,20 @@ impl fmt::Display for CatalogError {
             Self::UnsatisfiableObligation => {
                 write!(f, "a required pair of axis values cannot be combined")
             }
+            Self::ZeroTruncationOffset => write!(f, "truncation offset was zero"),
+            Self::ZeroFrameCount => write!(f, "frame count was zero"),
         }
     }
 }
 
-impl core::error::Error for CatalogError {}
+impl Error for CatalogError {}
 
 // Re-export axis types from the submodule
 pub use cover_axes::{
     BackgroundAxis, CodingAxis, ContainerAxis, FrameCountValue, FrameRateValue, MotionAxis,
     ScaleAxis, ShapeAxis, TrackMatrixAxis,
 };
+pub use cover_names::MediaName;
 
 /// A catalog entry: a scene description with all parameters specified.
 ///
@@ -68,27 +83,27 @@ pub use cover_axes::{
 /// identical names; two entries differing in any axis produce different names.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Entry {
-    /// Frame dimensions
+    /// Frame dimensions.
     pub dimensions: Dimensions,
-    /// Number of frames
+    /// Number of frames.
     pub frame_count: FrameCountValue,
-    /// Frame rate
+    /// Frame rate.
     pub frame_rate: FrameRateValue,
-    /// Background type
+    /// Background type.
     pub background: BackgroundAxis,
-    /// Shape type
+    /// Shape type.
     pub shape: ShapeAxis,
-    /// Motion type
+    /// Motion type.
     pub motion: MotionAxis,
-    /// Pixel encoding
+    /// Pixel encoding.
     pub coding: CodingAxis,
-    /// Container format
+    /// Container format.
     pub container: ContainerAxis,
-    /// Display matrix transformation
+    /// Display matrix transformation.
     pub track_matrix: TrackMatrixAxis,
-    /// Physical scale declaration
+    /// Physical scale declaration.
     pub scale: ScaleAxis,
-    /// Optional defect
+    /// Optional defect.
     pub defect: Option<Defect>,
 }
 
@@ -107,8 +122,8 @@ impl ManifestName {
     }
 }
 
-impl core::fmt::Display for ManifestName {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Display for ManifestName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.0)
     }
 }
@@ -121,142 +136,31 @@ impl Entry {
     /// different names.
     #[must_use]
     pub fn manifest_name(&self) -> ManifestName {
-        let mut name = String::new();
-        write!(
-            name,
-            "{:04}x{:04}",
+        ManifestName(format!(
+            "{:04}x{:04}-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}",
             self.dimensions.width.get().get(),
-            self.dimensions.height.get().get()
-        )
-        .ok();
-        name.push('-');
-        name.push_str(&Self::frame_count_str(self.frame_count));
-        name.push('-');
-        name.push_str(Self::frame_rate_str(self.frame_rate));
-        name.push('-');
-        name.push_str(Self::background_str(self.background));
-        name.push('-');
-        name.push_str(Self::shape_str(self.shape));
-        name.push('-');
-        name.push_str(Self::motion_str(self.motion));
-        name.push('-');
-        name.push_str(Self::coding_str(self.coding));
-        name.push('-');
-        name.push_str(Self::container_str(self.container));
-        name.push('-');
-        name.push_str(Self::track_matrix_str(self.track_matrix));
-        name.push('-');
-        name.push_str(Self::scale_str(self.scale));
-        name.push('-');
-        name.push_str(Self::defect_str(self.defect.as_ref()));
-
-        ManifestName(name)
+            self.dimensions.height.get().get(),
+            self.frame_count,
+            self.frame_rate,
+            self.background,
+            self.shape,
+            self.motion,
+            self.coding,
+            self.container,
+            self.track_matrix,
+            self.scale,
+            DefectName(self.defect.as_ref()),
+        ))
     }
 
     /// Generates the media file name for this entry.
     ///
     /// Uses the same derivation as the manifest name, ensuring they stay in sync.
-    /// The extension is determined by the container type.
-    /// Returns a string suitable for use as a filename.
+    /// The extension is determined by the container type, and the name's `Display`
+    /// gives the text suitable for use as a filename.
     #[must_use]
-    pub fn media_name(&self) -> String {
-        let base = self.manifest_name();
-        let ext = match self.container {
-            ContainerAxis::Iso => "mp4",
-            ContainerAxis::Avi => "avi",
-        };
-        format!("{}-media.{}", base.as_str(), ext)
-    }
-
-    /// Converts a frame count to a name fragment.
-    fn frame_count_str(fc: FrameCountValue) -> String {
-        format!("{}", fc.get())
-    }
-
-    /// Converts a frame rate to a name fragment.
-    const fn frame_rate_str(fr: FrameRateValue) -> &'static str {
-        match fr {
-            FrameRateValue::Thirty => "30fps",
-            FrameRateValue::Sixty => "60fps",
-            FrameRateValue::OneTwenty => "120fps",
-            FrameRateValue::TwoForty => "240fps",
-            FrameRateValue::Ntsc => "ntsc",
-            FrameRateValue::Absurd => "absurd",
-        }
-    }
-
-    /// Converts a background choice to a name fragment.
-    const fn background_str(bg: BackgroundAxis) -> &'static str {
-        match bg {
-            BackgroundAxis::Solid => "solid",
-            BackgroundAxis::Checker => "checker",
-            BackgroundAxis::Gradient => "gradient",
-            BackgroundAxis::Blobs => "blobs",
-            BackgroundAxis::Grid => "grid",
-        }
-    }
-
-    /// Converts a shape choice to a name fragment.
-    const fn shape_str(sh: ShapeAxis) -> &'static str {
-        match sh {
-            ShapeAxis::Disc => "disc",
-            ShapeAxis::Rect => "rect",
-            ShapeAxis::Polygon => "polygon",
-            ShapeAxis::Cross => "cross",
-        }
-    }
-
-    /// Converts a motion choice to a name fragment.
-    const fn motion_str(mot: MotionAxis) -> &'static str {
-        match mot {
-            MotionAxis::Fixed => "fixed",
-            MotionAxis::Linear => "linear",
-            MotionAxis::Ballistic => "ballistic",
-            MotionAxis::Circular => "circular",
-            MotionAxis::Oscillating => "oscillating",
-            MotionAxis::Walk => "walk",
-        }
-    }
-
-    /// Converts a coding choice to a name fragment.
-    const fn coding_str(cod: CodingAxis) -> &'static str {
-        match cod {
-            CodingAxis::Raw => "raw",
-            CodingAxis::MotionJpeg => "mjpeg",
-        }
-    }
-
-    /// Converts a container choice to a name fragment.
-    const fn container_str(cont: ContainerAxis) -> &'static str {
-        match cont {
-            ContainerAxis::Iso => "iso",
-            ContainerAxis::Avi => "avi",
-        }
-    }
-
-    /// Converts a track matrix choice to a name fragment.
-    const fn track_matrix_str(tm: TrackMatrixAxis) -> &'static str {
-        match tm {
-            TrackMatrixAxis::Identity => "identity",
-            TrackMatrixAxis::Rotate90 => "rot90",
-            TrackMatrixAxis::Rotate180 => "rot180",
-            TrackMatrixAxis::Rotate270 => "rot270",
-        }
-    }
-
-    /// Converts a scale choice to a name fragment.
-    const fn scale_str(sc: ScaleAxis) -> &'static str {
-        match sc {
-            ScaleAxis::WithScale => "scaled",
-            ScaleAxis::NoScale => "unscaled",
-        }
-    }
-
-    /// Converts a defect choice to a name fragment.
-    #[must_use]
-    fn defect_str(def: Option<&Defect>) -> &'static str {
-        def.as_ref()
-            .map_or("nodef", |d| cover_axes::defect_variant_str(d))
+    pub fn media_name(&self) -> MediaName {
+        MediaName::new(self.manifest_name(), self.container)
     }
 
     /// Converts this entry to a `VideoSpec` with explicit parameters.
@@ -304,45 +208,52 @@ impl Entry {
     }
 }
 
+/// The dimensions axis values, in declared order.
+fn axis_dimensions() -> Result<[Dimensions; 5], CatalogError> {
+    use cover_axes::{make_dimensions, RawSize};
+
+    Ok([
+        make_dimensions(RawSize {
+            width: NonZeroU16::new(16),
+            height: NonZeroU16::new(16),
+        })?,
+        make_dimensions(RawSize {
+            width: NonZeroU16::new(320),
+            height: NonZeroU16::new(240),
+        })?,
+        make_dimensions(RawSize {
+            width: NonZeroU16::new(640),
+            height: NonZeroU16::new(480),
+        })?,
+        make_dimensions(RawSize {
+            width: NonZeroU16::new(1280),
+            height: NonZeroU16::new(720),
+        })?,
+        make_dimensions(RawSize {
+            width: NonZeroU16::new(1920),
+            height: NonZeroU16::new(1080),
+        })?,
+    ])
+}
+
+/// The frame count axis values, in declared order.
+fn axis_frame_counts() -> Result<[FrameCountValue; 5], CatalogError> {
+    Ok([
+        FrameCountValue::new(1)?,
+        FrameCountValue::new(10)?,
+        FrameCountValue::new(100)?,
+        FrameCountValue::new(1000)?,
+        FrameCountValue::new(20000)?,
+    ])
+}
+
 /// Defines all axis values for the catalog.
 fn define_axes() -> Result<cover_axes::AxisArrays, CatalogError> {
-    use cover_axes::{
-        all_defects, make_dimensions, AxisArrays, BackgroundAxis, CodingAxis, ContainerAxis,
-        FrameCountValue, FrameRateValue, MotionAxis, RawSize, ScaleAxis, ShapeAxis,
-        TrackMatrixAxis,
-    };
+    use cover_axes::{all_defects, AxisArrays};
 
     // Define all axis values in declared order
-    let dimensions = [
-        make_dimensions(RawSize {
-            width: 16,
-            height: 16,
-        })?,
-        make_dimensions(RawSize {
-            width: 320,
-            height: 240,
-        })?,
-        make_dimensions(RawSize {
-            width: 640,
-            height: 480,
-        })?,
-        make_dimensions(RawSize {
-            width: 1280,
-            height: 720,
-        })?,
-        make_dimensions(RawSize {
-            width: 1920,
-            height: 1080,
-        })?,
-    ];
-
-    let frame_counts = [
-        FrameCountValue::new(1),
-        FrameCountValue::new(10),
-        FrameCountValue::new(100),
-        FrameCountValue::new(1000),
-        FrameCountValue::new(20000),
-    ];
+    let dimensions = axis_dimensions()?;
+    let frame_counts = axis_frame_counts()?;
 
     let frame_rates = [
         FrameRateValue::Thirty,
@@ -388,7 +299,7 @@ fn define_axes() -> Result<cover_axes::AxisArrays, CatalogError> {
         TrackMatrixAxis::Rotate270,
     ];
 
-    let scales = [ScaleAxis::WithScale, ScaleAxis::NoScale];
+    let scales = [ScaleAxis::Declared, ScaleAxis::Undeclared];
 
     let defects = all_defects()?;
 
@@ -432,10 +343,7 @@ fn define_axes() -> Result<cover_axes::AxisArrays, CatalogError> {
 /// count;
 /// ```
 pub fn generate_catalogue() -> Result<Vec<Entry>, CatalogError> {
-    use cover_axes::{
-        make_dimensions, BackgroundAxis, CodingAxis, ContainerAxis, FrameCountValue,
-        FrameRateValue, MotionAxis, RawSize, ScaleAxis, ShapeAxis, TrackMatrixAxis,
-    };
+    use cover_axes::{make_dimensions, RawSize};
 
     let axes = define_axes()?;
 
@@ -452,12 +360,17 @@ pub fn generate_catalogue() -> Result<Vec<Entry>, CatalogError> {
         let entry = entry_from_selection(&axes, &selection)?;
         // Every pass removes at least the obligation it started from, so the
         // loop ends.
-        if !cover_greedy::entry_covers_obligation(&entry, first_obligation, &axes) {
+        if cover_greedy::entry_covers_obligation(&entry, first_obligation, &axes)
+            == cover_values::Coverage::Uncovered
+        {
             return Err(CatalogError::UnsatisfiableObligation);
         }
 
         // Remove all obligations covered by this entry
-        obligations.retain(|&ob| !cover_greedy::entry_covers_obligation(&entry, ob, &axes));
+        obligations.retain(|&ob| {
+            cover_greedy::entry_covers_obligation(&entry, ob, &axes)
+                == cover_values::Coverage::Uncovered
+        });
 
         result.push(entry);
     }
@@ -465,10 +378,10 @@ pub fn generate_catalogue() -> Result<Vec<Entry>, CatalogError> {
     // Add singleton entry encoding frame numbers
     result.push(Entry {
         dimensions: make_dimensions(RawSize {
-            width: 256,
-            height: 256,
+            width: NonZeroU16::new(256),
+            height: NonZeroU16::new(256),
         })?,
-        frame_count: FrameCountValue::new(100),
+        frame_count: FrameCountValue::new(100)?,
         frame_rate: FrameRateValue::Thirty,
         background: BackgroundAxis::Solid,
         shape: ShapeAxis::Disc,
@@ -476,7 +389,7 @@ pub fn generate_catalogue() -> Result<Vec<Entry>, CatalogError> {
         coding: CodingAxis::Raw,
         container: ContainerAxis::Iso,
         track_matrix: TrackMatrixAxis::Identity,
-        scale: ScaleAxis::NoScale,
+        scale: ScaleAxis::Undeclared,
         defect: None,
     });
 
@@ -491,71 +404,72 @@ fn entry_from_selection(
     Ok(Entry {
         dimensions: axes
             .dimensions
-            .get(sel.dimensions)
+            .get(sel.dimensions.0)
             .copied()
             .ok_or(CatalogError::AxisIndexOutOfRange)?,
         frame_count: axes
             .frame_counts
-            .get(sel.frame_count)
+            .get(sel.frame_count.0)
             .copied()
             .ok_or(CatalogError::AxisIndexOutOfRange)?,
         frame_rate: axes
             .frame_rates
-            .get(sel.frame_rate)
+            .get(sel.frame_rate.0)
             .copied()
             .ok_or(CatalogError::AxisIndexOutOfRange)?,
         background: axes
             .backgrounds
-            .get(sel.background)
+            .get(sel.background.0)
             .copied()
             .ok_or(CatalogError::AxisIndexOutOfRange)?,
         shape: axes
             .shapes
-            .get(sel.shape)
+            .get(sel.shape.0)
             .copied()
             .ok_or(CatalogError::AxisIndexOutOfRange)?,
         motion: axes
             .motions
-            .get(sel.motion)
+            .get(sel.motion.0)
             .copied()
             .ok_or(CatalogError::AxisIndexOutOfRange)?,
         coding: axes
             .codings
-            .get(sel.coding)
+            .get(sel.coding.0)
             .copied()
             .ok_or(CatalogError::AxisIndexOutOfRange)?,
         container: axes
             .containers
-            .get(sel.container)
+            .get(sel.container.0)
             .copied()
             .ok_or(CatalogError::AxisIndexOutOfRange)?,
         track_matrix: axes
             .track_matrices
-            .get(sel.track_matrix)
+            .get(sel.track_matrix.0)
             .copied()
             .ok_or(CatalogError::AxisIndexOutOfRange)?,
         scale: axes
             .scales
-            .get(sel.scale)
+            .get(sel.scale.0)
             .copied()
             .ok_or(CatalogError::AxisIndexOutOfRange)?,
         defect: axes
             .defects
-            .get(sel.defect)
+            .get(sel.defect.0)
             .cloned()
             .ok_or(CatalogError::AxisIndexOutOfRange)?,
     })
 }
 
 #[cfg(test)]
-pub(super) fn sample_entry_for_test() -> Entry {
-    Entry {
+pub(super) fn sample_entry_for_test() -> Result<Entry, synthvid_testkit::Fail> {
+    use synthvid_testkit::OrFail as _;
+    Ok(Entry {
         dimensions: cover_axes::make_dimensions(cover_axes::RawSize {
-            width: 320,
-            height: 240,
+            width: NonZeroU16::new(320),
+            height: NonZeroU16::new(240),
         })
-        .expect("test dimensions are valid"),
-        frame_count: FrameCountValue::new(100),
+        .or_fail()?,
+        frame_count: FrameCountValue::new(100).or_fail()?,
         frame_rate: FrameRateValue::Thirty,
         background: BackgroundAxis::Solid,
         shape: ShapeAxis::Disc,
@@ -563,43 +477,64 @@ pub(super) fn sample_entry_for_test() -> Entry {
         coding: CodingAxis::Raw,
         container: ContainerAxis::Iso,
         track_matrix: TrackMatrixAxis::Identity,
-        scale: ScaleAxis::NoScale,
+        scale: ScaleAxis::Undeclared,
         defect: None,
-    }
+    })
+}
+
+/// The picture size and frame count a test-built entry starts from.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum EntrySize {
+    /// 16 by 16 pixels, one frame.
+    Tiny1,
+    /// 16 by 16 pixels, ten frames.
+    Tiny10,
+    /// 320 by 240 pixels, ten frames.
+    Qvga10,
 }
 
 /// Builds a catalogue-shaped entry for a test: the dimensions and frame count
-/// of the first catalogue entry whose name starts with `prefix`, then `edit`.
+/// of the first catalogue entry of the given `size`, then `edit`.
 ///
 /// The covering array chooses which combinations the catalogue holds, so a
 /// test that needs one particular combination builds it rather than hoping
 /// the catalogue still contains it.
 #[cfg(test)]
-pub(crate) fn entry_like(prefix: &str, edit: impl FnOnce(&mut Entry)) -> Entry {
+pub(crate) fn entry_like(
+    size: EntrySize,
+    edit: impl FnOnce(&mut Entry),
+) -> Result<Entry, synthvid_testkit::Fail> {
+    use synthvid_testkit::OrFail as _;
+    let prefix = match size {
+        EntrySize::Tiny1 => "0016x0016-1-",
+        EntrySize::Tiny10 => "0016x0016-10-",
+        EntrySize::Qvga10 => "0320x0240-10-",
+    };
     let mut entry = generate_catalogue()
-        .expect("failed to generate catalogue")
+        .or_fail()?
         .into_iter()
-        .find(|e| e.manifest_name().as_str().starts_with(prefix))
-        .expect("no catalogue entry has this size");
+        .find(|entry| entry.manifest_name().as_str().starts_with(prefix))
+        .or_fail()?;
     edit(&mut entry);
-    entry
+    Ok(entry)
 }
 
 #[cfg(test)]
 /// The AVI entry the truncation digest is pinned on: motion-JPEG frames in
 /// an AVI cut just before the `movi` list.
-pub(crate) fn avi_truncated_entry() -> Entry {
+pub(crate) fn avi_truncated_entry() -> Result<Entry, synthvid_testkit::Fail> {
     use synthvid_encode::defects::{BoxAddress, BoxStep, BoxTag, ContainerKind};
-    entry_like("0016x0016-10-", |e| {
-        e.frame_rate = FrameRateValue::Sixty;
-        e.background = BackgroundAxis::Checker;
-        e.shape = ShapeAxis::Rect;
-        e.motion = MotionAxis::Linear;
-        e.coding = CodingAxis::MotionJpeg;
-        e.container = ContainerAxis::Avi;
-        e.track_matrix = TrackMatrixAxis::Rotate90;
-        e.scale = ScaleAxis::NoScale;
-        e.defect = Some(Defect::TruncateBefore(
+    entry_like(EntrySize::Tiny10, |entry| {
+        entry.frame_rate = FrameRateValue::Sixty;
+        entry.background = BackgroundAxis::Checker;
+        entry.shape = ShapeAxis::Rect;
+        entry.motion = MotionAxis::Linear;
+        entry.coding = CodingAxis::MotionJpeg;
+        entry.container = ContainerAxis::Avi;
+        entry.track_matrix = TrackMatrixAxis::Rotate90;
+        entry.scale = ScaleAxis::Undeclared;
+        entry.defect = Some(Defect::TruncateBefore(
             BoxAddress::top(ContainerKind::Avi, BoxStep::first(BoxTag::new(*b"RIFF")))
                 .child(BoxStep::first(BoxTag::new(*b"movi"))),
         ));

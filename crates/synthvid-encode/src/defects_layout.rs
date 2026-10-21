@@ -13,14 +13,19 @@
 //! past the data, through the pad byte and the next chunk's header.
 
 use super::defects_box::{
-    extract_4_bytes, is_avi_format, is_iso_format, parse_iso_box, AbsoluteOffset, BoxInfo,
-    ContainerBytes, ISO_CONTAINERS,
+    detect_format, extract_4_bytes, parse_iso_box, AbsoluteOffset, BoxInfo, ContainerBytes,
+    ISO_CONTAINERS,
 };
 use super::defects_frames::add_iso_frames;
+use super::defects_types::{ContainerFormat, FieldOffset, Occurrence};
 use super::{BoxTag, DefectError};
 use crate::avi::{AviCodec, RIFF_CHUNK_ALIGNMENT};
+use crate::avi_helpers::ChunkId;
 use core::fmt;
-use std::collections::BTreeMap;
+use core::iter::once;
+use core::ops::Range;
+extern crate alloc;
+use alloc::collections::BTreeMap;
 use synthvid_scene::FrameIndex;
 
 /// The container format an address is written for.
@@ -48,7 +53,7 @@ pub enum BoxStep {
         /// The box's tag.
         tag: BoxTag,
         /// Zero-based index among the siblings that carry the same tag.
-        occurrence: u32,
+        occurrence: Occurrence,
     },
     /// A frame, by its position among the frames. A frame's region starts at
     /// its data: in AVI the chunk header before it belongs to the region that
@@ -59,14 +64,14 @@ pub enum BoxStep {
 impl BoxStep {
     /// Creates a step naming the `occurrence`-th sibling that carries `tag`.
     #[must_use]
-    pub const fn new(tag: BoxTag, occurrence: u32) -> Self {
+    pub const fn new(tag: BoxTag, occurrence: Occurrence) -> Self {
         Self::Tagged { tag, occurrence }
     }
 
     /// Creates a step naming the first sibling that carries `tag`.
     #[must_use]
     pub const fn first(tag: BoxTag) -> Self {
-        Self::new(tag, 0)
+        Self::new(tag, Occurrence(0))
     }
 
     /// Creates a step naming a frame.
@@ -79,10 +84,13 @@ impl BoxStep {
 impl fmt::Display for BoxStep {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Tagged { tag, occurrence } if *occurrence != 0 => {
-                write!(f, "/{tag}[{occurrence}]")
+            Self::Tagged { tag, occurrence } if occurrence.0 != 0 => {
+                write!(f, "/{tag}[{}]", occurrence.0)
             }
-            Self::Tagged { tag, .. } => write!(f, "/{tag}"),
+            Self::Tagged {
+                tag,
+                occurrence: _occurrence,
+            } => write!(f, "/{tag}"),
             Self::Frame(index) => write!(f, "/frame[{}]", index.get()),
         }
     }
@@ -130,7 +138,7 @@ impl BoxAddress {
 
 impl fmt::Display for BoxAddress {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for step in core::iter::once(&self.first).chain(&self.rest) {
+        for step in once(&self.first).chain(&self.rest) {
             write!(f, "{step}")?;
         }
         Ok(())
@@ -141,7 +149,7 @@ impl fmt::Display for BoxAddress {
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub(super) struct Region {
     /// Offset of the box's first byte.
-    pub(super) start: usize,
+    pub(super) start: AbsoluteOffset,
     /// The box's address.
     pub(super) address: BoxAddress,
 }
@@ -153,8 +161,8 @@ pub(super) struct Region {
 pub(super) struct Layout {
     /// The boxes in document order.
     regions: Vec<Region>,
-    /// The file's length in bytes.
-    len: usize,
+    /// The offset one past the file's last byte, which is its length.
+    len: AbsoluteOffset,
     /// The format the file is in.
     kind: ContainerKind,
 }
@@ -168,19 +176,22 @@ impl Layout {
     /// malformed.
     pub(super) fn of(input: ContainerBytes<'_>) -> Result<Self, DefectError> {
         let mut regions = Vec::new();
-        let kind = if is_iso_format(input)? {
-            walk_iso(input, 0, input.len(), None, &mut regions)?;
-            add_iso_frames(input, &mut regions)?;
-            ContainerKind::Iso
-        } else if is_avi_format(input) {
-            walk_avi_root(input, &mut regions)?;
-            ContainerKind::Avi
-        } else {
-            return Err(DefectError::IncompatibleFileType);
+        let kind = match detect_format(input)? {
+            ContainerFormat::Iso => {
+                let whole = AbsoluteOffset::new(0)..AbsoluteOffset::new(input.as_slice().len());
+                walk_iso(input, whole, None, &mut regions)?;
+                add_iso_frames(input, &mut regions)?;
+                ContainerKind::Iso
+            }
+            ContainerFormat::Avi => {
+                walk_avi_root(input, &mut regions)?;
+                ContainerKind::Avi
+            }
+            ContainerFormat::Neither => return Err(DefectError::IncompatibleFileType),
         };
         Ok(Self {
             regions,
-            len: input.len(),
+            len: AbsoluteOffset::new(input.as_slice().len()),
             kind,
         })
     }
@@ -192,7 +203,10 @@ impl Layout {
     ///
     /// Returns an error when the address is for the other format, or names a
     /// box the file does not contain.
-    pub(super) fn span(&self, address: &BoxAddress) -> Result<(usize, usize), DefectError> {
+    pub(super) fn span(
+        &self,
+        address: &BoxAddress,
+    ) -> Result<(AbsoluteOffset, AbsoluteOffset), DefectError> {
         if address.kind() != self.kind {
             return Err(DefectError::IncompatibleFileType);
         }
@@ -206,10 +220,12 @@ impl Layout {
             .get(index)
             .ok_or(DefectError::AddressNotFound)?
             .start;
-        let end = index
-            .checked_add(1)
-            .and_then(|next| self.regions.get(next))
-            .map_or(self.len, |next| next.start);
+        let end = 'end: {
+            let Some(next) = index.checked_add(1).and_then(|next| self.regions.get(next)) else {
+                break 'end self.len;
+            };
+            next.start
+        };
         Ok((start, end))
     }
 
@@ -222,66 +238,67 @@ impl Layout {
 
 /// Counts same-tag siblings so each gets its own occurrence, and frames so
 /// each gets its own index.
-#[derive(Default)]
 struct Occurrences {
     /// Siblings seen so far, by tag.
-    tags: BTreeMap<[u8; 4], u32>,
-    /// Frames seen so far.
-    frames: u32,
+    tags: BTreeMap<BoxTag, Occurrence>,
+    /// The index the next frame will take.
+    frames: FrameIndex,
 }
 
 impl Occurrences {
     /// Returns the step for the next sibling carrying `tag`.
-    fn next(&mut self, tag: BoxTag) -> BoxStep {
-        let seen = self.tags.entry(tag.get()).or_insert(0);
+    fn next(&mut self, tag: BoxTag) -> Result<BoxStep, DefectError> {
+        let seen = self.tags.entry(tag).or_insert(Occurrence(0));
         let step = BoxStep::new(tag, *seen);
-        *seen = seen.saturating_add(1);
-        step
+        seen.0 = seen.0.checked_add(1).ok_or(DefectError::SizeOverflow)?;
+        Ok(step)
     }
 
     /// Returns the step for the next frame.
-    const fn next_frame(&mut self) -> BoxStep {
-        let step = BoxStep::frame(FrameIndex::new(self.frames));
-        self.frames = self.frames.saturating_add(1);
-        step
+    fn next_frame(&mut self) -> Result<BoxStep, DefectError> {
+        let step = BoxStep::frame(self.frames);
+        self.frames = FrameIndex::new(
+            self.frames
+                .get()
+                .checked_add(1)
+                .ok_or(DefectError::SizeOverflow)?,
+        );
+        Ok(step)
     }
 }
 
 /// Builds the address of a box from its parent's, or as a top-level box.
 fn address_of(kind: ContainerKind, parent: Option<&BoxAddress>, step: BoxStep) -> BoxAddress {
-    parent.map_or_else(
-        || BoxAddress::top(kind, step),
-        |parent| parent.clone().child(step),
-    )
+    let Some(parent_address) = parent else {
+        return BoxAddress::top(kind, step);
+    };
+    parent_address.clone().child(step)
 }
 
 /// Lists the ISO boxes in `begin..end`, descending into containers.
 fn walk_iso(
     input: ContainerBytes<'_>,
-    begin: usize,
-    end: usize,
+    span: Range<AbsoluteOffset>,
     parent: Option<&BoxAddress>,
     out: &mut Vec<Region>,
 ) -> Result<(), DefectError> {
-    let mut occurrences = Occurrences::default();
-    let mut offset = begin;
-    while offset < end {
-        let info: BoxInfo = parse_iso_box(input, AbsoluteOffset::new(offset))?;
-        let address = address_of(ContainerKind::Iso, parent, occurrences.next(info.tag));
+    let mut occurrences = Occurrences {
+        tags: BTreeMap::new(),
+        frames: FrameIndex::new(0),
+    };
+    let mut offset = span.start;
+    while offset < span.end {
+        let info: BoxInfo = parse_iso_box(input, offset)?;
+        let address = address_of(ContainerKind::Iso, parent, occurrences.next(info.tag)?);
         out.push(Region {
-            start: info.box_start.get(),
+            start: info.box_start.as_absolute(),
             address: address.clone(),
         });
         if ISO_CONTAINERS.contains(&info.tag.get()) {
-            walk_iso(
-                input,
-                info.payload_start.get(),
-                info.payload_end.get(),
-                Some(&address),
-                out,
-            )?;
+            let children = info.payload_start.as_absolute()..info.payload_end.as_absolute();
+            walk_iso(input, children, Some(&address), out)?;
         }
-        offset = info.payload_end.get();
+        offset = info.payload_end.as_absolute();
     }
     Ok(())
 }
@@ -290,11 +307,12 @@ fn walk_iso(
 fn walk_avi_root(input: ContainerBytes<'_>, out: &mut Vec<Region>) -> Result<(), DefectError> {
     let riff = BoxAddress::top(ContainerKind::Avi, BoxStep::first(BoxTag::new(*b"RIFF")));
     out.push(Region {
-        start: 0,
+        start: AbsoluteOffset::new(0),
         address: riff.clone(),
     });
     // The RIFF header is 12 bytes: "RIFF", a size, and the "AVI " form type.
-    walk_avi(input, 12, input.len(), &riff, AviScope::Elsewhere, out)
+    let children = AbsoluteOffset::new(12)..AbsoluteOffset::new(input.as_slice().len());
+    walk_avi(input, children, &riff, AviScope::Elsewhere, out)
 }
 
 /// The length of an AVI chunk header: a tag and a size.
@@ -310,7 +328,7 @@ enum ChunkKind {
     /// A `LIST`: other chunks, from this offset.
     List {
         /// Offset of the first byte of the chunk's children.
-        children: usize,
+        children: AbsoluteOffset,
     },
 }
 
@@ -327,50 +345,60 @@ enum AviScope {
 /// An AVI chunk's extent and tag.
 struct AviChunk {
     /// Offset of the chunk's first byte.
-    start: usize,
+    start: AbsoluteOffset,
     /// The tag; for a `LIST`, its subtype.
     tag: BoxTag,
     /// Whether the chunk holds other chunks.
     kind: ChunkKind,
     /// Offset one past the chunk's last byte, before any pad byte.
-    end: usize,
+    end: AbsoluteOffset,
 }
 
 /// Reads the AVI chunk header at `offset`.
 ///
 /// A chunk's size counts only its payload, so a chunk may be shorter than its
 /// 8-byte header: a 3-byte frame is a 3-byte chunk.
-fn read_avi_chunk(input: ContainerBytes<'_>, offset: usize) -> Result<AviChunk, DefectError> {
-    let at = |delta: usize| {
+fn read_avi_chunk(
+    input: ContainerBytes<'_>,
+    offset: AbsoluteOffset,
+) -> Result<AviChunk, DefectError> {
+    let at = |delta: FieldOffset| {
         offset
-            .checked_add(delta)
+            .get()
+            .checked_add(delta.0)
             .map(AbsoluteOffset::new)
             .ok_or(DefectError::SizeOverflow)
     };
-    let tag = extract_4_bytes(input, at(0)?).ok_or(DefectError::InvalidBoxStructure)?;
-    let size = extract_4_bytes(input, at(4)?).ok_or(DefectError::InvalidBoxStructure)?;
-    let size = usize::try_from(u32::from_le_bytes(size)).map_err(|_| DefectError::SizeOverflow)?;
-    let end = at(8)?
-        .get()
-        .checked_add(size)
-        .ok_or(DefectError::SizeOverflow)?;
-    if end > input.len() {
+    let tag =
+        extract_4_bytes(input, at(FieldOffset(0))?).ok_or(DefectError::InvalidBoxStructure)?;
+    let size_field =
+        extract_4_bytes(input, at(FieldOffset(4))?).ok_or(DefectError::InvalidBoxStructure)?;
+    let size =
+        usize::try_from(u32::from_le_bytes(size_field.0)).map_err(DefectError::size_overflow)?;
+    let end = AbsoluteOffset::new(
+        at(FieldOffset(8))?
+            .get()
+            .checked_add(size)
+            .ok_or(DefectError::SizeOverflow)?,
+    );
+    if end.get() > input.as_slice().len() {
         return Err(DefectError::InvalidBoxStructure);
     }
-    if tag == *b"LIST" {
-        let subtype = extract_4_bytes(input, at(8)?).ok_or(DefectError::InvalidBoxStructure)?;
+    if tag.0 == *b"LIST" {
+        let subtype =
+            extract_4_bytes(input, at(FieldOffset(8))?).ok_or(DefectError::InvalidBoxStructure)?;
         Ok(AviChunk {
             start: offset,
-            tag: BoxTag::new(subtype),
+            tag: BoxTag::new(subtype.0),
             kind: ChunkKind::List {
-                children: at(12)?.get(),
+                children: at(FieldOffset(12))?,
             },
             end,
         })
     } else {
         Ok(AviChunk {
             start: offset,
-            tag: BoxTag::new(tag),
+            tag: BoxTag::new(tag.0),
             kind: ChunkKind::Leaf,
             end,
         })
@@ -380,17 +408,20 @@ fn read_avi_chunk(input: ContainerBytes<'_>, offset: usize) -> Result<AviChunk, 
 /// Lists the AVI chunks in `begin..end`, descending into `LIST` chunks.
 fn walk_avi(
     input: ContainerBytes<'_>,
-    begin: usize,
-    end: usize,
+    span: Range<AbsoluteOffset>,
     parent: &BoxAddress,
     scope: AviScope,
     out: &mut Vec<Region>,
 ) -> Result<(), DefectError> {
-    let mut occurrences = Occurrences::default();
-    let mut offset = begin;
+    let mut occurrences = Occurrences {
+        tags: BTreeMap::new(),
+        frames: FrameIndex::new(0),
+    };
+    let mut offset = span.start;
     while offset
+        .get()
         .checked_add(8)
-        .is_some_and(|header_end| header_end <= end)
+        .is_some_and(|header_end| header_end <= span.end.get())
     {
         let chunk = read_avi_chunk(input, offset)?;
         // Under `movi`, a stream-0 frame is addressed by its number rather
@@ -398,34 +429,48 @@ fn walk_avi(
         // A frame's region begins at its data, as in ISO, so an offset into a
         // frame counts the same bytes in both formats. Its 8-byte chunk header
         // belongs to the region before it.
-        let (step, start) = match (scope, AviCodec::of_frame_chunk(chunk.tag.get())) {
+        let (step, start) = match (
+            scope,
+            AviCodec::of_frame_chunk(ChunkId::new(chunk.tag.get())),
+        ) {
             (AviScope::Movi, Ok(_)) => (
-                occurrences.next_frame(),
-                chunk
-                    .start
-                    .checked_add(AVI_CHUNK_HEADER_LEN)
-                    .ok_or(DefectError::SizeOverflow)?,
+                occurrences.next_frame()?,
+                AbsoluteOffset::new(
+                    chunk
+                        .start
+                        .get()
+                        .checked_add(AVI_CHUNK_HEADER_LEN)
+                        .ok_or(DefectError::SizeOverflow)?,
+                ),
             ),
-            _ => (occurrences.next(chunk.tag), chunk.start),
+            (AviScope::Movi, Err(_)) | (AviScope::Elsewhere, Ok(_) | Err(_)) => {
+                (occurrences.next(chunk.tag)?, chunk.start)
+            }
         };
         let address = address_of(ContainerKind::Avi, Some(parent), step);
         out.push(Region {
             start,
             address: address.clone(),
         });
-        if let ChunkKind::List { children } = chunk.kind {
-            let inner = match chunk.tag.get() {
-                MOVI => AviScope::Movi,
-                _ => AviScope::Elsewhere,
-            };
-            walk_avi(input, children, chunk.end, &address, inner, out)?;
+        match chunk.kind {
+            ChunkKind::List { children } => {
+                let inner = match chunk.tag.get() {
+                    MOVI => AviScope::Movi,
+                    _ => AviScope::Elsewhere,
+                };
+                walk_avi(input, children..chunk.end, &address, inner, out)?;
+            }
+            ChunkKind::Leaf => {}
         }
         // An odd-length chunk is followed by one pad byte, which belongs to
         // the chunk it follows.
-        offset = chunk
-            .end
-            .checked_next_multiple_of(RIFF_CHUNK_ALIGNMENT)
-            .ok_or(DefectError::SizeOverflow)?;
+        offset = AbsoluteOffset::new(
+            chunk
+                .end
+                .get()
+                .checked_next_multiple_of(RIFF_CHUNK_ALIGNMENT)
+                .ok_or(DefectError::SizeOverflow)?,
+        );
     }
     Ok(())
 }

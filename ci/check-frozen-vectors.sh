@@ -1,8 +1,10 @@
 #!/bin/sh
 # Verify the frozen test vectors are unchanged.
 #
-# The hard-coded literals in the tests for the pseudo-random generator and the
-# trigonometry module define the output of those modules exactly. If a change
+# The hard-coded literals in the tests for the pseudo-random generator, the
+# trigonometry module and the other recorded files define their output exactly.
+# A module whose tests live in `<module>/tests.rs` is recorded with that file
+# too, since that is where its vectors are. If a change
 # makes them fail, the change is wrong -- regenerating them to match would
 # quietly void every digest in catalog.lock and every corpus generated so far.
 #

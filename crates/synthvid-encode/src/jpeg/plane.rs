@@ -1,6 +1,7 @@
 //! JPEG plane and block-grid machinery.
 
 use core::num::NonZeroU16;
+use core::num::NonZeroUsize;
 
 use crate::dct::PixelBlock;
 use crate::huffman::Component;
@@ -12,52 +13,22 @@ use synthvid_scene::{Height, Width};
 #[cfg(target_pointer_width = "16")]
 compile_error!("synthvid-encode assumes usize is at least 32 bits wide");
 
-/// Multiplies a block-grid index by 8 (equivalently, `<< 3`) to get a pixel
-/// offset, saturating rather than overflowing. A plain `if`/`else` over a
-/// shift-based bound, not `checked_mul` plus a match: there is no `Option`
-/// here to unwrap, so clippy's `Option`-shaped "manual unwrap" lints do not
-/// apply, and there is no `*`/`/` operator either (both `<<` and `>>` sit
-/// outside `arithmetic_side_effects` and `integer_division`, since neither
-/// can silently overflow or truncate the way `*`/`/` can).
-const fn multiply_block_index_by_8(value: usize) -> usize {
-    if value > (usize::MAX >> 3) {
-        usize::MAX
-    } else {
-        value << 3
-    }
-}
+/// The number of samples in one plane: its width times its height.
+#[derive(Debug, Clone, Copy)]
+struct PlaneArea(usize);
 
-/// Computes `width * height` as a `usize`. Total: `width` and `height` are
+/// Computes `width * height` as a [`PlaneArea`]. Total: `width` and `height` are
 /// each at most `u16::MAX`, so their product is at most
 /// `65_535 * 65_535 = 4_294_836_225`, which fits any `usize` this crate
-/// builds for (see the module-level guard above, and [`widen_u32_to_usize`]
-/// just below).
-fn area_from_dims(dims: PlaneDimensions) -> usize {
-    let width = widen_u32_to_usize(u32::from(dims.width().get().get()));
-    let height = widen_u32_to_usize(u32::from(dims.height().get().get()));
+/// builds for (see the module-level guard above).
+fn area_from_dims(dims: PlaneDimensions) -> PlaneArea {
+    let width = NonZeroUsize::from(dims.width().get()).get();
+    let height = NonZeroUsize::from(dims.height().get()).get();
     match width.checked_mul(height) {
-        Some(area) => area,
+        Some(area) => PlaneArea(area),
         // Unreachable: see this function's doc comment.
-        None if height == usize::MAX => usize::MAX,
-        None => usize::MAX,
-    }
-}
-
-/// Widens a `u32` to `usize`. Total on every target this crate can actually
-/// be built for: the `compile_error!` above already rejects any target
-/// where `usize` is narrower than 32 bits, and every `u32` value fits a
-/// `usize` that is at least 32 bits wide.
-fn widen_u32_to_usize(value: u32) -> usize {
-    match usize::try_from(value) {
-        Ok(v) => v,
-        // The module-level guard above already rules out any target where
-        // this could fail (every `usize` this crate builds for is at least
-        // 32 bits wide), so both arms below are unreachable in practice;
-        // the two are kept distinct because the top of `u32`'s range is
-        // the case worth naming, even though nothing else about it changes
-        // the (equally unreachable) result.
-        Err(_) if value == u32::MAX => usize::MAX,
-        Err(_) => usize::MAX,
+        None if height == usize::MAX => PlaneArea(usize::MAX),
+        None => PlaneArea(usize::MAX),
     }
 }
 
@@ -71,10 +42,41 @@ fn widen_u32_to_usize(value: u32) -> usize {
 /// `Component` directly means the same enum that already determines a
 /// plane's Huffman/quantization table also determines its fill/pad value,
 /// so the two can't independently disagree.
-const fn neutral(kind: Component) -> u8 {
+const fn neutral(kind: Component) -> NeutralSample {
     match kind {
-        Component::Luma => 0,
-        Component::Chroma => 128,
+        Component::Luma => NeutralSample(0),
+        Component::Chroma => NeutralSample(128),
+    }
+}
+
+/// The value a plane is filled with before its samples are written, and
+/// that pads a block extracted past the plane's edge.
+#[derive(Debug, Clone, Copy)]
+struct NeutralSample(u8);
+
+/// A block-grid index along one axis, as [`BlockCol`] and [`BlockRow`] each
+/// hold it.
+#[derive(Debug, Clone, Copy)]
+struct BlockIndex(u32);
+
+/// A pixel offset along one axis of a plane.
+#[derive(Debug, Clone, Copy)]
+struct PixelOffset(usize);
+
+impl BlockIndex {
+    /// This block's starting pixel offset (`self * 8`), saturating rather
+    /// than overflowing. Widening `u32` to `usize` cannot fail on any target
+    /// this crate builds for (see the module-level guard above), and a
+    /// block index is bounded by `Width`/`Height` (at most `u16::MAX`), so
+    /// neither the widening nor the multiplication ever actually needs the
+    /// saturating arm.
+    fn pixel_start(self) -> PixelOffset {
+        PixelOffset(
+            match usize::try_from(self.0).map(|index| index.checked_mul(8)) {
+                Ok(Some(start)) => start,
+                Ok(None) | Err(_) => usize::MAX,
+            },
+        )
     }
 }
 
@@ -108,12 +110,12 @@ impl PlaneDimensions {
 /// compiler error -- unlike two bare `u32`s, which the compiler accepts in
 /// either order.
 #[derive(Debug, Clone, Copy)]
-pub(super) struct BlockCol(u32);
+pub(super) struct BlockCol(BlockIndex);
 
 impl BlockCol {
     /// Wraps a raw column index.
     pub(super) const fn new(value: u32) -> Self {
-        Self(value)
+        Self(BlockIndex(value))
     }
 
     /// This column's starting pixel offset within a row (`self * 8`).
@@ -121,25 +123,25 @@ impl BlockCol {
     /// conversion from `BlockRow` to this same quantity, so a `BlockCoord`
     /// field read the wrong way (row where column belongs) is a type
     /// error, not a swapped-index bug that still compiles.
-    fn pixel_col_start(self) -> usize {
-        multiply_block_index_by_8(widen_u32_to_usize(self.0))
+    fn pixel_col_start(self) -> PixelOffset {
+        self.0.pixel_start()
     }
 }
 
 /// A block-grid row index; see [`BlockCol`].
 #[derive(Debug, Clone, Copy)]
-pub(super) struct BlockRow(u32);
+pub(super) struct BlockRow(BlockIndex);
 
 impl BlockRow {
     /// Wraps a raw row index.
     pub(super) const fn new(value: u32) -> Self {
-        Self(value)
+        Self(BlockIndex(value))
     }
 
     /// This row's starting pixel offset within the plane (`self * 8`); see
     /// [`BlockCol::pixel_col_start`].
-    fn pixel_row_start(self) -> usize {
-        multiply_block_index_by_8(widen_u32_to_usize(self.0))
+    fn pixel_row_start(self) -> PixelOffset {
+        self.0.pixel_start()
     }
 }
 
@@ -166,13 +168,17 @@ impl BlockCoord {
     }
 }
 
+/// A plane's samples, one byte each, in row-major order.
+#[derive(Debug, Clone)]
+pub(super) struct PlaneSamples(pub(super) Vec<u8>);
+
 /// A single-channel (Y, Cb, or Cr) image plane: pixel data paired with
 /// the dimensions that give it meaning, so the two can never silently
 /// drift apart.
 #[derive(Debug, Clone)]
 pub(super) struct Plane {
     /// Pixel data: `width * height` bytes in row-major order.
-    data: Vec<u8>,
+    data: PlaneSamples,
     /// This plane's width and height, bundled so they can't be transposed.
     dims: PlaneDimensions,
     /// Which color role this plane represents, determining both the
@@ -193,20 +199,20 @@ impl Plane {
     pub(super) fn filled(dims: PlaneDimensions, kind: Component) -> Self {
         let area = area_from_dims(dims);
         Self {
-            data: vec![neutral(kind); area],
+            data: PlaneSamples(vec![neutral(kind).0; area.0]),
             dims,
             kind,
         }
     }
 
     /// Returns the pad value for this plane (derived from its kind).
-    const fn pad(&self) -> u8 {
+    const fn pad(&self) -> NeutralSample {
         neutral(self.kind)
     }
 
     /// Mutable access to this plane's pixel data, for `YCbCrPlanes::from_frame`
     /// (in the sibling `planes` module) to fill in after construction.
-    pub(super) fn data_mut(&mut self) -> &mut [u8] {
+    pub(super) const fn data_mut(&mut self) -> &mut PlaneSamples {
         &mut self.data
     }
 
@@ -219,16 +225,18 @@ impl Plane {
     /// columns to zip against, leaving the pre-filled pad value in place,
     /// with no index that could ever be out of bounds.
     pub(super) fn extract_block(&self, coord: BlockCoord) -> PixelBlock {
-        let pad = self.pad();
+        let NeutralSample(pad) = self.pad();
         let mut block = [pad; 64];
-        let width = usize::from(self.dims.width().get().get());
-        let row_start = coord.by.pixel_row_start();
-        let col_start = coord.bx.pixel_col_start();
+        let width = NonZeroUsize::from(self.dims.width().get()).get();
+        let PixelOffset(row_start) = coord.by.pixel_row_start();
+        let PixelOffset(col_start) = coord.bx.pixel_col_start();
 
-        let (out_rows, _remainder) = block.as_chunks_mut::<8>();
-        let src_rows = self.data.chunks_exact(width).skip(row_start);
+        let (out_rows, _) = block.as_chunks_mut::<8>();
+        let src_rows = self.data.0.chunks_exact(width).skip(row_start);
         for (src_row, out_row) in src_rows.zip(out_rows.iter_mut()) {
-            let available: &[u8] = src_row.get(col_start..).map_or(&[][..], |s| s);
+            let Some(available) = src_row.get(col_start..) else {
+                continue;
+            };
             for (&src, dst) in available.iter().zip(out_row.iter_mut()) {
                 *dst = src;
             }
@@ -257,7 +265,7 @@ impl Plane {
     /// could silently skip a sample or a write.
     pub(super) fn downsample_2x2(&self) -> Self {
         const TWO: NonZeroU16 = match NonZeroU16::new(2) {
-            Some(n) => n,
+            Some(nonzero) => nonzero,
             // Unreachable: 2 is a fixed literal, never zero.
             None => NonZeroU16::MIN,
         };
@@ -266,18 +274,25 @@ impl Plane {
         let chroma_height_nz = self.dims.height().get().div_ceil(TWO);
         let chroma_width = Width::from(chroma_width_nz);
         let chroma_height = Height::from(chroma_height_nz);
-        let chroma_width_usize = usize::from(chroma_width_nz.get());
+        let chroma_width_usize = NonZeroUsize::from(chroma_width_nz).get();
 
-        let width = usize::from(self.dims.width().get().get());
+        let width = NonZeroUsize::from(self.dims.width().get()).get();
         let dims = PlaneDimensions::new(chroma_width, chroma_height);
         let mut out_plane = Self::filled(dims, self.kind);
 
-        let mut src_rows = self.data.chunks(width);
-        let mut out_rows = out_plane.data_mut().chunks_exact_mut(chroma_width_usize);
+        let mut src_rows = self.data.0.chunks(width).map(SourceRow);
+        let mut out_rows = out_plane
+            .data_mut()
+            .0
+            .chunks_exact_mut(chroma_width_usize)
+            .map(OutputRow);
         while let Some(top_row) = src_rows.next() {
-            let bottom_row = src_rows
-                .next()
-                .map_or(BottomSourceRow::Absent, BottomSourceRow::Present);
+            let bottom_row = 'bottom: {
+                let Some(row) = src_rows.next() else {
+                    break 'bottom BottomSourceRow::Absent;
+                };
+                BottomSourceRow::Present(row)
+            };
             let Some(out_row) = out_rows.next() else {
                 break;
             };
@@ -307,24 +322,24 @@ impl OneOrTwoSamples {
     /// bound in the type itself, rather than in a comment that a later
     /// edit could drift away from the code.
     fn sum(self) -> RowSum {
-        RowSum::new(match self {
-            Self::One(a) => u16::from(a),
+        RowSum::new(RawTotal(match self {
+            Self::One(only) => u16::from(only),
             // Unreachable: two `u8`-sourced values sum to at most
             // `255 + 255 = 510`, far below `u16::MAX`.
-            Self::Two(a, b) => match u16::from(a).checked_add(u16::from(b)) {
+            Self::Two(left, right) => match u16::from(left).checked_add(u16::from(right)) {
                 Some(sum) => sum,
-                None if a == u8::MAX => u16::MAX,
+                None if left == u8::MAX => u16::MAX,
                 None => u16::MAX,
             },
-        })
+        }))
     }
 
     /// How many samples this row contributed. `RowCount`'s own range
     /// (`1..=2`) documents the bound in the type itself.
     const fn count(self) -> RowCount {
         match self {
-            Self::One(_) => RowCount::new(1),
-            Self::Two(_, _) => RowCount::new(2),
+            Self::One(_) => RowCount::new(RawTotal(1)),
+            Self::Two(_, _) => RowCount::new(RawTotal(2)),
         }
     }
 }
@@ -333,7 +348,7 @@ impl OneOrTwoSamples {
 /// spelled out in the type itself, at every place it is named, rather than
 /// left to a comment beside a plain `u16`. Its only constructor clamps into
 /// range, so nothing outside this range can ever be observed through
-/// `get()`, regardless of what value is passed in.
+/// its field, regardless of what value is passed in.
 #[derive(Debug, Clone, Copy)]
 struct Bounded<const MIN: u16, const MAX: u16>(u16);
 
@@ -358,7 +373,8 @@ impl<const MIN: u16, const MAX: u16> Bounded<MIN, MAX> {
     /// introduced here, this clamp would treat every input as `MIN` --
     /// wrong, but not unsound -- and the wrongness would show up
     /// immediately in this module's own tests.
-    const fn new(value: u16) -> Self {
+    const fn new(total: RawTotal) -> Self {
+        let RawTotal(value) = total;
         let clamped = if value < MIN {
             MIN
         } else if value > MAX {
@@ -367,11 +383,6 @@ impl<const MIN: u16, const MAX: u16> Bounded<MIN, MAX> {
             value
         };
         Self(clamped)
-    }
-
-    /// The underlying value, `MIN..=MAX`.
-    const fn get(self) -> u16 {
-        self.0
     }
 
     /// This value, narrowed to `NonZeroU16`. The only caller of this method
@@ -385,12 +396,16 @@ impl<const MIN: u16, const MAX: u16> Bounded<MIN, MAX> {
     /// comment describes for `MIN <= MAX`.
     const fn get_nonzero(self) -> NonZeroU16 {
         match NonZeroU16::new(self.0) {
-            Some(n) => n,
+            Some(nonzero) => nonzero,
             // Unreachable: ASSERT_MIN_AT_LEAST_ONE guarantees self.0 >= 1.
             None => NonZeroU16::MIN,
         }
     }
 }
+
+/// A sum or count before [`Bounded::new`] clamps it into its range.
+#[derive(Debug, Clone, Copy)]
+struct RawTotal(u16);
 
 /// One row's summed contribution to a downsampling neighborhood. The widest
 /// case is `OneOrTwoSamples::Two(255, 255)`, `2 * 255 = 510`; `sum` never
@@ -418,15 +433,15 @@ impl CombinedSum {
     /// that has already forgotten it came from two bounded rows.
     #[must_use]
     fn combine(top: RowSum, bottom: Option<RowSum>) -> Self {
-        let bottom_value = bottom.map_or(0, RowSum::get);
+        let bottom_value: u16 = bottom.into_iter().map(|row| row.0).sum();
         // Unreachable: both operands are at most 510 (`RowSum`'s own
         // range), so their sum is at most 1020, far below `u16::MAX`.
-        let sum = match top.get().checked_add(bottom_value) {
+        let sum = match top.0.checked_add(bottom_value) {
             Some(sum) => sum,
-            None if bottom_value == 0 => top.get(),
+            None if bottom_value == 0 => top.0,
             None => u16::MAX,
         };
-        Self::new(sum)
+        Self::new(RawTotal(sum))
     }
 }
 
@@ -441,15 +456,15 @@ impl CombinedCount {
     /// way [`CombinedSum::combine`] combines sums.
     #[must_use]
     fn combine(top: RowCount, bottom: Option<RowCount>) -> Self {
-        let bottom_value = bottom.map_or(0, RowCount::get);
+        let bottom_value: u16 = bottom.into_iter().map(|row| row.0).sum();
         // Unreachable: both operands are at most 2 (`RowCount`'s own
         // range), so their sum is at most 4, far below `u16::MAX`.
-        let sum = match top.get().checked_add(bottom_value) {
+        let sum = match top.0.checked_add(bottom_value) {
             Some(sum) => sum,
-            None if bottom_value == 0 => top.get(),
+            None if bottom_value == 0 => top.0,
             None => u16::MAX,
         };
-        Self::new(sum)
+        Self::new(RawTotal(sum))
     }
 }
 
@@ -491,11 +506,13 @@ impl BottomRow {
 /// destructures one directly by pattern, with no indexing and no chunk-shape
 /// case left for a caller to have to rule out as impossible -- plus the
 /// trailing 0-or-1-element remainder slice.
-fn one_or_two_samples(row: &[u8]) -> impl Iterator<Item = OneOrTwoSamples> + '_ {
-    let (chunks, remainder) = row.as_chunks::<2>();
-    let pairs = chunks.iter().map(|&[a, b]| OneOrTwoSamples::Two(a, b));
+fn one_or_two_samples(row: SourceRow<'_>) -> impl Iterator<Item = OneOrTwoSamples> + '_ {
+    let (chunks, remainder) = row.0.as_chunks::<2>();
+    let pairs = chunks
+        .iter()
+        .map(|&[left, right]| OneOrTwoSamples::Two(left, right));
     let last = match *remainder {
-        [a] => Some(OneOrTwoSamples::One(a)),
+        [only] => Some(OneOrTwoSamples::One(only)),
         _ => None,
     };
     pairs.chain(last)
@@ -512,32 +529,40 @@ fn one_or_two_samples(row: &[u8]) -> impl Iterator<Item = OneOrTwoSamples> + '_ 
 /// requirement a unit-returning function can never satisfy (`#[must_use]`
 /// on `-> ()` is itself denied by clippy's `must_use_unit`).
 #[derive(Debug, Clone, Copy)]
-enum BottomSourceRow<'a> {
+enum BottomSourceRow<'row> {
     /// Past the plane's bottom edge: no second row to average in.
     Absent,
     /// A real second row's samples.
-    Present(&'a [u8]),
+    Present(SourceRow<'row>),
 }
+
+/// One row of a plane being downsampled.
+#[derive(Debug, Clone, Copy)]
+struct SourceRow<'row>(&'row [u8]);
+
+/// One row of the downsampled plane being written.
+#[derive(Debug)]
+struct OutputRow<'row>(&'row mut [u8]);
 
 /// Averages one row of 2x2 (or, at an edge, 1x2/2x1/1x1) pixel neighborhoods
 /// from a pair of source rows into `out_row`. `bottom` is [`BottomSourceRow::Absent`]
 /// past the plane's bottom edge; each neighborhood is a short chunk past its
 /// right edge. Every element of `out_row` is written exactly once.
 ///
-/// Takes `top: &[u8]` and `bottom: BottomSourceRow`, not two adjacent
-/// `&[u8]`s where absence is signalled by an empty slice: an empty slice in
+/// Takes `top: SourceRow` and `bottom: BottomSourceRow`, not two adjacent
+/// rows where absence is signalled by an empty slice: an empty slice in
 /// either position type-checks identically, so a caller could pass the
 /// bottom-edge sentinel as `top` (or a genuine top row as `bottom`) with no
 /// compiler error, leaving the whole output row at its pre-filled neutral
 /// value instead of using the real top row's data. Naming which row can be
 /// legitimately absent removes that ambiguity.
-fn downsample_row_pair(top: &[u8], bottom: BottomSourceRow<'_>, out_row: &mut [u8]) {
+fn downsample_row_pair(top: SourceRow<'_>, bottom: BottomSourceRow<'_>, out_row: OutputRow<'_>) {
     let mut top_samples = one_or_two_samples(top);
     let mut bottom_samples = match bottom {
         BottomSourceRow::Absent => None,
         BottomSourceRow::Present(row) => Some(one_or_two_samples(row)),
     };
-    for out in out_row.iter_mut() {
+    for out in out_row.0 {
         // `top` is never `None` in practice: `one_or_two_samples` yields
         // exactly one item per iteration of this loop for as many
         // iterations as `out_row` is long, by construction in
@@ -548,10 +573,12 @@ fn downsample_row_pair(top: &[u8], bottom: BottomSourceRow<'_>, out_row: &mut [u
         let Some(top_row) = top_samples.next() else {
             break;
         };
-        let bottom_row = bottom_samples
-            .as_mut()
-            .and_then(Iterator::next)
-            .map_or(BottomRow::Absent, BottomRow::Present);
+        let bottom_row = 'bottom: {
+            let Some(row) = bottom_samples.as_mut().and_then(Iterator::next) else {
+                break 'bottom BottomRow::Absent;
+            };
+            BottomRow::Present(row)
+        };
         *out = average_neighborhood(top_row, bottom_row).get();
     }
 }
@@ -571,6 +598,17 @@ impl AveragedSample {
     }
 }
 
+/// The combined sum and combined count of one downsampling neighborhood,
+/// bundled so [`divide`] takes a single argument whose two fields cannot be
+/// swapped.
+#[derive(Debug, Clone, Copy)]
+struct NeighborhoodTotals {
+    /// The neighborhood's combined sample sum.
+    sum: CombinedSum,
+    /// The neighborhood's combined sample count.
+    count: CombinedCount,
+}
+
 /// Divides a combined sum by a combined count, rounding to the nearest
 /// integer (ties away from zero), and saturates the result into a sample
 /// byte. Total: `count.get_nonzero()` is checked at compile time to never
@@ -579,28 +617,24 @@ impl AveragedSample {
 /// `quantize` uses to convert a `QuantDivisor` into a `NonZeroU64`. The
 /// widest possible sum (`4 * 255 = 1020`) fits `u16` with room to spare,
 /// so `u8::try_from` never actually falls back either.
-fn divide(sum: CombinedSum, count: CombinedCount) -> AveragedSample {
-    let count = count.get_nonzero();
-    let half = count.get() >> 1;
+fn divide(totals: NeighborhoodTotals) -> AveragedSample {
+    let count = totals.count.get_nonzero();
+    let half = count.get() >> 1_i32;
     // `sum` is at most 1020 and `half` at most 2 (`count`'s own `1..=4`
     // range, halved), so their total is at most 1022, far below `u16::MAX`.
-    let biased = match sum.get().checked_add(half) {
+    let biased = match totals.sum.0.checked_add(half) {
         Some(total) => total,
-        None if half == 0 => sum.get(),
+        None if half == 0 => totals.sum.0,
         None => u16::MAX,
     };
     let quotient = biased.div_euclid(count.get());
-    AveragedSample(narrow_avg_to_u8(quotient))
-}
-
-/// Narrows an averaged-sample quotient to `u8`. `sum` and `count` are
-/// always derived from the same real neighborhood of `u8` samples
-/// (`average_neighborhood`, below), so their quotient is itself always a
-/// valid sample -- `<= 255` -- by construction; the `min` here documents
-/// that bound at the point of use rather than relying on it silently.
-fn narrow_avg_to_u8(quotient: u16) -> u8 {
+    // `sum` and `count` are always derived from the same real neighborhood
+    // of `u8` samples (`average_neighborhood`, below), so their quotient is
+    // itself always a valid sample -- `<= 255` -- by construction; the
+    // `min` here documents that bound at the point of use rather than
+    // relying on it silently.
     let [lo, ..] = quotient.min(255).to_le_bytes();
-    lo
+    AveragedSample(lo)
 }
 
 /// Averages this 2x2 neighborhood's samples. `top` is always present;
@@ -610,32 +644,8 @@ fn narrow_avg_to_u8(quotient: u16) -> u8 {
 fn average_neighborhood(top: OneOrTwoSamples, bottom: BottomRow) -> AveragedSample {
     let sum = CombinedSum::combine(top.sum(), bottom.sum());
     let count = CombinedCount::combine(top.count(), bottom.count());
-    divide(sum, count)
+    divide(NeighborhoodTotals { sum, count })
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use synthvid_scene::Height;
-
-    #[test]
-    fn test_plane_downsample() {
-        let width_2 = Width::new(2).expect("2 is valid");
-        let height_2 = Height::new(2).expect("2 is valid");
-        let mut p = Plane::filled(PlaneDimensions::new(width_2, height_2), Component::Chroma);
-        let d = p.data_mut();
-        d[0] = 100;
-        d[1] = 101;
-        d[2] = 101;
-        d[3] = 101;
-        let p_ds = p.downsample_2x2();
-        assert_eq!(
-            (
-                p_ds.dims.width().get().get(),
-                p_ds.dims.height().get().get(),
-                p_ds.data[0]
-            ),
-            (1, 1, 101)
-        );
-    }
-}
+mod tests;

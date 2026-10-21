@@ -8,6 +8,7 @@
 //! defaulting to the scene's values. Byte-level corruption stays in the defect list.
 
 use crate::json_names::JsonEntryName;
+use core::fmt;
 use synthvid_encode::{ChromaSampling, Defect, Quality};
 use synthvid_scene::Scene;
 
@@ -25,6 +26,18 @@ pub enum DisplayRotation {
     Rot180,
     /// 270 degrees clockwise.
     Rot270,
+}
+
+/// Writes the rotation as a phrase.
+impl fmt::Display for DisplayRotation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Identity => "identity",
+            Self::Rot90 => "90 degrees clockwise",
+            Self::Rot180 => "180 degrees",
+            Self::Rot270 => "270 degrees clockwise",
+        })
+    }
 }
 
 /// How video frames are encoded.

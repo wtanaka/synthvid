@@ -4,25 +4,41 @@
 //! length is guaranteed to be exactly `width * height * 3`. Every accessor is
 //! bounds-checked and returns [`Option`], so no operation on a frame panics.
 
+use core::error::Error;
 use core::fmt;
 
-use crate::color::{blend_channel, required_buffer_len, Rgb8};
+use crate::color::{blend_rgb, required_buffer_len, Alpha, Channel, Rgb8};
+use crate::ratio::Overflow;
 use crate::units::{Dimensions, Height, Width};
 
 /// A pixel coordinate with x and y components.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct PixelCoord {
-    /// The x coordinate of the pixel.
-    x: u16,
-    /// The y coordinate of the pixel.
-    y: u16,
+    /// The column of the pixel.
+    column: PixelColumn,
+    /// The row of the pixel.
+    row: PixelRow,
 }
 
+/// The horizontal position of a pixel, kept apart from its row.
+///
+/// Every `u16` names a column; whether it lies inside a given frame is
+/// checked where the frame is indexed.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct PixelColumn(pub u16);
+
+/// The vertical position of a pixel, kept apart from its column.
+///
+/// Every `u16` names a row; whether it lies inside a given frame is
+/// checked where the frame is indexed.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct PixelRow(pub u16);
+
 impl PixelCoord {
-    /// Creates a new pixel coordinate with the given x and y values.
+    /// Creates a new pixel coordinate from its column and row.
     #[must_use]
-    pub const fn new(x: u16, y: u16) -> Self {
-        Self { x, y }
+    pub const fn new(column: PixelColumn, row: PixelRow) -> Self {
+        Self { column, row }
     }
 }
 
@@ -39,7 +55,7 @@ struct PixelIndex(usize);
 /// One pixel's raw 24-bit RGB bytes, in on-buffer order (red, green, blue).
 ///
 /// This is the [`Frame::data`] wire-format encoding of one pixel, distinct
-/// from [`Rgb8`] (the decoded color value with named `r`/`g`/`b` fields):
+/// from [`Rgb8`] (the decoded color value with named `red`/`green`/`blue` fields):
 /// specifically "3 bytes as they sit in the buffer," which is also why
 /// [`Frame::pixel_bytes`] returns this rather than a bare `[u8; 3]` that
 /// reads identically to any other 3 bytes.
@@ -54,12 +70,6 @@ impl PixelBytes {
     }
 }
 
-impl From<[u8; 3]> for PixelBytes {
-    fn from(bytes: [u8; 3]) -> Self {
-        Self(bytes)
-    }
-}
-
 impl From<PixelBytes> for [u8; 3] {
     fn from(bytes: PixelBytes) -> Self {
         bytes.0
@@ -68,14 +78,18 @@ impl From<PixelBytes> for [u8; 3] {
 
 impl From<Rgb8> for PixelBytes {
     fn from(color: Rgb8) -> Self {
-        Self([color.r, color.g, color.b])
+        Self([color.red.0, color.green.0, color.blue.0])
     }
 }
 
 impl From<PixelBytes> for Rgb8 {
     fn from(bytes: PixelBytes) -> Self {
-        let [r, g, b] = bytes.0;
-        Self::new(r, g, b)
+        let [red, green, blue] = bytes.0;
+        Self {
+            red: Channel(red),
+            green: Channel(green),
+            blue: Channel(blue),
+        }
     }
 }
 
@@ -88,8 +102,16 @@ pub struct Frame {
     /// The 2D dimensions of the frame.
     dimensions: Dimensions,
     /// The raw 24-bit RGB pixel buffer (3 bytes per pixel: red, green, blue).
-    data: Vec<u8>,
+    data: PixelBuffer,
 }
+
+/// The raw 24-bit RGB bytes of a [`Frame`], three per pixel in raster order
+/// (red, green, blue).
+///
+/// Any byte vector can be held here; [`Frame::new`] is where its length is
+/// checked against the frame's dimensions.
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+pub struct PixelBuffer(pub Vec<u8>);
 
 /// A pixel coordinate lay outside the frame.
 ///
@@ -106,7 +128,7 @@ impl fmt::Display for PixelOutOfBounds {
     }
 }
 
-impl core::error::Error for PixelOutOfBounds {}
+impl Error for PixelOutOfBounds {}
 
 /// Error returned when attempting to construct a [`Frame`] with invalid data.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -125,7 +147,7 @@ impl fmt::Display for FrameError {
     }
 }
 
-impl core::error::Error for FrameError {}
+impl Error for FrameError {}
 
 // This crate addresses pixel buffers through `usize`, so it requires a
 // target whose `usize` is at least 32 bits, true of every platform Rust
@@ -139,38 +161,14 @@ impl Frame {
     ///
     /// # Errors
     ///
-    /// Returns `Err(FrameError::InvalidBufferSize)` if `data.len()` does not exactly match
+    /// Returns `Err(FrameError::InvalidBufferSize)` if `data` does not hold exactly
     /// `width * height * 3` bytes, or if the required buffer length calculation overflows `usize`.
-    pub fn new(dimensions: Dimensions, data: Vec<u8>) -> Result<Self, FrameError> {
+    pub fn new(dimensions: Dimensions, data: PixelBuffer) -> Result<Self, FrameError> {
         let expected_len = required_buffer_len(dimensions).ok_or(FrameError::InvalidBufferSize)?;
-        if data.len() != expected_len {
+        if data.0.len() != expected_len.get() {
             return Err(FrameError::InvalidBufferSize);
         }
         Ok(Self { dimensions, data })
-    }
-
-    /// Creates a new [`Frame`] from [`Dimensions`] and an owned vector of bytes.
-    ///
-    /// Alias for [`Self::new`].
-    ///
-    /// # Errors
-    ///
-    /// Returns `Err(FrameError::InvalidBufferSize)` if `data.len()` does not exactly match
-    /// the required size or if the buffer length calculation overflows `usize`.
-    pub fn from_vec(dimensions: Dimensions, data: Vec<u8>) -> Result<Self, FrameError> {
-        Self::new(dimensions, data)
-    }
-
-    /// Creates a new [`Frame`] from [`Dimensions`] and an owned buffer of bytes.
-    ///
-    /// Alias for [`Self::new`].
-    ///
-    /// # Errors
-    ///
-    /// Returns `Err(FrameError::InvalidBufferSize)` if `data.len()` does not exactly match
-    /// the required size or if the buffer length calculation overflows `usize`.
-    pub fn from_buffer(dimensions: Dimensions, data: Vec<u8>) -> Result<Self, FrameError> {
-        Self::new(dimensions, data)
     }
 
     /// Creates a zero-initialized (black) [`Frame`] with the given dimensions.
@@ -181,8 +179,11 @@ impl Frame {
     /// calculation overflows `usize`.
     pub fn zeroed(dimensions: Dimensions) -> Result<Self, FrameError> {
         let len = required_buffer_len(dimensions).ok_or(FrameError::InvalidBufferSize)?;
-        let data = vec![0_u8; len];
-        Ok(Self { dimensions, data })
+        let data = vec![0_u8; len.get()];
+        Ok(Self {
+            dimensions,
+            data: PixelBuffer(data),
+        })
     }
 
     /// Creates a new [`Frame`] filled uniformly with the given [`Rgb8`] color.
@@ -215,72 +216,17 @@ impl Frame {
         self.dimensions.height
     }
 
-    /// Returns a slice of the underlying raw RGB byte buffer.
+    /// Returns the underlying raw RGB byte buffer.
     #[must_use]
-    pub fn data(&self) -> &[u8] {
+    pub const fn data(&self) -> &PixelBuffer {
         &self.data
-    }
-
-    /// Returns a slice of the underlying raw RGB byte buffer.
-    ///
-    /// Alias for [`Self::data`].
-    #[must_use]
-    pub fn as_bytes(&self) -> &[u8] {
-        &self.data
-    }
-
-    /// Returns a slice of the underlying raw RGB byte buffer.
-    ///
-    /// Alias for [`Self::data`].
-    #[must_use]
-    pub fn buffer(&self) -> &[u8] {
-        &self.data
-    }
-
-    /// Consumes the frame and returns the owned raw RGB byte buffer.
-    #[must_use]
-    pub fn into_vec(self) -> Vec<u8> {
-        self.data
-    }
-
-    /// Consumes the frame and returns the owned raw RGB byte buffer.
-    ///
-    /// Alias for [`Self::into_vec`].
-    #[must_use]
-    pub fn into_buffer(self) -> Vec<u8> {
-        self.data
-    }
-
-    /// Returns the total number of bytes in the pixel buffer.
-    #[must_use]
-    pub const fn len(&self) -> usize {
-        self.data.len()
-    }
-
-    /// Returns `true` if the pixel buffer is empty.
-    ///
-    /// Note that frames always have non-zero dimensions, so this always returns `false`.
-    #[must_use]
-    pub const fn is_empty(&self) -> bool {
-        self.data.is_empty()
-    }
-
-    /// Returns the byte value at the given raw buffer index, or `None` if out of bounds.
-    #[must_use]
-    pub fn get(&self, index: usize) -> Option<u8> {
-        self.data.get(index).copied()
     }
 
     /// Returns the [`Rgb8`] pixel color at the given coordinate,
     /// or `None` if the coordinate is out of bounds.
     #[must_use]
     pub fn pixel(&self, coord: PixelCoord) -> Option<Rgb8> {
-        self.pixel_inner(coord).ok()
-    }
-
-    /// Retrieves pixel, distinguishing bounds from arithmetic errors.
-    fn pixel_inner(&self, coord: PixelCoord) -> Result<Rgb8, PixelOutOfBounds> {
-        Ok(Rgb8::from(self.pixel_bytes_inner(coord)?))
+        self.pixel_bytes(coord).map(Rgb8::from)
     }
 
     /// Returns the [`Rgb8`] pixel color at the given coordinate,
@@ -296,16 +242,8 @@ impl Frame {
     /// out of bounds.
     #[must_use]
     pub fn pixel_bytes(&self, coord: PixelCoord) -> Option<PixelBytes> {
-        self.pixel_bytes_inner(coord).ok()
-    }
-
-    /// Retrieves pixel bytes, distinguishing bounds from arithmetic errors.
-    fn pixel_bytes_inner(&self, coord: PixelCoord) -> Result<PixelBytes, PixelOutOfBounds> {
-        let index = self.pixel_index(coord).ok_or(PixelOutOfBounds)?;
+        let index = self.pixel_index(coord)?;
         self.pixel_chunk(index)
-            .copied()
-            .map(PixelBytes::from)
-            .ok_or(PixelOutOfBounds)
     }
 
     /// Sets the pixel at the given coordinate to `color`.
@@ -328,7 +266,7 @@ impl Frame {
         &mut self,
         coord: PixelCoord,
         color: Rgb8,
-        alpha: u8,
+        alpha: Alpha,
     ) -> Result<(), PixelOutOfBounds> {
         self.blend_pixel_inner(coord, color, alpha)
     }
@@ -336,9 +274,7 @@ impl Frame {
     /// Writes the pixel, or an error if the coordinate lies outside the frame.
     fn set_pixel_inner(&mut self, coord: PixelCoord, color: Rgb8) -> Result<(), PixelOutOfBounds> {
         let index = self.pixel_index(coord).ok_or(PixelOutOfBounds)?;
-        let pixel = self.pixel_chunk_mut(index).ok_or(PixelOutOfBounds)?;
-        *pixel = PixelBytes::from(color).get();
-        Ok(())
+        self.write_pixel(index, PixelBytes::from(color))
     }
 
     /// The flat index of `coord`'s pixel among this frame's `[u8; 3]`
@@ -348,48 +284,51 @@ impl Frame {
     /// fits any `usize` this crate builds for (see the guard above).
     #[must_use]
     fn pixel_index(&self, coord: PixelCoord) -> Option<PixelIndex> {
-        let width = self.dimensions.width.get().get();
+        let width_u16 = self.dimensions.width.get().get();
         let height = self.dimensions.height.get().get();
-        if coord.x >= width || coord.y >= height {
+        if coord.column.0 >= width_u16 || coord.row.0 >= height {
             return None;
         }
-        let width = usize::from(width);
-        let row_start = match usize::from(coord.y).checked_mul(width) {
-            Some(v) => v,
+        let width = usize::from(width_u16);
+        let row_start = match usize::from(coord.row.0).checked_mul(width) {
+            Some(row_offset) => row_offset,
             None if width == 0 => 0,
             None => usize::MAX,
         };
-        let index = match row_start.checked_add(usize::from(coord.x)) {
-            Some(v) => v,
-            None if coord.x == 0 => row_start,
+        let index = match row_start.checked_add(usize::from(coord.column.0)) {
+            Some(offset) => offset,
+            None if coord.column.0 == 0 => row_start,
             None => usize::MAX,
         };
         Some(PixelIndex(index))
     }
 
-    /// The pixel chunk at `index`, or `None` if out of bounds. The only way
-    /// to obtain a `PixelIndex` is `pixel_index`, which counts `[u8; 3]`
-    /// pixel chunks, not bytes -- so this and `pixel_chunk_mut` are the
-    /// only places that index can be used, and `self.data.get(index)`
-    /// (which would read the wrong byte range, since a pixel index is not
-    /// a byte offset) does not type-check.
+    /// The pixel at `index`, as its raw bytes, or `None` if out of bounds.
+    /// A `PixelIndex` counts `[u8; 3]` chunks, not bytes, so it is usable
+    /// only here and in `write_pixel`.
     #[must_use]
-    fn pixel_chunk(&self, index: PixelIndex) -> Option<&[u8; 3]> {
-        let (pixels, _) = self.data.as_chunks::<3>();
-        pixels.get(index.0)
+    fn pixel_chunk(&self, index: PixelIndex) -> Option<PixelBytes> {
+        let (pixels, _) = self.data.0.as_chunks::<3>();
+        pixels.get(index.0).copied().map(PixelBytes)
     }
 
-    /// Mutable access to the pixel chunk at `index`; see [`Self::pixel_chunk`].
-    #[must_use]
-    fn pixel_chunk_mut(&mut self, index: PixelIndex) -> Option<&mut [u8; 3]> {
-        let (pixels, _) = self.data.as_chunks_mut::<3>();
-        pixels.get_mut(index.0)
+    /// Overwrites the pixel at `index` with `bytes`, or returns an error if the
+    /// index is out of bounds. See [`Self::pixel_chunk`].
+    fn write_pixel(
+        &mut self,
+        index: PixelIndex,
+        bytes: PixelBytes,
+    ) -> Result<(), PixelOutOfBounds> {
+        let (pixels, _) = self.data.0.as_chunks_mut::<3>();
+        let pixel = pixels.get_mut(index.0).ok_or(PixelOutOfBounds)?;
+        *pixel = bytes.get();
+        Ok(())
     }
 
     /// Fills the entire frame with a uniform [`Rgb8`] color.
     pub fn fill(&mut self, color: Rgb8) {
         let bytes = PixelBytes::from(color).get();
-        let (chunks, _) = self.data.as_chunks_mut::<3>();
+        let (chunks, _) = self.data.0.as_chunks_mut::<3>();
         for pixel in chunks {
             *pixel = bytes;
         }
@@ -406,293 +345,22 @@ impl Frame {
         &mut self,
         coord: PixelCoord,
         color: Rgb8,
-        alpha: u8,
+        alpha: Alpha,
     ) -> Result<(), PixelOutOfBounds> {
         let index = self.pixel_index(coord).ok_or(PixelOutOfBounds)?;
-        if alpha == 0 {
+        if alpha.0 == 0 {
             return Ok(());
         }
 
-        let pixel = self.pixel_chunk_mut(index).ok_or(PixelOutOfBounds)?;
-
-        if alpha == 255 {
-            *pixel = PixelBytes::from(color).get();
-            return Ok(());
-        }
-
-        let [dst_red, dst_green, dst_blue] = *pixel;
-        *pixel = [
-            blend_channel(color.r, dst_red, alpha).ok_or(PixelOutOfBounds)?,
-            blend_channel(color.g, dst_green, alpha).ok_or(PixelOutOfBounds)?,
-            blend_channel(color.b, dst_blue, alpha).ok_or(PixelOutOfBounds)?,
-        ];
-
-        Ok(())
+        let blended = if alpha.0 == 255 {
+            color
+        } else {
+            let dst = self.pixel_chunk(index).ok_or(PixelOutOfBounds)?;
+            blend_rgb(color, alpha, Rgb8::from(dst)).map_err(|Overflow| PixelOutOfBounds)?
+        };
+        self.write_pixel(index, PixelBytes::from(blended))
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::color::Rgb8;
-
-    #[test]
-    fn test_frame_buffer_length_invariant() {
-        let w = Width::new(4).unwrap();
-        let h = Height::new(3).unwrap();
-        let dims = Dimensions {
-            width: w,
-            height: h,
-        };
-        // Expected buffer size: 4 * 3 * 3 = 36 bytes.
-        let expected_len = required_buffer_len(dims).unwrap();
-        assert_eq!(expected_len, 36, "4x3 RGB frame requires exactly 36 bytes");
-
-        // Too short buffer must be rejected.
-        let too_short = vec![0_u8; 35];
-        assert!(
-            Frame::new(dims, too_short).is_err(),
-            "buffer shorter than required must return Err"
-        );
-
-        // Too long buffer must be rejected.
-        let too_long = vec![0_u8; 37];
-        assert!(
-            Frame::new(dims, too_long).is_err(),
-            "buffer longer than required must return Err"
-        );
-
-        // Empty buffer must be rejected.
-        assert!(
-            Frame::new(dims, Vec::new()).is_err(),
-            "empty buffer must return Err"
-        );
-
-        // Exact length buffer must succeed.
-        let exact = vec![0_u8; 36];
-        let frame = Frame::new(dims, exact).expect("exact length buffer must return Ok(Frame)");
-        assert_eq!(frame.len(), 36, "frame len must equal 36");
-        assert!(!frame.is_empty(), "frame must not be empty");
-        assert_eq!(frame.dimensions(), dims, "dimensions must match");
-        assert_eq!(frame.width(), w, "width must match");
-        assert_eq!(frame.height(), h, "height must match");
-    }
-
-    #[test]
-    fn test_frame_zeroed_and_from_color() {
-        let w = Width::new(2).unwrap();
-        let h = Height::new(2).unwrap();
-        let dims = Dimensions {
-            width: w,
-            height: h,
-        };
-
-        let zeroed = Frame::zeroed(dims).unwrap();
-        assert_eq!(zeroed.len(), 12, "2x2 frame must have 12 bytes");
-        for b in zeroed.data() {
-            assert_eq!(*b, 0, "all bytes in zeroed frame must be 0");
-        }
-
-        let red = Rgb8::new(255, 0, 0);
-        let color_frame = Frame::from_color(dims, red).unwrap();
-        for y in 0..2_u16 {
-            for x in 0..2_u16 {
-                assert_eq!(
-                    color_frame.pixel(PixelCoord::new(x, y)),
-                    Some(red),
-                    "pixel must match filled color"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn test_frame_bounds_checked_accessors() {
-        let w = Width::new(3).unwrap();
-        let h = Height::new(2).unwrap();
-        let dims = Dimensions {
-            width: w,
-            height: h,
-        };
-        let mut frame = Frame::zeroed(dims).unwrap();
-
-        // Within bounds
-        let col = Rgb8::new(10, 20, 30);
-        let coord_1_1 = PixelCoord::new(1, 1);
-        assert!(
-            frame.set_pixel(coord_1_1, col).is_ok(),
-            "setting pixel within bounds must succeed"
-        );
-        assert_eq!(
-            frame.pixel(coord_1_1),
-            Some(col),
-            "pixel at (1, 1) must return set color"
-        );
-        assert_eq!(
-            frame.get_pixel(coord_1_1),
-            Some(col),
-            "get_pixel at (1, 1) must return set color"
-        );
-        assert_eq!(
-            frame.pixel_bytes(coord_1_1),
-            Some(PixelBytes::from([10, 20, 30])),
-            "pixel_bytes at (1, 1) must return [10, 20, 30]"
-        );
-
-        // Out of bounds: x == width
-        let coord_3_0 = PixelCoord::new(3, 0);
-        assert!(
-            frame.pixel(coord_3_0).is_none(),
-            "pixel at x == width must return None"
-        );
-        assert!(
-            frame.pixel_bytes(coord_3_0).is_none(),
-            "pixel_bytes at x == width must return None"
-        );
-        assert!(
-            frame.set_pixel(coord_3_0, col).is_err(),
-            "set_pixel at x == width must return None"
-        );
-
-        // Out of bounds: y == height
-        let coord_0_2 = PixelCoord::new(0, 2);
-        assert!(
-            frame.pixel(coord_0_2).is_none(),
-            "pixel at y == height must return None"
-        );
-        assert!(
-            frame.set_pixel(coord_0_2, col).is_err(),
-            "set_pixel at y == height must return None"
-        );
-
-        // Far out of bounds
-        let coord_max = PixelCoord::new(u16::MAX, u16::MAX);
-        assert!(
-            frame.pixel(coord_max).is_none(),
-            "pixel at u16::MAX must return None"
-        );
-        assert!(
-            frame.pixel_bytes(coord_max).is_none(),
-            "pixel_bytes at u16::MAX must return None"
-        );
-        assert!(
-            frame.set_pixel(coord_max, col).is_err(),
-            "set_pixel at u16::MAX must return None"
-        );
-
-        // Raw byte access
-        assert_eq!(frame.get(0), Some(0), "byte 0 must be 0");
-        assert!(
-            frame.get(18).is_none(),
-            "byte index 18 on 18-byte buffer must return None"
-        );
-    }
-
-    #[test]
-    fn test_frame_fill() {
-        let w = Width::new(2).unwrap();
-        let h = Height::new(2).unwrap();
-        let dims = Dimensions {
-            width: w,
-            height: h,
-        };
-        let mut frame = Frame::zeroed(dims).unwrap();
-
-        let green = Rgb8::new(0, 255, 0);
-        frame.fill(green);
-
-        for y in 0..2_u16 {
-            for x in 0..2_u16 {
-                assert_eq!(
-                    frame.pixel(PixelCoord::new(x, y)),
-                    Some(green),
-                    "every pixel after fill must match green"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn test_frame_blend_pixel() {
-        let w = Width::new(2).unwrap();
-        let h = Height::new(2).unwrap();
-        let dims = Dimensions {
-            width: w,
-            height: h,
-        };
-        let mut frame = Frame::zeroed(dims).unwrap();
-
-        // Set pixel (0, 0) to white (255, 255, 255)
-        let white = Rgb8::new(255, 255, 255);
-        let coord_0_0 = PixelCoord::new(0, 0);
-        assert!(
-            frame.set_pixel(coord_0_0, white).is_ok(),
-            "set_pixel(0, 0) must succeed"
-        );
-
-        // Blend with black (0, 0, 0) at alpha 0 -> must remain white
-        let black = Rgb8::new(0, 0, 0);
-        assert!(
-            frame.blend_pixel(coord_0_0, black, 0).is_ok(),
-            "blend at alpha 0 must succeed"
-        );
-        assert_eq!(
-            frame.pixel(coord_0_0),
-            Some(white),
-            "pixel with alpha 0 blend must remain unchanged"
-        );
-
-        // Blend with red (255, 0, 0) at alpha 255 -> must become pure red
-        let red = Rgb8::new(255, 0, 0);
-        assert!(
-            frame.blend_pixel(coord_0_0, red, 255).is_ok(),
-            "blend at alpha 255 must succeed"
-        );
-        assert_eq!(
-            frame.pixel(coord_0_0),
-            Some(red),
-            "pixel with alpha 255 blend must become source color"
-        );
-
-        // Set pixel (1, 1) to (100, 100, 100) and blend with (200, 200, 200) at alpha 128
-        let gray100 = Rgb8::new(100, 100, 100);
-        let coord_1_1 = PixelCoord::new(1, 1);
-        assert!(
-            frame.set_pixel(coord_1_1, gray100).is_ok(),
-            "set_pixel(1, 1) must succeed"
-        );
-        let gray200 = Rgb8::new(200, 200, 200);
-        assert!(
-            frame.blend_pixel(coord_1_1, gray200, 128).is_ok(),
-            "blend at alpha 128 must succeed"
-        );
-        // Blend formula: (200 * 128 + 100 * 127 + 127) / 255 = (25600 + 12700 + 127) / 255 = 38427 / 255 = 150
-        let blended = frame
-            .pixel(coord_1_1)
-            .expect("pixel after blend must exist");
-        assert_eq!(
-            blended.r, 150,
-            "blended channel at 50% opacity must equal 150"
-        );
-        assert_eq!(
-            blended.g, 150,
-            "blended channel at 50% opacity must equal 150"
-        );
-        assert_eq!(
-            blended.b, 150,
-            "blended channel at 50% opacity must equal 150"
-        );
-
-        // Out of bounds blend returns None
-        let coord_2_0 = PixelCoord::new(2, 0);
-        assert!(
-            frame.blend_pixel(coord_2_0, red, 255).is_err(),
-            "out of bounds blend must return None"
-        );
-        let coord_max = PixelCoord::new(u16::MAX, u16::MAX);
-        assert!(
-            frame.blend_pixel(coord_max, red, 255).is_err(),
-            "out of bounds blend at u16::MAX must return None"
-        );
-    }
-}
+mod tests;

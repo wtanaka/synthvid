@@ -38,7 +38,7 @@ impl DcPredictors {
     /// predictor).
     pub(super) const fn slot(&mut self, component: JpegComponent) -> ComponentSlot<'_> {
         let predictor = match component {
-            JpegComponent::Y => &mut self.luma,
+            JpegComponent::Luma => &mut self.luma,
             JpegComponent::Cb => &mut self.cb,
             JpegComponent::Cr => &mut self.cr,
         };
@@ -50,11 +50,11 @@ impl DcPredictors {
 }
 
 /// A block's component paired with its dedicated DC predictor.
-pub(super) struct ComponentSlot<'a> {
+pub(super) struct ComponentSlot<'predictor> {
     /// Which JPEG component this slot is for.
     component: JpegComponent,
     /// The predictor this component advances.
-    predictor: &'a mut DcPredictor,
+    predictor: &'predictor mut DcPredictor,
 }
 
 impl ComponentSlot<'_> {

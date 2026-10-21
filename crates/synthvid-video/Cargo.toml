@@ -13,5 +13,8 @@ categories.workspace = true
 synthvid-scene = { path = "../synthvid-scene" }
 synthvid-encode = { path = "../synthvid-encode" }
 
+[dev-dependencies]
+synthvid-testkit = { path = "../synthvid-testkit" }
+
 [lints]
 workspace = true

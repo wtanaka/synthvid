@@ -11,7 +11,12 @@
 //! - For AVI chunks: e.g., `["hdrl", "avih"]` or `["strl", "strh"]`
 //! - For AVI LIST chunks: the path walks through the subtype as a child (e.g., `["hdrl"]` targets the LIST hdrl)
 
+use core::error::Error;
 use core::fmt;
+use core::num::NonZeroU32;
+use core::num::TryFromIntError;
+
+use crate::media::ContainerFile;
 
 /// A 4-byte box or chunk tag (e.g. `moov`, `ftyp`, `hdrl`).
 ///
@@ -19,7 +24,7 @@ use core::fmt;
 /// Using a named type instead of bare `[u8; 4]` ensures type safety
 /// across multiple box-tag storage locations and provides a shared
 /// `Display` implementation.
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, PartialOrd, Ord)]
 pub struct BoxTag([u8; 4]);
 
 impl BoxTag {
@@ -46,22 +51,30 @@ impl fmt::Display for BoxTag {
 mod defects_apply;
 #[path = "defects_box.rs"]
 mod defects_box;
+#[path = "defects_fields.rs"]
+mod defects_fields;
 #[path = "defects_frames.rs"]
 mod defects_frames;
 #[path = "defects_layout.rs"]
 mod defects_layout;
 #[path = "defects_reorder.rs"]
 mod defects_reorder;
+#[path = "defects_types.rs"]
+mod defects_types;
 
 use defects_apply::{
-    apply_absurd_frame_rate, apply_declared_count_mismatch, apply_duplicate_box,
-    apply_non_monotonic_timestamps, apply_offset_past_end, apply_oversized_box_length,
-    apply_reordered_boxes, apply_truncate_before, apply_truncate_within,
-    apply_undersized_box_length, apply_unknown_box, apply_zero_dimension, apply_zero_frame_rate,
+    apply_duplicate_box, apply_offset_past_end, apply_oversized_box_length, apply_reordered_boxes,
+    apply_truncate_before, apply_truncate_within, apply_undersized_box_length, apply_unknown_box,
     apply_zero_length_payload,
 };
 use defects_box::ContainerBytes;
+use defects_fields::{
+    apply_absurd_frame_rate, apply_declared_count_mismatch, apply_non_monotonic_timestamps,
+    apply_zero_dimension, apply_zero_frame_rate,
+};
 pub use defects_layout::{BoxAddress, BoxStep, ContainerKind};
+pub use defects_types::Occurrence;
+use defects_types::{FieldValue, PathPair};
 
 /// A path through a box tree from file root, e.g. `["moov", "trak", "tkhd"]`.
 ///
@@ -80,7 +93,7 @@ pub use defects_layout::{BoxAddress, BoxStep, ContainerKind};
 /// - `["hdrl", "strl", "strh"]` for stream header (both hdrl and strl are LIST subtypes)
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct BoxPath {
-    /// Tags in the path from root to target
+    /// Tags in the path from root to target.
     tags: Vec<BoxTag>,
 }
 
@@ -111,13 +124,13 @@ impl BoxPath {
 }
 
 impl fmt::Display for BoxPath {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "/")?;
-        for (i, tag) in self.tags.iter().enumerate() {
-            if i > 0 {
-                write!(f, "/")?;
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "/")?;
+        for (position, tag) in self.tags.iter().enumerate() {
+            if position > 0 {
+                write!(formatter, "/")?;
             }
-            write!(f, "{tag}")?;
+            write!(formatter, "{tag}")?;
         }
         Ok(())
     }
@@ -126,9 +139,9 @@ impl fmt::Display for BoxPath {
 /// Dimensions axis: width or height.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum Axis {
-    /// Frame width
+    /// Frame width.
     Width,
-    /// Frame height
+    /// Frame height.
     Height,
 }
 
@@ -161,7 +174,7 @@ pub enum Defect {
         /// The box whose bytes are cut.
         address: BoxAddress,
         /// How many bytes into the box's own bytes to cut; at least one.
-        offset: core::num::NonZeroU32,
+        offset: NonZeroU32,
     },
     /// Make the payload of a box zero-length by writing size=8.
     ZeroLengthPayload(BoxPath),
@@ -176,9 +189,9 @@ pub enum Defect {
     DuplicateBox(BoxPath),
     /// Introduce an unknown box tag after a specific parent box.
     UnknownBox {
-        /// Parent box path
+        /// Parent box path.
         after: BoxPath,
-        /// Unknown tag bytes
+        /// Unknown tag bytes.
         tag: BoxTag,
     },
     /// Set frame rate numerator to zero.
@@ -191,12 +204,21 @@ pub enum Defect {
     NonMonotonicTimestamps,
     /// Mismatch between declared frame count and actual frames.
     DeclaredCountMismatch {
-        /// Declared frame count
-        declared: u32,
+        /// Declared frame count.
+        declared: DeclaredFrameCount,
     },
     /// Write boxes in wrong order.
     ReorderedBoxes(BoxPath, BoxPath),
 }
+
+/// The frame count a [`Defect::DeclaredCountMismatch`] writes into a
+/// container's header in place of the real one.
+///
+/// Any `u32` is a legal declaration -- the defect exists to make the header
+/// disagree with the frames -- so the field is public and there is nothing
+/// for a constructor to check.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct DeclaredFrameCount(pub u32);
 
 /// Error type for defect application.
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -228,7 +250,27 @@ impl fmt::Display for DefectError {
     }
 }
 
-impl core::error::Error for DefectError {}
+impl Error for DefectError {}
+
+impl DefectError {
+    /// A declared box size too large to address memory cannot describe a real
+    /// box; the conversion error says nothing more than that.
+    pub(crate) const fn invalid_box_structure(_: TryFromIntError) -> Self {
+        Self::InvalidBoxStructure
+    }
+
+    /// An offset too large to address memory is out of range of any file; the
+    /// conversion error says nothing more than that.
+    pub(crate) const fn offset_out_of_range(_: TryFromIntError) -> Self {
+        Self::OffsetOutOfRange
+    }
+
+    /// A length, count or rate too large for its field is a size overflow; the
+    /// conversion error says nothing more than that.
+    pub(crate) const fn size_overflow(_: TryFromIntError) -> Self {
+        Self::SizeOverflow
+    }
+}
 
 /// Applies a defect to the input buffer.
 ///
@@ -239,9 +281,9 @@ impl core::error::Error for DefectError {}
 ///
 /// Returns `DefectError` if the defect targets a structure that doesn't exist
 /// or if the file format is not recognized.
-pub fn apply(defect: &Defect, input: &[u8]) -> Result<Vec<u8>, DefectError> {
-    let container = ContainerBytes::new(input);
-    match defect {
+pub fn apply(defect: &Defect, input: &ContainerFile) -> Result<ContainerFile, DefectError> {
+    let container = ContainerBytes::new(&input.0);
+    let result = match defect {
         Defect::TruncateBefore(address) => apply_truncate_before(address, container),
         Defect::TruncateWithin { address, offset } => {
             apply_truncate_within(address, *offset, container)
@@ -256,11 +298,18 @@ pub fn apply(defect: &Defect, input: &[u8]) -> Result<Vec<u8>, DefectError> {
         Defect::ZeroDimension(axis) => apply_zero_dimension(*axis, container),
         Defect::AbsurdFrameRate(frame_rate) => apply_absurd_frame_rate(frame_rate, container),
         Defect::NonMonotonicTimestamps => apply_non_monotonic_timestamps(container),
-        Defect::DeclaredCountMismatch { declared } => {
-            apply_declared_count_mismatch(*declared, container)
-        }
-        Defect::ReorderedBoxes(path1, path2) => apply_reordered_boxes(path1, path2, container),
-    }
+        Defect::DeclaredCountMismatch {
+            declared: DeclaredFrameCount(declared),
+        } => apply_declared_count_mismatch(FieldValue(*declared), container),
+        Defect::ReorderedBoxes(path1, path2) => apply_reordered_boxes(
+            PathPair {
+                first: path1,
+                second: path2,
+            },
+            container,
+        ),
+    };
+    result.map(|bytes| ContainerFile(bytes.0))
 }
 
 #[cfg(test)]

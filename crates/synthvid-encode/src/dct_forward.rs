@@ -4,7 +4,7 @@
 
 use core::num::NonZeroU64;
 
-use super::{div_signed, saturate_to_i32, CenteredSample};
+use super::{CenteredSample, WideCoeff};
 
 /// Precomputed cosine table for the 8-point DCT-II, scaled by 2^16 for
 /// integer-only arithmetic.
@@ -13,7 +13,7 @@ use super::{div_signed, saturate_to_i32, CenteredSample};
 /// table holds `cos((2x+1)*u*π/16)`, one row per frequency `u`.
 ///
 /// `F(u,v) = (1/4) * C(u) * C(v) * sum_{x,y} f(x,y) * cos((2x+1)uπ/16) *
-/// cos((2y+1)vπ/16)`
+/// cos((2y+1)vπ/16)`.
 ///
 /// where C(0) = 1/√2 and C(k) = 1 for k > 0.
 ///
@@ -23,10 +23,19 @@ use super::{div_signed, saturate_to_i32, CenteredSample};
 ///
 /// Constants are indexed as `COSINES[u][x]` = cos((2*x+1)*u*π/16) * 2^16, stored as i32.
 /// See: ITU-T T.81 (09/92) - Information technology – Digital compression and coding of
-/// continuous-tone still images – Requirements and guidelines
+/// continuous-tone still images – Requirements and guidelines.
 const COSINES: [[i32; 8]; 8] = [
     // u=0: cos((2x+1)*0*π/16) = 1.0 for all x, scaled by 2^16
-    [65536, 65536, 65536, 65536, 65536, 65536, 65536, 65536],
+    [
+        0x0001_0000,
+        0x0001_0000,
+        0x0001_0000,
+        0x0001_0000,
+        0x0001_0000,
+        0x0001_0000,
+        0x0001_0000,
+        0x0001_0000,
+    ],
     // u=1: cos((2x+1)*1*π/16)
     [64277, 54491, 36410, 12785, -12785, -36410, -54491, -64277],
     // u=2: cos((2x+1)*2*π/16)
@@ -48,16 +57,19 @@ const COSINES: [[i32; 8]; 8] = [
 const SQRT2_RECIPROCAL: u64 = 46341;
 
 /// Scale factor for cosines: 2^16 = 65536.
-const COSINE_SCALE: u64 = 65536;
+const COSINE_SCALE: u64 = 0x0001_0000;
 
 /// Divisor for the (0,0) DC term: `8 * 2^32` (see `forward_dct`'s doc comment
 /// for the derivation). Computed once at compile time -- no runtime
-/// arithmetic. Built via `saturating_add` on `NonZeroU64::MIN` rather than
-/// a fallible `NonZeroU64` constructor, so the type's nonzero guarantee
-/// holds without any construction path that could ever panic, even at
-/// compile time.
-const DCT_DIVISOR_DC: NonZeroU64 =
-    NonZeroU64::MIN.saturating_add(8 * COSINE_SCALE * COSINE_SCALE - 1);
+/// arithmetic. Built with a `match` rather than an unwrapping `NonZeroU64`
+/// constructor, so the type's nonzero guarantee holds without any
+/// construction path that could ever panic, even at compile time. Each
+/// divisor here is a product of nonzero constants, so the `None` arm (a
+/// divisor of 1) is never taken.
+const DCT_DIVISOR_DC: NonZeroU64 = match NonZeroU64::new(8 * COSINE_SCALE * COSINE_SCALE) {
+    Some(divisor) => divisor,
+    None => NonZeroU64::MIN,
+};
 
 /// Divisor for edge terms (`u==0 xor v==0`): `4 * sqrt(2) * 2^32`. `C(0) =
 /// 1/sqrt(2)` appears in the *numerator* of `F(u,v) = (1/4) * C(u) * C(v) *
@@ -71,11 +83,21 @@ const DCT_DIVISOR_DC: NonZeroU64 =
 /// inputs never exposed this, since they only ever excite the DC term or
 /// interior (`u>0 and v>0`) terms -- never an edge term on its own.
 const DCT_DIVISOR_EDGE: NonZeroU64 =
-    NonZeroU64::MIN.saturating_add(4 * (2 * SQRT2_RECIPROCAL) * COSINE_SCALE - 1);
+    match NonZeroU64::new(4 * (2 * SQRT2_RECIPROCAL) * COSINE_SCALE) {
+        Some(divisor) => divisor,
+        None => NonZeroU64::MIN,
+    };
 
 /// Divisor for interior terms (`u>0 and v>0`): `4 * 2^32`.
-const DCT_DIVISOR_INTERIOR: NonZeroU64 =
-    NonZeroU64::MIN.saturating_add(4 * COSINE_SCALE * COSINE_SCALE - 1);
+const DCT_DIVISOR_INTERIOR: NonZeroU64 = match NonZeroU64::new(4 * COSINE_SCALE * COSINE_SCALE) {
+    Some(divisor) => divisor,
+    None => NonZeroU64::MIN,
+};
+
+/// The 64 coefficients of a forward DCT, in raster order, before
+/// quantization.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct DctOutput(pub(super) [i32; 64]);
 
 /// A `COSINES` factor for the horizontal (x) axis, scaled by `2^16`.
 /// Distinct from [`CosV`] so [`RowSum::add_term`]'s cosine argument
@@ -129,15 +151,15 @@ impl DctSum {
     /// same bound the flat 64-term sum has, since both compute the
     /// identical total.
     fn add_row_term(self, row_sum: RowSum, cos_v_y: CosV) -> Self {
-        let a = row_sum.get();
-        let b = i64::from(cos_v_y.0);
-        let product = match a.checked_mul(b) {
-            Some(p) => p,
-            None if (a < 0) == (b < 0) => i64::MAX,
+        let left = row_sum.get();
+        let right = i64::from(cos_v_y.0);
+        let product = match left.checked_mul(right) {
+            Some(product) => product,
+            None if (left < 0) == (right < 0) => i64::MAX,
             None => i64::MIN,
         };
         let sum = match self.0.checked_add(product) {
-            Some(s) => s,
+            Some(total) => total,
             None if product < 0 => i64::MIN,
             None => i64::MAX,
         };
@@ -166,15 +188,15 @@ impl RowSum {
     /// actually triggers, but the type no longer depends on that being true
     /// to stay total.
     fn add_term(self, sample: CenteredSample, cos_u_x: CosU) -> Self {
-        let a = i64::from(sample.get());
-        let b = i64::from(cos_u_x.0);
-        let product = match a.checked_mul(b) {
-            Some(p) => p,
-            None if (a < 0) == (b < 0) => i64::MAX,
+        let left = i64::from(sample.get());
+        let right = i64::from(cos_u_x.0);
+        let product = match left.checked_mul(right) {
+            Some(product) => product,
+            None if (left < 0) == (right < 0) => i64::MAX,
             None => i64::MIN,
         };
         let sum = match self.0.checked_add(product) {
-            Some(s) => s,
+            Some(total) => total,
             None if product < 0 => i64::MIN,
             None => i64::MAX,
         };
@@ -202,7 +224,7 @@ impl RowSum {
 /// integer terms in the same (never-saturating, per each type's own bound)
 /// arithmetic, not a numerical approximation, so it produces bit-identical
 /// output to the flat double sum for every input.
-pub(super) fn forward_dct(block: &[CenteredSample; 64]) -> [i32; 64] {
+pub(super) fn forward_dct(block: &[CenteredSample; 64]) -> DctOutput {
     let mut output = [0_i32; 64];
     let (block_rows, _) = block.as_chunks::<8>();
 
@@ -221,14 +243,14 @@ pub(super) fn forward_dct(block: &[CenteredSample; 64]) -> [i32; 64] {
     // Zip COSINES rather than index it. The loops already run in lockstep with
     // the table, so pairing them removes the index instead of asserting that
     // the index is in range.
-    for ((v, cos_v), out_row) in COSINES
+    for ((freq_v, cos_v), out_row) in COSINES
         .iter()
         .enumerate()
         .zip(output.as_chunks_mut::<8>().0.iter_mut())
     {
-        for (u, (out_cell, sums_row)) in out_row.iter_mut().zip(row_sums.iter()).enumerate() {
+        for (freq_u, (out_cell, sums_row)) in out_row.iter_mut().zip(row_sums.iter()).enumerate() {
             // Column pass: sum of f(x,y) * cos_u(x) * cos_v(y), grouped as
-            // sum over y of row_sums[u][y] * cos_v(y). All cosines are
+            // sum over y of row_sums[freq_u][y] * cos_v(y). All cosines are
             // scaled by 2^16, so this sum is scaled by 2^32, same as the
             // flat double sum it replaces.
             let mut sum = DctSum::ZERO;
@@ -238,30 +260,29 @@ pub(super) fn forward_dct(block: &[CenteredSample; 64]) -> [i32; 64] {
             }
 
             // Apply DCT normalization:
-            // F(u,v) = (1/4) * C(u) * C(v) * sum
+            // F(freq_u,freq_v) = (1/4) * C(freq_u) * C(freq_v) * sum
             // where C(0) = 1/√2 and C(k) = 1 for k > 0
             //
             // With cosines scaled by 2^16, sum is scaled by 2^32.
-            // After dividing by 2^32 to remove cosine scaling, apply C(u)*C(v)/4:
+            // After dividing by 2^32 to remove cosine scaling, apply C(freq_u)*C(freq_v)/4:
             //
             // For (0,0): divide by 4 * √2 * √2 = 8
-            // For u=0, v>0: divide by 4 * √2 = 4√2 ≈ 5.66
-            // For u>0, v=0: divide by 4 * √2 = 4√2 ≈ 5.66
-            // For u>0, v>0: divide by 4
+            // For freq_u=0, freq_v>0: divide by 4 * √2 = 4√2 ≈ 5.66
+            // For freq_u>0, freq_v=0: divide by 4 * √2 = 4√2 ≈ 5.66
+            // For freq_u>0, freq_v>0: divide by 4
             //
             // In fixed point: use integer approximations
-            let divisor = if u == 0 && v == 0 {
+            let divisor = if freq_u == 0 && freq_v == 0 {
                 DCT_DIVISOR_DC
-            } else if u == 0 || v == 0 {
+            } else if freq_u == 0 || freq_v == 0 {
                 DCT_DIVISOR_EDGE
             } else {
                 DCT_DIVISOR_INTERIOR
             };
 
-            let dct_value = div_signed(sum.get(), divisor);
-            *out_cell = saturate_to_i32(dct_value);
+            *out_cell = WideCoeff(sum.get()).div_toward_zero(divisor).saturate().0;
         }
     }
 
-    output
+    DctOutput(output)
 }
