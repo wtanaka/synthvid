@@ -55,17 +55,17 @@ pub(crate) fn build_scene(entry: &Entry) -> Result<Scene, SceneBuildError> {
         frame_rate_from_axis,
     };
 
-    let frame_rate = frame_rate_from_axis(entry.frame_rate)?;
+    let frame_rate = frame_rate_from_axis(entry.frame_rate())?;
     let camera = build_camera()?;
     let background = build_background(entry);
     let object = build_object_from_entry(entry)?;
 
     Ok(Scene {
-        dimensions: entry.dimensions,
+        dimensions: entry.dimensions(),
         frame_rate,
-        frame_count: FrameCount::new(entry.frame_count.get())
+        frame_count: FrameCount::new(entry.frame_count().get())
             .map_err(SceneBuildError::FrameCount)?,
-        scale: match entry.scale {
+        scale: match entry.scale() {
             ScaleAxis::Undeclared => None,
             ScaleAxis::Declared => Some(declared_scale()?),
         },

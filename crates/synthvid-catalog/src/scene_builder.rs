@@ -143,7 +143,7 @@ const GRID_SPACING: NonZeroU16 = match NonZeroU16::new(32) {
 
 /// Builds a background from the entry's background axis.
 pub(crate) const fn build_background(entry: &Entry) -> Background {
-    match entry.background {
+    match entry.background() {
         BackgroundAxis::Solid => Background::Solid(Rgb8 {
             red: Channel(128),
             green: Channel(128),
@@ -200,7 +200,7 @@ pub(crate) const fn build_background(entry: &Entry) -> Background {
 pub(crate) fn build_object_from_entry(
     entry: &Entry,
 ) -> Result<synthvid_scene::Object, SceneBuildError> {
-    let shape = match entry.shape {
+    let shape = match entry.shape() {
         ShapeAxis::Disc => Shape::Disc {
             radius: Ratio::from_integer(Numerator(20)),
         },
@@ -237,7 +237,7 @@ pub(crate) fn build_object_from_entry(
 
     let motion = build_motion_from_entry(entry)?;
 
-    let visible = FrameSpan::new(FrameIndex::new(0)..FrameIndex::new(entry.frame_count.get()))
+    let visible = FrameSpan::new(FrameIndex::new(0)..FrameIndex::new(entry.frame_count().get()))
         .map_err(SceneBuildError::VisibilitySpan)?;
 
     Ok(synthvid_scene::Object::new(
@@ -280,8 +280,8 @@ struct FrameExtent {
 /// Extracts width and height from an entry's dimensions.
 fn frame_extent(entry: &Entry) -> FrameExtent {
     FrameExtent {
-        width: Numerator(NonZeroI64::from(entry.dimensions.width.get()).get()),
-        height: Numerator(NonZeroI64::from(entry.dimensions.height.get()).get()),
+        width: Numerator(NonZeroI64::from(entry.dimensions().width.get()).get()),
+        height: Numerator(NonZeroI64::from(entry.dimensions().height.get()).get()),
     }
 }
 
@@ -428,7 +428,7 @@ fn build_walk_motion(entry: &Entry) -> Result<Motion, SceneBuildError> {
 
 /// Builds motion from the entry's motion axis.
 pub(crate) fn build_motion_from_entry(entry: &Entry) -> Result<Motion, SceneBuildError> {
-    match entry.motion {
+    match entry.motion() {
         MotionAxis::Fixed => build_fixed_motion(entry),
         MotionAxis::Linear => build_linear_motion(entry),
         MotionAxis::Ballistic => build_ballistic_motion(entry),

@@ -1,8 +1,8 @@
 //! Tests that render catalogue entries through a video specification and check the bytes.
 
 use crate::cover::{
-    avi_truncated_entry, entry_like, generate_catalogue, BackgroundAxis, CodingAxis, ContainerAxis,
-    EntrySize, FrameRateValue, MotionAxis, ScaleAxis, ShapeAxis, TrackMatrixAxis,
+    avi_truncated_entry, entry_like, generate_catalogue, AxisValues, BackgroundAxis, CodingAxis,
+    ContainerAxis, EntrySize, FrameRateValue, MotionAxis, ScaleAxis, ShapeAxis, TrackMatrixAxis,
 };
 use crate::generator::generate_entry;
 use crate::sha256;
@@ -36,7 +36,7 @@ fn check_frozen_digest_mjpeg_avi_rot90() -> Result<(), Fail> {
     ensure_eq!(generated.media_bytes().as_bytes().len(), 212);
     // The cut file is a prefix of the same file without the defect.
     let mut whole_entry = entry;
-    whole_entry.defect = None;
+    whole_entry.set_defect(None);
     let whole = generate_entry(&whole_entry).or_fail()?;
     ensure_eq!(
         generated.media_bytes().as_bytes(),
@@ -52,18 +52,20 @@ fn frozen_digest_raw_iso_rot270() {
 
 fn check_frozen_digest_raw_iso_rot270() -> Result<(), Fail> {
     let entry = entry_like(EntrySize::Tiny10, |entry| {
-        entry.frame_rate = FrameRateValue::Ntsc;
-        entry.background = BackgroundAxis::Gradient;
-        entry.shape = ShapeAxis::Polygon;
-        entry.motion = MotionAxis::Fixed;
-        entry.coding = CodingAxis::Raw;
-        entry.container = ContainerAxis::Iso;
-        entry.track_matrix = TrackMatrixAxis::Rotate270;
-        entry.scale = ScaleAxis::Undeclared;
-        entry.defect = Some(Defect::ReorderedBoxes(
-            BoxPath::root().child(BoxTag::new(*b"moov")),
-            BoxPath::root().child(BoxTag::new(*b"mdat")),
-        ));
+        entry.set_axes(AxisValues {
+            frame_rate: FrameRateValue::Ntsc,
+            background: BackgroundAxis::Gradient,
+            shape: ShapeAxis::Polygon,
+            motion: MotionAxis::Fixed,
+            coding: CodingAxis::Raw,
+            container: ContainerAxis::Iso,
+            track_matrix: TrackMatrixAxis::Rotate270,
+            scale: ScaleAxis::Undeclared,
+            defect: Some(Defect::ReorderedBoxes(
+                BoxPath::root().child(BoxTag::new(*b"moov")),
+                BoxPath::root().child(BoxTag::new(*b"mdat")),
+            )),
+        });
     })?;
 
     let generated = generate_entry(&entry).or_fail()?;
@@ -90,19 +92,21 @@ fn frozen_digest_mjpeg_iso_rot180() {
 
 fn check_frozen_digest_mjpeg_iso_rot180() -> Result<(), Fail> {
     let entry = entry_like(EntrySize::Qvga10, |entry| {
-        entry.frame_rate = FrameRateValue::Thirty;
-        entry.background = BackgroundAxis::Grid;
-        entry.shape = ShapeAxis::Cross;
-        entry.motion = MotionAxis::Linear;
-        entry.coding = CodingAxis::MotionJpeg;
-        entry.container = ContainerAxis::Iso;
-        entry.track_matrix = TrackMatrixAxis::Rotate180;
-        entry.scale = ScaleAxis::Declared;
-        entry.defect = Some(Defect::DuplicateBox(
-            BoxPath::root()
-                .child(BoxTag::new(*b"moov"))
-                .child(BoxTag::new(*b"trak")),
-        ));
+        entry.set_axes(AxisValues {
+            frame_rate: FrameRateValue::Thirty,
+            background: BackgroundAxis::Grid,
+            shape: ShapeAxis::Cross,
+            motion: MotionAxis::Linear,
+            coding: CodingAxis::MotionJpeg,
+            container: ContainerAxis::Iso,
+            track_matrix: TrackMatrixAxis::Rotate180,
+            scale: ScaleAxis::Declared,
+            defect: Some(Defect::DuplicateBox(
+                BoxPath::root()
+                    .child(BoxTag::new(*b"moov"))
+                    .child(BoxTag::new(*b"trak")),
+            )),
+        });
     })?;
 
     let generated = generate_entry(&entry).or_fail()?;
@@ -129,15 +133,17 @@ fn frozen_digest_raw_iso_rot180_zero_fps_defect() {
 
 fn check_frozen_digest_raw_iso_rot180_zero_fps_defect() -> Result<(), Fail> {
     let entry = entry_like(EntrySize::Tiny1, |entry| {
-        entry.frame_rate = FrameRateValue::Thirty;
-        entry.background = BackgroundAxis::Gradient;
-        entry.shape = ShapeAxis::Disc;
-        entry.motion = MotionAxis::Fixed;
-        entry.coding = CodingAxis::Raw;
-        entry.container = ContainerAxis::Iso;
-        entry.track_matrix = TrackMatrixAxis::Rotate180;
-        entry.scale = ScaleAxis::Declared;
-        entry.defect = Some(Defect::ZeroFrameRate);
+        entry.set_axes(AxisValues {
+            frame_rate: FrameRateValue::Thirty,
+            background: BackgroundAxis::Gradient,
+            shape: ShapeAxis::Disc,
+            motion: MotionAxis::Fixed,
+            coding: CodingAxis::Raw,
+            container: ContainerAxis::Iso,
+            track_matrix: TrackMatrixAxis::Rotate180,
+            scale: ScaleAxis::Declared,
+            defect: Some(Defect::ZeroFrameRate),
+        });
     })?;
 
     let generated = generate_entry(&entry).or_fail()?;
@@ -170,7 +176,7 @@ fn check_16x16_name_and_axis_mapping() -> Result<(), Fail> {
             let spec = entry.to_video_spec().or_fail()?;
             ensure_eq!(spec.name().as_str(), entry.manifest_name().as_str());
 
-            match entry.coding {
+            match entry.coding() {
                 CodingAxis::Raw => {
                     ensure_eq!(spec.encoding(), Encoding::Raw);
                 }
@@ -179,13 +185,13 @@ fn check_16x16_name_and_axis_mapping() -> Result<(), Fail> {
                 }
             }
 
-            let rotation = match entry.track_matrix {
+            let rotation = match entry.track_matrix() {
                 TrackMatrixAxis::Identity => DisplayRotation::Identity,
                 TrackMatrixAxis::Rotate90 => DisplayRotation::Rot90,
                 TrackMatrixAxis::Rotate180 => DisplayRotation::Rot180,
                 TrackMatrixAxis::Rotate270 => DisplayRotation::Rot270,
             };
-            match entry.container {
+            match entry.container() {
                 ContainerAxis::Iso => {
                     ensure_eq!(spec.container(), Container::Iso { rotation });
                 }

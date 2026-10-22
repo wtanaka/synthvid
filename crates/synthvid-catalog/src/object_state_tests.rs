@@ -1,8 +1,8 @@
 //! Tests of the per-frame object state a catalogue entry's manifest records.
 
 use crate::cover::{
-    entry_like, generate_catalogue, BackgroundAxis, CodingAxis, ContainerAxis, EntrySize,
-    FrameRateValue, MotionAxis, ScaleAxis, ShapeAxis, TrackMatrixAxis,
+    entry_like, generate_catalogue, AxisValues, BackgroundAxis, CodingAxis, ContainerAxis,
+    EntrySize, FrameRateValue, MotionAxis, ScaleAxis, ShapeAxis, TrackMatrixAxis,
 };
 use crate::generator::generate_entry;
 use synthvid_testkit::{ensure, ensure_eq, Fail, OrFail as _};
@@ -17,15 +17,17 @@ struct FrameObjects<'json>(&'json str);
 /// depend on the defect, container or coding, so those are fixed.
 fn manifest_of(frame_rate: FrameRateValue, motion: MotionAxis) -> Result<ManifestJson, Fail> {
     let entry = entry_like(EntrySize::Tiny1, |entry| {
-        entry.frame_rate = frame_rate;
-        entry.background = BackgroundAxis::Solid;
-        entry.shape = ShapeAxis::Disc;
-        entry.motion = motion;
-        entry.coding = CodingAxis::Raw;
-        entry.container = ContainerAxis::Iso;
-        entry.track_matrix = TrackMatrixAxis::Identity;
-        entry.scale = ScaleAxis::Declared;
-        entry.defect = None;
+        entry.set_axes(AxisValues {
+            frame_rate,
+            background: BackgroundAxis::Solid,
+            shape: ShapeAxis::Disc,
+            motion,
+            coding: CodingAxis::Raw,
+            container: ContainerAxis::Iso,
+            track_matrix: TrackMatrixAxis::Identity,
+            scale: ScaleAxis::Declared,
+            defect: None,
+        });
     })
     .or_fail()?;
     Ok(generate_entry(&entry).or_fail()?.manifest_json().clone())
@@ -111,7 +113,7 @@ fn check_unscaled_entry_has_no_world_centre() -> Result<(), Fail> {
     let catalogue = generate_catalogue().or_fail()?;
     let entry = catalogue
         .iter()
-        .find(|entry| entry.scale == ScaleAxis::Undeclared)
+        .find(|entry| entry.scale() == ScaleAxis::Undeclared)
         .or_fail()?;
     let generated = generate_entry(entry).or_fail()?;
     let manifest = generated.manifest_json().as_str();

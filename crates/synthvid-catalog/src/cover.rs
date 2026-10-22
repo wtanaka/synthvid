@@ -84,27 +84,27 @@ pub use cover_names::MediaName;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Entry {
     /// Frame dimensions.
-    pub dimensions: Dimensions,
+    dimensions: Dimensions,
     /// Number of frames.
-    pub frame_count: FrameCountValue,
+    frame_count: FrameCountValue,
     /// Frame rate.
-    pub frame_rate: FrameRateValue,
+    frame_rate: FrameRateValue,
     /// Background type.
-    pub background: BackgroundAxis,
+    background: BackgroundAxis,
     /// Shape type.
-    pub shape: ShapeAxis,
+    shape: ShapeAxis,
     /// Motion type.
-    pub motion: MotionAxis,
+    motion: MotionAxis,
     /// Pixel encoding.
-    pub coding: CodingAxis,
+    coding: CodingAxis,
     /// Container format.
-    pub container: ContainerAxis,
+    container: ContainerAxis,
     /// Display matrix transformation.
-    pub track_matrix: TrackMatrixAxis,
+    track_matrix: TrackMatrixAxis,
     /// Physical scale declaration.
-    pub scale: ScaleAxis,
+    scale: ScaleAxis,
     /// Optional defect.
-    pub defect: Option<Defect>,
+    defect: Option<Defect>,
 }
 
 /// The name an entry's manifest and media files share, assembled from the entry's axis values.
@@ -129,6 +129,72 @@ impl fmt::Display for ManifestName {
 }
 
 impl Entry {
+    /// Frame dimensions.
+    #[must_use]
+    pub const fn dimensions(&self) -> Dimensions {
+        self.dimensions
+    }
+
+    /// Number of frames.
+    #[must_use]
+    pub const fn frame_count(&self) -> FrameCountValue {
+        self.frame_count
+    }
+
+    /// Frame rate.
+    #[must_use]
+    pub const fn frame_rate(&self) -> FrameRateValue {
+        self.frame_rate
+    }
+
+    /// Background type.
+    #[must_use]
+    pub const fn background(&self) -> BackgroundAxis {
+        self.background
+    }
+
+    /// Shape type.
+    #[must_use]
+    pub const fn shape(&self) -> ShapeAxis {
+        self.shape
+    }
+
+    /// Motion type.
+    #[must_use]
+    pub const fn motion(&self) -> MotionAxis {
+        self.motion
+    }
+
+    /// Pixel encoding.
+    #[must_use]
+    pub const fn coding(&self) -> CodingAxis {
+        self.coding
+    }
+
+    /// Container format.
+    #[must_use]
+    pub const fn container(&self) -> ContainerAxis {
+        self.container
+    }
+
+    /// Display matrix transformation.
+    #[must_use]
+    pub const fn track_matrix(&self) -> TrackMatrixAxis {
+        self.track_matrix
+    }
+
+    /// Physical scale declaration.
+    #[must_use]
+    pub const fn scale(&self) -> ScaleAxis {
+        self.scale
+    }
+
+    /// Optional defect.
+    #[must_use]
+    pub const fn defect(&self) -> Option<&Defect> {
+        self.defect.as_ref()
+    }
+
     /// Generates the manifest name for this entry.
     ///
     /// Derived deterministically from all axis values. Two entries with
@@ -494,6 +560,50 @@ pub(super) fn sample_entry_for_test() -> Result<Entry, synthvid_testkit::Fail> {
         scale: ScaleAxis::Undeclared,
         defect: None,
     })
+}
+
+/// The axis values a test overrides on an entry, leaving its size and frame count.
+#[cfg(test)]
+pub(crate) struct AxisValues {
+    /// Frame rate.
+    pub(crate) frame_rate: FrameRateValue,
+    /// Background type.
+    pub(crate) background: BackgroundAxis,
+    /// Shape type.
+    pub(crate) shape: ShapeAxis,
+    /// Motion type.
+    pub(crate) motion: MotionAxis,
+    /// Pixel encoding.
+    pub(crate) coding: CodingAxis,
+    /// Container format.
+    pub(crate) container: ContainerAxis,
+    /// Display matrix transformation.
+    pub(crate) track_matrix: TrackMatrixAxis,
+    /// Physical scale declaration.
+    pub(crate) scale: ScaleAxis,
+    /// Optional defect.
+    pub(crate) defect: Option<Defect>,
+}
+
+#[cfg(test)]
+impl Entry {
+    /// Replaces every axis value of this entry, including its defect.
+    pub(crate) fn set_axes(&mut self, axes: AxisValues) {
+        self.frame_rate = axes.frame_rate;
+        self.background = axes.background;
+        self.shape = axes.shape;
+        self.motion = axes.motion;
+        self.coding = axes.coding;
+        self.container = axes.container;
+        self.track_matrix = axes.track_matrix;
+        self.scale = axes.scale;
+        self.defect = axes.defect;
+    }
+
+    /// Replaces the defect of this entry.
+    pub(crate) fn set_defect(&mut self, defect: Option<Defect>) {
+        self.defect = defect;
+    }
 }
 
 /// The picture size and frame count a test-built entry starts from.
