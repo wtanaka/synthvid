@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "synthvid-catalog"
-version = "0.0.1-alpha.0"
+version = "0.0.1-alpha.1"
 dependencies = [
  "synthvid-encode",
  "synthvid-scene",
@@ -14,7 +14,7 @@ dependencies = [
 
 [[package]]
 name = "synthvid-cli"
-version = "0.0.1-alpha.0"
+version = "0.0.1-alpha.1"
 dependencies = [
  "synthvid-catalog",
  "synthvid-scene",
@@ -24,7 +24,7 @@ dependencies = [
 
 [[package]]
 name = "synthvid-encode"
-version = "0.0.1-alpha.0"
+version = "0.0.1-alpha.1"
 dependencies = [
  "synthvid-scene",
  "synthvid-testkit",
@@ -32,18 +32,18 @@ dependencies = [
 
 [[package]]
 name = "synthvid-scene"
-version = "0.0.1-alpha.0"
+version = "0.0.1-alpha.1"
 dependencies = [
  "synthvid-testkit",
 ]
 
 [[package]]
 name = "synthvid-testkit"
-version = "0.0.1-alpha.0"
+version = "0.0.1-alpha.1"
 
 [[package]]
 name = "synthvid-validate"
-version = "0.0.1-alpha.0"
+version = "0.0.1-alpha.1"
 dependencies = [
  "synthvid-encode",
  "synthvid-scene",
@@ -53,7 +53,7 @@ dependencies = [
 
 [[package]]
 name = "synthvid-video"
-version = "0.0.1-alpha.0"
+version = "0.0.1-alpha.1"
 dependencies = [
  "synthvid-encode",
  "synthvid-scene",
