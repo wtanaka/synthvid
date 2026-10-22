@@ -19,6 +19,16 @@ env:
 # artifacts lands in the target directory. --locked: fail rather than
 # silently update Cargo.lock if it and Cargo.toml ever drift.
 
+# Caching policy. Only things that are slow to obtain or compile are cached:
+# downloaded packages, the pinned toolchain and the unrepresentable binary.
+# Cargo's target directory is deliberately not cached: the project has no
+# external dependencies, and a fresh checkout gives every source file a new
+# modification time, so cargo would rebuild the workspace's own crates anyway
+# and the cache would only spend the repository's cache budget. Nothing that
+# proves a result is cached: test runs,
+# lint verdicts, and the regenerated corpus are always produced fresh, so a
+# cache can make a run faster but can never make a failure disappear.
+
 jobs:
   # Both architectures run the identical job. Cross-architecture reproducibility
   # is proved transitively: each one regenerates the whole corpus from scratch
@@ -44,6 +54,20 @@ jobs:
         with:
           fetch-depth: 0
 
+      # Saves downloading the pinned toolchain (rust-toolchain.toml, with
+      # rustfmt and clippy) on every run. The runner image ships other
+      # toolchains but not this one. The version is read from
+      # rust-toolchain.toml, the one place it is written, and the key is the
+      # toolchain file, so a pin change is a fresh download.
+      - name: Read the pinned toolchain version
+        run: echo "RUST_TOOLCHAIN=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" >> "$GITHUB_ENV"
+
+      - name: Restore the pinned toolchain
+        uses: actions/cache@v6
+        with:
+          path: ~/.rustup/toolchains/${{ env.RUST_TOOLCHAIN }}-*
+          key: rustup-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml') }}
+
       - name: Install the toolchain
         run: |
           rustup toolchain install
@@ -55,10 +79,31 @@ jobs:
       - name: Lints
         run: cargo clippy --release --locked --all-targets --all-features -- -D warnings
 
+      # Saves downloading the .deb files on every run. Only package archives
+      # are cached, never the package index. The key is the runner image
+      # version, because the package versions (and so the .deb files) change
+      # with each image. apt checks every cached .deb against its index hash
+      # and downloads any that do not match, so a stale entry costs a download
+      # and never installs the wrong package.
+      - name: Restore external decoder packages
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/apt-archives
+          key: apt-${{ runner.os }}-${{ runner.arch }}-${{ env.ImageVersion }}
+
       - name: Install external JPEG decoder tools
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libjpeg-turbo-progs python3-pil
+          archives="$RUNNER_TEMP/apt-archives"
+          mkdir -p "$archives/partial"
+          sudo chmod 1777 "$archives" "$archives/partial"
+          install() {
+            sudo apt-get install -y -o Dir::Cache::archives="$archives" libjpeg-turbo-progs python3-pil
+          }
+          # The image's package lists are usually current enough to install
+          # from; refresh them only when that fails.
+          install || { sudo apt-get update && install; }
+          # apt ran as root: hand the archive back so the cache step can read it.
+          sudo chown -R "$(id -u):$(id -g)" "$archives"
 
       - name: Repository guards
         run: sh ci/check-all.sh
@@ -88,10 +133,20 @@ jobs:
 
       # An external decoder is permitted for verification only; it is never
       # used to produce a file. This is what confirms the containers are
-      # readable by software that did not write them.
+      # readable by software that did not write them. The ffmpeg archives go
+      # into the same cache directory as the packages above.
       - name: Install an external decoder
         if: hashFiles('catalog.lock') != ''
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+        run: |
+          archives="$RUNNER_TEMP/apt-archives"
+          mkdir -p "$archives/partial"
+          sudo chmod 1777 "$archives" "$archives/partial"
+          install() {
+            sudo apt-get install -y -o Dir::Cache::archives="$archives" ffmpeg
+          }
+          install || { sudo apt-get update && install; }
+          # apt ran as root: hand the archive back so the cache step can read it.
+          sudo chown -R "$(id -u):$(id -g)" "$archives"
 
       - name: Confirm the corpus is externally decodable
         if: hashFiles('catalog.lock') != ''
@@ -114,12 +169,35 @@ jobs:
         with:
           fetch-depth: 0
 
+      # Same pinned-toolchain cache as the check job; see the note there.
+      - name: Read the pinned toolchain version
+        run: echo "RUST_TOOLCHAIN=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" >> "$GITHUB_ENV"
+
+      - name: Restore the pinned toolchain
+        uses: actions/cache@v6
+        with:
+          path: ~/.rustup/toolchains/${{ env.RUST_TOOLCHAIN }}-*
+          key: rustup-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml') }}
+
       - name: Install the toolchain
         run: |
           rustup toolchain install
           rustc -Vv
 
+      # Saves compiling unrepresentable from source, which is the slowest part
+      # of this job. The key holds everything the built binary depends on: the
+      # pinned version (repeated from the install command below, so update both
+      # together), the architecture, and the toolchain that compiled it. A hit
+      # skips only the compile. The binary still runs in the step after this.
+      - name: Restore unrepresentable
+        id: unrepresentable-cache
+        uses: actions/cache@v6
+        with:
+          path: ~/.cargo/bin/unrepresentable
+          key: unrepresentable-${{ runner.os }}-${{ runner.arch }}-0.0.1-alpha.1-${{ hashFiles('rust-toolchain.toml') }}
+
       - name: Install unrepresentable
+        if: steps.unrepresentable-cache.outputs.cache-hit != 'true'
         run: cargo install unrepresentable --locked --version =0.0.1-alpha.1
 
       - name: Unrepresentable
