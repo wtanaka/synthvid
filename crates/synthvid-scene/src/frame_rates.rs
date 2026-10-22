@@ -52,6 +52,25 @@ pub struct DistinctCapture {
     pub carrier: CaptureCarrier,
 }
 
+impl DistinctCapture {
+    /// The capture rate of `pair`, carried in the box `carrier` names. This is the one
+    /// place the equality rule is checked; [`FrameRates::distinct_in`] calls it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FrameRatesError::CaptureEqualsPlayback`] when the pair's capture rate
+    /// equals its playback rate.
+    pub fn checked(pair: RatePair, carrier: CaptureCarrier) -> Result<Self, FrameRatesError> {
+        if pair.playback == pair.capture {
+            return Err(FrameRatesError::CaptureEqualsPlayback);
+        }
+        Ok(Self {
+            rate: pair.capture,
+            carrier,
+        })
+    }
+}
+
 /// Whether a capture rate distinct from playback is present.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 enum Capture {
@@ -123,15 +142,10 @@ impl FrameRates {
     /// Returns [`FrameRatesError::CaptureEqualsPlayback`] when `capture` equals
     /// `playback`.
     pub fn distinct_in(pair: RatePair, carrier: CaptureCarrier) -> Result<Self, FrameRatesError> {
-        if pair.playback == pair.capture {
-            return Err(FrameRatesError::CaptureEqualsPlayback);
-        }
+        let capture = DistinctCapture::checked(pair, carrier)?;
         Ok(Self {
             playback: pair.playback,
-            capture: Capture::Distinct(DistinctCapture {
-                rate: pair.capture,
-                carrier,
-            }),
+            capture: Capture::Distinct(capture),
         })
     }
 

@@ -461,6 +461,9 @@ fn write_meta_ilst(sink: &mut ByteSink<'_>, capture: FrameRate) -> Result<(), Is
     let rate = capture.ratio();
     let numer_raw = u32::try_from(rate.numer().0).map_err(IsoError::capture_rate_too_large)?;
     // A zero numerator has no binary32 word; the type refuses it, as an oversized term is refused.
+    // The `CaptureRateTooLarge` mapping on the next two lines is unreachable for a zero term,
+    // because a `FrameRate` never holds a zero numerator or denominator. The name is wrong for
+    // that case, but iso.rs is frozen, so no separate variant is added.
     let numer = NonZeroU32::try_from(numer_raw).map_err(|_error| IsoError::CaptureRateTooLarge)?;
     let denom_raw = u32::try_from(rate.denom().get()).map_err(IsoError::capture_rate_too_large)?;
     let denom = NonZeroU32::try_from(denom_raw).map_err(|_error| IsoError::CaptureRateTooLarge)?;

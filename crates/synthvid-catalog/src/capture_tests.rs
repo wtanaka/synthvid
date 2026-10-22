@@ -20,6 +20,10 @@ struct RateStatements {
 /// The mdhd timescale a rendered entry must carry.
 struct Timescale(u32);
 
+/// A `capture_carrier` statement a manifest must contain, naming the box that carries
+/// the capture rate.
+struct CarrierStatement(&'static str);
+
 /// The big-endian version and flags, capture numerator and capture denominator
 /// that the `cfps` payload must hold.
 struct CfpsPayload([u8; 12]);
@@ -28,13 +32,14 @@ struct CfpsPayload([u8; 12]);
 struct Expected {
     name: EntryName,
     rates: RateStatements,
+    carrier: CarrierStatement,
     timescale: Timescale,
     cfps: CfpsPayload,
 }
 
 /// Renders the catalogue entry named by `expected` and checks the manifest's two
-/// rates, the media's timescale, and the `cfps` payload that carries the capture
-/// rate.
+/// rates and its carrier, the media's timescale, and the `cfps` payload that carries
+/// the capture rate.
 ///
 /// The timescale is the playback numerator, because the track is timed at the
 /// playback rate. The `cfps` payload is four bytes of version and flags, then the
@@ -57,6 +62,11 @@ fn check_capture_entry_states_both_rates(expected: &Expected) -> Result<(), Fail
         manifest.contains(expected.rates.capture.0),
         "manifest must state the capture rate {}",
         expected.rates.capture.0
+    );
+    ensure!(
+        manifest.contains(expected.carrier.0),
+        "manifest must state the capture carrier {}",
+        expected.carrier.0
     );
 
     let media = IsoBytes(generated.media_bytes().as_bytes());
@@ -84,6 +94,13 @@ fn check_capture_entry_states_both_rates(expected: &Expected) -> Result<(), Fail
         "a distinct capture rate must not write an edts box"
     );
 
+    let moov = payload(child_path(media, BoxPath(&[BoxTag(*b"moov")]))?)?;
+    ensure_eq!(
+        tags_in(moov)?,
+        vec![BoxTag(*b"mvhd"), BoxTag(*b"trak"), BoxTag(*b"udta")],
+        "moov holds exactly mvhd, trak and udta"
+    );
+
     let cfps = child_path(
         media,
         BoxPath(&[BoxTag(*b"moov"), BoxTag(*b"udta"), BoxTag(*b"cfps")]),
@@ -105,6 +122,7 @@ fn check_ntsc_entry_captured_at_24000x1001_states_both_rates() -> Result<(), Fai
             playback: RateStatement(r#""frame_rate":{"den":1001,"num":30000}"#),
             capture: RateStatement(r#""capture_rate":{"den":1001,"num":24000}"#),
         },
+        carrier: CarrierStatement(r#""capture_carrier":"cfps""#),
         timescale: Timescale(30000),
         cfps: CfpsPayload([0, 0, 0, 0, 0, 0, 0x5D, 0xC0, 0, 0, 0x03, 0xE9]),
     })
@@ -130,6 +148,7 @@ fn check_thirty_fps_entry_captured_at_240_states_both_rates() -> Result<(), Fail
             playback: RateStatement(r#""frame_rate":{"den":1,"num":30}"#),
             capture: RateStatement(r#""capture_rate":{"den":1,"num":240}"#),
         },
+        carrier: CarrierStatement(r#""capture_carrier":"cfps""#),
         timescale: Timescale(30),
         cfps: CfpsPayload([0, 0, 0, 0, 0, 0, 0, 0xF0, 0, 0, 0, 1]),
     })
@@ -151,6 +170,7 @@ struct DataPayload([u8; 12]);
 struct QuickTimeExpected {
     name: EntryName,
     rates: RateStatements,
+    carrier: CarrierStatement,
     timescale: Timescale,
     data: DataPayload,
 }
@@ -176,6 +196,11 @@ fn check_quicktime_entry(expected: &QuickTimeExpected) -> Result<(), Fail> {
         manifest.contains(expected.rates.capture.0),
         "manifest must state the capture rate {}",
         expected.rates.capture.0
+    );
+    ensure!(
+        manifest.contains(expected.carrier.0),
+        "manifest must state the capture carrier {}",
+        expected.carrier.0
     );
 
     let media = IsoBytes(generated.media_bytes().as_bytes());
@@ -227,6 +252,7 @@ fn check_thirty_fps_entry_captured_at_240_in_quicktime_meta() -> Result<(), Fail
             playback: RateStatement(r#""frame_rate":{"den":1,"num":30}"#),
             capture: RateStatement(r#""capture_rate":{"den":1,"num":240}"#),
         },
+        carrier: CarrierStatement(r#""capture_carrier":"meta""#),
         timescale: Timescale(30),
         data: DataPayload([0, 0, 0, 23, 0, 0, 0, 0, 0x43, 0x70, 0x00, 0x00]),
     })
@@ -253,6 +279,7 @@ fn check_ntsc_entry_captured_at_24000x1001_in_quicktime_meta() -> Result<(), Fai
             playback: RateStatement(r#""frame_rate":{"den":1001,"num":30000}"#),
             capture: RateStatement(r#""capture_rate":{"den":1001,"num":24000}"#),
         },
+        carrier: CarrierStatement(r#""capture_carrier":"meta""#),
         timescale: Timescale(30000),
         data: DataPayload([0, 0, 0, 23, 0, 0, 0, 0, 0x41, 0xBF, 0xCE, 0xE6]),
     })
@@ -278,6 +305,7 @@ fn check_thirty_fps_entry_captured_at_12_states_both_rates() -> Result<(), Fail>
             playback: RateStatement(r#""frame_rate":{"den":1,"num":30}"#),
             capture: RateStatement(r#""capture_rate":{"den":1,"num":12}"#),
         },
+        carrier: CarrierStatement(r#""capture_carrier":"cfps""#),
         timescale: Timescale(30),
         cfps: CfpsPayload([0, 0, 0, 0, 0, 0, 0, 0x0C, 0, 0, 0, 1]),
     })
@@ -301,6 +329,7 @@ fn check_ntsc_entry_captured_at_25_states_both_rates() -> Result<(), Fail> {
             playback: RateStatement(r#""frame_rate":{"den":1001,"num":30000}"#),
             capture: RateStatement(r#""capture_rate":{"den":1,"num":25}"#),
         },
+        carrier: CarrierStatement(r#""capture_carrier":"cfps""#),
         timescale: Timescale(30000),
         cfps: CfpsPayload([0, 0, 0, 0, 0, 0, 0, 0x19, 0, 0, 0, 1]),
     })
@@ -323,6 +352,7 @@ fn check_ntsc_entry_captured_at_1000_states_both_rates() -> Result<(), Fail> {
             playback: RateStatement(r#""frame_rate":{"den":1001,"num":30000}"#),
             capture: RateStatement(r#""capture_rate":{"den":1,"num":1000}"#),
         },
+        carrier: CarrierStatement(r#""capture_carrier":"cfps""#),
         timescale: Timescale(30000),
         cfps: CfpsPayload([0, 0, 0, 0, 0, 0, 0x03, 0xE8, 0, 0, 0, 1]),
     })
@@ -349,6 +379,7 @@ fn check_thirty_fps_entry_captured_at_120000x1001_states_both_rates() -> Result<
             playback: RateStatement(r#""frame_rate":{"den":1,"num":30}"#),
             capture: RateStatement(r#""capture_rate":{"den":1001,"num":120000}"#),
         },
+        carrier: CarrierStatement(r#""capture_carrier":"cfps""#),
         timescale: Timescale(30),
         cfps: CfpsPayload([0, 0, 0, 0, 0x00, 0x01, 0xD4, 0xC0, 0, 0, 0x03, 0xE9]),
     })
@@ -374,6 +405,7 @@ fn check_thirty_fps_entry_captured_at_12_in_quicktime_meta() -> Result<(), Fail>
             playback: RateStatement(r#""frame_rate":{"den":1,"num":30}"#),
             capture: RateStatement(r#""capture_rate":{"den":1,"num":12}"#),
         },
+        carrier: CarrierStatement(r#""capture_carrier":"meta""#),
         timescale: Timescale(30),
         data: DataPayload([0, 0, 0, 23, 0, 0, 0, 0, 0x41, 0x40, 0x00, 0x00]),
     })

@@ -6,7 +6,7 @@ use alloc::collections::BTreeSet;
 use std::fs;
 use std::path::PathBuf;
 use synthvid_catalog::cover::generate_catalogue;
-use synthvid_testkit::{ensure, ensure_eq, Fail, OrFail as _};
+use synthvid_testkit::{ensure, Fail, OrFail as _};
 
 /// The text of the `catalog.lock` in the project root.
 struct Lockfile(String);
@@ -35,17 +35,9 @@ fn check_playback_only_entries_are_in_committed_lockfile() -> Result<(), Fail> {
         .iter()
         .filter(|entry| entry.capture().distinct().is_none())
         .collect();
-    let captured = catalogue
-        .iter()
-        .filter(|entry| entry.capture().distinct().is_some())
-        .count();
     ensure!(
         !playback_only.is_empty(),
         "the catalogue has playback-only entries"
-    );
-    ensure_eq!(
-        playback_only.len(),
-        catalogue.len().checked_sub(captured).or_fail()?
     );
     for entry in &playback_only {
         let manifest = format!("{}.json", entry.manifest_name());

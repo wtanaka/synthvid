@@ -4,7 +4,7 @@ use synthvid_scene::{
     Background, Camera, CaptureCarrier, Channel, Dimensions, FrameCount, Height, Magnification,
     Motion, Numerator, Point, Ratio, Rgb8, Rotation, Turns, Width, Zoom,
 };
-use synthvid_testkit::{ensure, ensure_eq, refusal, Fail, OrFail as _};
+use synthvid_testkit::{ensure_eq, refusal, Fail, OrFail as _};
 
 fn rate(fraction: Frac) -> Result<FrameRate, Fail> {
     FrameRate::new(fraction.ratio()?).or_fail()
@@ -96,10 +96,6 @@ fn equal_capture_is_refused() {
 fn check_equal_capture_refused_in_other_spelling() -> Result<(), Fail> {
     // 60/2 reduces to 30/1, so the same rate is refused however it is spelled.
     let refused = spec_with(rate(Frac(30, 1))?, iso(project_box(rate(Frac(60, 2))?)))?;
-    ensure!(
-        refused.is_err(),
-        "a capture rate of 60/2 equals a playback rate of 30/1"
-    );
     ensure_eq!(
         refusal(refused)?,
         VideoSpecError::FrameRates(FrameRatesError::CaptureEqualsPlayback)

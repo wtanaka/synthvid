@@ -47,7 +47,7 @@ use core::num::{NonZeroU16, NonZeroU32};
 use cover_container::EntryContainer;
 use cover_names::{CaptureName, DefectName};
 use synthvid_encode::defects::Defect;
-use synthvid_scene::{Dimensions, FrameRates, FrameRatesError, RatePair};
+use synthvid_scene::{Dimensions, DistinctCapture, FrameRatesError, RatePair};
 use synthvid_video::json_names::JsonEntryName;
 use synthvid_video::{CaptureRate, Container, DisplayRotation, Encoding, VideoSpec};
 
@@ -456,7 +456,9 @@ pub fn generate_catalogue() -> Result<Vec<Entry>, CatalogError> {
 ///
 /// # Errors
 ///
-/// Returns `CatalogError::InvalidFrameRate` if a capture rate cannot be built.
+/// Returns every error [`capture_singleton`] returns for any pair in [`CAPTURE_PAIRS`]:
+/// `CatalogError::InvalidFrameRate`, `CatalogError::CaptureEqualsPlayback`,
+/// `CatalogError::ZeroDimension` and `CatalogError::ZeroFrameCount`.
 fn capture_singletons() -> Result<Vec<Entry>, CatalogError> {
     CAPTURE_PAIRS.iter().map(capture_singleton).collect()
 }
@@ -467,8 +469,9 @@ fn capture_singletons() -> Result<Vec<Entry>, CatalogError> {
 /// # Errors
 ///
 /// Returns `CatalogError::InvalidFrameRate` if the capture or playback rate is not a positive
-/// frame rate, and `CatalogError::CaptureEqualsPlayback` if the pair's capture rate equals its
-/// playback rate.
+/// frame rate, `CatalogError::CaptureEqualsPlayback` if the pair's capture rate equals its
+/// playback rate, `CatalogError::ZeroDimension` if the dimensions cannot be made, and
+/// `CatalogError::ZeroFrameCount` if the frame count is zero.
 fn capture_singleton(pair: &CapturePair) -> Result<Entry, CatalogError> {
     use cover_axes::{make_dimensions, RawSize};
 
@@ -477,11 +480,8 @@ fn capture_singleton(pair: &CapturePair) -> Result<Entry, CatalogError> {
         .map_err(|synthvid_scene::FrameRateError::NonPositive| CatalogError::InvalidFrameRate)?;
     let playback =
         frame_rate_from_axis(pair.playback).map_err(|_error| CatalogError::InvalidFrameRate)?;
-    let frame_rates = FrameRates::distinct_in(RatePair { playback, capture }, pair.carrier)
+    let distinct = DistinctCapture::checked(RatePair { playback, capture }, pair.carrier)
         .map_err(|FrameRatesError::CaptureEqualsPlayback| CatalogError::CaptureEqualsPlayback)?;
-    let distinct = frame_rates
-        .distinct_capture()
-        .ok_or(CatalogError::CaptureEqualsPlayback)?;
     Ok(Entry {
         dimensions: make_dimensions(RawSize {
             width: NonZeroU16::new(16),
@@ -607,7 +607,9 @@ pub(super) fn sample_entry_for_test() -> Result<Entry, synthvid_testkit::Fail> {
 
 #[cfg(test)]
 impl Entry {
-    /// Replaces every axis value of this entry, including its defect.
+    /// Replaces every axis value of this entry, including its defect. The container axis
+    /// goes through [`Entry::set_container_axis`], so an existing ISO capture rate is kept
+    /// (through `with_axis`).
     pub(crate) fn set_axes(&mut self, axes: AxisValues) {
         self.frame_rate = axes.frame_rate;
         self.background = axes.background;

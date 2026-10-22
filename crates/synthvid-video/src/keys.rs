@@ -1,6 +1,6 @@
 //! The closed set of keys a manifest document uses.
 //!
-//! Every key this crate writes is one of these 34. Modelling them as an
+//! Every key this crate writes is one of these 35. Modelling them as an
 //! enum rather than validating a string at the point of use removes the only
 //! runtime failure the serializer had: a hardcoded literal was checked against
 //! the key alphabet and the check was unwrapped, so a typo in a literal was a

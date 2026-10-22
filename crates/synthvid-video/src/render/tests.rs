@@ -6,6 +6,10 @@ use synthvid_scene::{
     CaptureCarrier, Channel, DistinctCapture, FrameCount, FrameRate, FrameRatesError, Height,
     Magnification, Motion, Numerator, Point, Ratio, Rgb8, Rotation, Turns, Width, Zoom,
 };
+use synthvid_testkit::iso::{
+    child_path, payload, tags_in, u32_at, BigEndianWord, BoxPath, BoxTag, ByteOffset, IsoBytes,
+};
+use synthvid_testkit::{ensure, ensure_eq, Fail, OrFail as _};
 
 /// A distinct capture rate carried in the project-specific box.
 fn project_box(rate: FrameRate) -> CaptureRate {
@@ -14,10 +18,6 @@ fn project_box(rate: FrameRate) -> CaptureRate {
         carrier: CaptureCarrier::ProjectBox,
     })
 }
-use synthvid_testkit::iso::{
-    child_path, payload, tags_in, u32_at, BigEndianWord, BoxPath, BoxTag, ByteOffset, IsoBytes,
-};
-use synthvid_testkit::{ensure, ensure_eq, Fail, OrFail as _};
 
 /// A two-frame, 16 by 16 grey scene with a still camera and no objects.
 fn still_grey_scene() -> Result<Scene, Fail> {

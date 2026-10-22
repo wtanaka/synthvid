@@ -11,7 +11,7 @@ use crate::json_names::JsonEntryName;
 use core::error::Error;
 use core::fmt;
 use synthvid_encode::{ChromaSampling, Defect, Quality};
-use synthvid_scene::{DistinctCapture, FrameRate, FrameRates, FrameRatesError, RatePair, Scene};
+use synthvid_scene::{DistinctCapture, FrameRate, FrameRates, FrameRatesError, Scene};
 
 /// A display rotation, independent of video content.
 ///
@@ -115,25 +115,26 @@ pub struct VideoSpec {
     scene: Scene,
     /// How frames are encoded.
     encoding: Encoding,
-    /// The distinct capture rate, validated once when the specification is built. The
+    /// The container's shape, with its validated capture part when it is ISO. The
     /// playback rate is `scene.frame_rate` and is not stored a second time.
-    capture: Option<DistinctCapture>,
-    /// The container's shape. Its capture rate is in `capture`.
     shape: ContainerShape,
     /// Optional defect to apply to the media bytes after encoding.
     defect: Option<Defect>,
 }
 
-/// The container's shape without its capture rate, which a specification keeps in its
-/// validated capture part.
+/// The container's shape. Only an ISO shape can hold a capture part, so an AVI shape
+/// cannot carry one.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ContainerShape {
-    /// ISO, with the rotation its track matrix carries.
+    /// ISO, with the rotation its track matrix carries and the distinct capture part
+    /// validated when the specification was built.
     Iso {
         /// The rotation recorded in the track matrix.
         rotation: DisplayRotation,
+        /// The distinct capture rate and its carrier, or `None` for playback only.
+        capture: Option<DistinctCapture>,
     },
-    /// AVI, which has no rotation to record.
+    /// AVI, which has no rotation to record and no capture rate.
     Avi,
 }
 
@@ -218,11 +219,12 @@ const fn check_size_omission(
     }
 }
 
-/// Splits a container into the shape it is written in and the capture part it declares,
-/// refusing a capture rate equal to the playback rate.
+/// Splits a container into the shape it is written in, refusing a capture rate equal to
+/// the playback rate.
 ///
-/// The equality rule is applied only by [`FrameRates::distinct_in`], here, once per
-/// construction. Only the capture part is returned: the playback rate is the scene's.
+/// The equality rule is applied by [`FrameRates::from_playback_and_capture`] here, at
+/// construction. [`VideoSpec::frame_rates`] applies it again when the rates are read; that
+/// second call cannot fail while the scene is immutable. The playback rate is the scene's.
 ///
 /// # Errors
 ///
@@ -231,26 +233,17 @@ const fn check_size_omission(
 fn split_container(
     frame_rate: FrameRate,
     container: Container,
-) -> Result<(ContainerShape, Option<DistinctCapture>), VideoSpecError> {
+) -> Result<ContainerShape, VideoSpecError> {
     match container {
         Container::Iso { rotation, capture } => {
-            let frame_rates = match capture.distinct() {
-                None => FrameRates::playback_only(frame_rate),
-                Some(DistinctCapture { rate, carrier }) => FrameRates::distinct_in(
-                    RatePair {
-                        playback: frame_rate,
-                        capture: rate,
-                    },
-                    carrier,
-                )
-                .map_err(VideoSpecError::FrameRates)?,
-            };
-            Ok((
-                ContainerShape::Iso { rotation },
-                frame_rates.distinct_capture(),
-            ))
+            let frame_rates = FrameRates::from_playback_and_capture(frame_rate, capture.distinct())
+                .map_err(VideoSpecError::FrameRates)?;
+            Ok(ContainerShape::Iso {
+                rotation,
+                capture: frame_rates.distinct_capture(),
+            })
         }
-        Container::Avi => Ok((ContainerShape::Avi, None)),
+        Container::Avi => Ok(ContainerShape::Avi),
     }
 }
 
@@ -278,12 +271,11 @@ impl VideoSpec {
         defect: Option<Defect>,
     ) -> Result<Self, VideoSpecError> {
         check_defect(encoding, container, defect.as_ref())?;
-        let (shape, capture) = split_container(scene.frame_rate, container)?;
+        let shape = split_container(scene.frame_rate, container)?;
         Ok(Self {
             name,
             scene,
             encoding,
-            capture,
             shape,
             defect,
         })
@@ -311,9 +303,9 @@ impl VideoSpec {
     #[must_use]
     pub const fn container(&self) -> Container {
         match self.shape {
-            ContainerShape::Iso { rotation } => Container::Iso {
+            ContainerShape::Iso { rotation, capture } => Container::Iso {
                 rotation,
-                capture: capture_rate_of(self.capture),
+                capture: capture_rate_of(capture),
             },
             ContainerShape::Avi => Container::Avi,
         }
@@ -327,7 +319,14 @@ impl VideoSpec {
     /// Returns [`VideoSpecError::FrameRates`] when the stored capture rate equals the
     /// scene's playback rate.
     pub fn frame_rates(&self) -> Result<FrameRates, VideoSpecError> {
-        FrameRates::from_playback_and_capture(self.scene.frame_rate, self.capture)
+        let capture = match self.shape {
+            ContainerShape::Iso {
+                rotation: _rotation,
+                capture,
+            } => capture,
+            ContainerShape::Avi => None,
+        };
+        FrameRates::from_playback_and_capture(self.scene.frame_rate, capture)
             .map_err(VideoSpecError::FrameRates)
     }
 
@@ -347,11 +346,13 @@ impl VideoSpec {
     /// Returns [`VideoSpecError::FrameRates`] when the new container's capture rate equals
     /// the scene's playback rate.
     pub fn with_container(self, container: Container) -> Result<Self, VideoSpecError> {
-        let (shape, capture) = split_container(self.scene.frame_rate, container)?;
+        let shape = split_container(self.scene.frame_rate, container)?;
         Ok(Self {
-            capture,
+            name: self.name,
+            scene: self.scene,
+            encoding: self.encoding,
             shape,
-            ..self
+            defect: self.defect,
         })
     }
 }

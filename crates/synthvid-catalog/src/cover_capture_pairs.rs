@@ -6,8 +6,12 @@ use synthvid_scene::CaptureCarrier;
 /// The number of frames in a capture rate, before reduction.
 pub(super) struct CaptureNumerator(pub(super) u32);
 
-/// The number of seconds in a capture rate, before reduction. It becomes non-zero where the
-/// rate is built.
+/// The number of seconds in a capture rate, before reduction.
+///
+/// A zero denominator is possible in the const table, and is refused with
+/// `CatalogError::InvalidFrameRate` when the rate is built. It is not a `NonZeroU32` here
+/// because a `NonZeroU32` cannot be constructed in a const table without unwrap, expect or
+/// panic, which the library forbids.
 pub(super) struct CaptureDenominator(pub(super) u32);
 
 /// A capture rate as the table writes it: `numer` frames per `denom` seconds, not
