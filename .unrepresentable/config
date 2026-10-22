@@ -13,7 +13,7 @@ newtypes = [
   { type = "ContentLength", methods = ["pub get", "pub new"] },
   { type = "Digest", methods = ["pub as_bytes", "pub new"] },
   { type = "FrameCountValue", methods = ["pub get", "pub new"] },
-  { type = "LockfileName", methods = ["pub as_str", "pub new"] },
+  { type = "LockfileName", methods = ["pub as_str"] },
   { type = "ManifestName", methods = ["pub as_str"] },
 ]
 
@@ -99,8 +99,8 @@ ambient = [
 [member.synthvid-video]
 role = "pure"
 newtypes = [
-  { type = "JsonEntryName", methods = ["pub as_str", "pub new"] },
-  { type = "JsonKey", methods = ["from_known", "pub as_str", "pub new"] },
+  { type = "JsonEntryName", methods = ["pub as_str"] },
+  { type = "JsonKey", methods = ["from_known", "pub as_str"] },
   { type = "ManifestJson", methods = ["pub as_str"] },
   { type = "MediaBytes", methods = ["pub as_bytes"] },
 ]
