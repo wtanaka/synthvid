@@ -54,10 +54,7 @@ fn make_iso_base() -> Result<Media, Fail> {
     let height = Height::new(1).or_fail()?;
     let frame = make_test_frame()?;
     encode_iso(
-        crate::FrameRates {
-            playback: FrameRate::from_fps(24).or_fail()?,
-            capture: None,
-        },
+        synthvid_scene::FrameRates::playback_only(FrameRate::from_fps(24).or_fail()?),
         &[EncodedFrame::raw(&frame)],
         crate::TrackParams {
             width,
@@ -518,10 +515,7 @@ fn check_no_container_size_zeroes_tkhd_and_stsd_only() -> Result<(), Fail> {
     // 37x23: neither a power of two nor square, so a transposed or
     // mis-offset write shows up.
     let input = encode_iso(
-        crate::FrameRates {
-            playback: FrameRate::from_fps(24).or_fail()?,
-            capture: None,
-        },
+        synthvid_scene::FrameRates::playback_only(FrameRate::from_fps(24).or_fail()?),
         &[EncodedFrame::raw(
             &Frame::new(
                 Dimensions::new(Width::new(37).or_fail()?, Height::new(23).or_fail()?),

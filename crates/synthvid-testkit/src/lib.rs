@@ -19,8 +19,13 @@
 //!
 //! A failed check names the line that failed, so the assertion in the test
 //! reports where and why without the check ever aborting.
+//!
+//! [`iso`] reads an ISO base media file as a tree of boxes by following each
+//! box's size and tag headers, so tests can reach a box by path rather than by
+//! searching the file's bytes for its tag.
 
 mod fail;
+pub mod iso;
 mod macros;
 
-pub use fail::{Fail, OrFail};
+pub use fail::{refusal, Fail, OrFail};

@@ -21,8 +21,8 @@ use synthvid_encode::{
     IsoCodec, TrackMatrix,
 };
 use synthvid_scene::{
-    render_into, Background, Camera, Dimensions, Frame, FrameIndex, ObjectIndex, Overflow, Scale,
-    Scene, Shape,
+    render_into, Background, Camera, Dimensions, Frame, FrameIndex, FrameRates, ObjectIndex,
+    Overflow, Scale, Scene, Shape,
 };
 
 /// A step of the exact camera arithmetic that failed.
@@ -305,6 +305,7 @@ pub fn render(spec: &VideoSpec) -> Result<GeneratedEntry, GenerationError> {
 
     check_defect(spec.encoding(), spec.container(), spec.defect())
         .map_err(GenerationError::Specification)?;
+    let frame_rates = spec.frame_rates().map_err(GenerationError::Specification)?;
 
     // Check raw capacity for raw coding
     if spec.encoding() == Encoding::Raw
@@ -322,7 +323,7 @@ pub fn render(spec: &VideoSpec) -> Result<GeneratedEntry, GenerationError> {
     let header = ManifestHeader::new(
         spec.name().clone(),
         scene.dimensions,
-        scene.frame_rate,
+        frame_rates,
         background_name,
         scene.scale.map(Scale::get),
     );
@@ -342,7 +343,7 @@ pub fn render(spec: &VideoSpec) -> Result<GeneratedEntry, GenerationError> {
         .map_err(GenerationError::ManifestConstruction)?;
     let manifest_json = manifest.to_canonical_json();
 
-    let mut media_bytes = build_container(spec, &encoded_frames)?;
+    let mut media_bytes = build_container(spec, frame_rates, &encoded_frames)?;
 
     // Apply defect if present
     if let Some(defect) = spec.defect() {
@@ -356,18 +357,19 @@ pub fn render(spec: &VideoSpec) -> Result<GeneratedEntry, GenerationError> {
 /// Builds the media container around the encoded frames.
 fn build_container(
     spec: &VideoSpec,
+    frame_rates: FrameRates,
     encoded_frames: &EncodedFrames,
 ) -> Result<ContainerFile, GenerationError> {
     let scene = spec.scene();
     Ok(match spec.container() {
-        Container::Iso { rotation } => {
+        Container::Iso {
+            rotation,
+            capture: _capture,
+        } => {
             let dims = scene.dimensions;
             let track_matrix = build_track_matrix_from_rotation(rotation, dims)?;
             encode_iso(
-                synthvid_encode::FrameRates {
-                    playback: scene.frame_rate,
-                    capture: None,
-                },
+                frame_rates,
                 &encoded_frames.0,
                 synthvid_encode::TrackParams {
                     width: dims.width,
@@ -385,7 +387,7 @@ fn build_container(
             .map_err(GenerationError::IsoEncodingFailed)?
         }
         Container::Avi => encode_avi(
-            scene.frame_rate,
+            frame_rates.playback(),
             &encoded_frames.0,
             scene.dimensions.width,
             scene.dimensions.height,

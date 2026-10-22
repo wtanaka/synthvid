@@ -219,10 +219,7 @@ fn check_tkhd_duration_equals_mvhd_duration() -> Result<(), Fail> {
     let frames: Vec<EncodedFrame> = (0..7_u8).map(|fill| EncodedFrame(vec![fill; 45])).collect();
     let bytes = Encoded(
         encode_iso(
-            FrameRates {
-                playback: rate,
-                capture: None,
-            },
+            FrameRates::playback_only(rate),
             &frames,
             TrackParams {
                 width: Width::new(5).or_fail()?,

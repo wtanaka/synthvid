@@ -1,6 +1,6 @@
 //! The closed set of keys a manifest document uses.
 //!
-//! Every key this crate writes is one of these 33. Modelling them as an
+//! Every key this crate writes is one of these 34. Modelling them as an
 //! enum rather than validating a string at the point of use removes the only
 //! runtime failure the serializer had: a hardcoded literal was checked against
 //! the key alphabet and the check was unwrapped, so a typo in a literal was a
@@ -24,6 +24,10 @@ pub enum ManifestKey {
     AffineC,
     /// The `camera` key.
     Camera,
+    /// The `capture_carrier` key.
+    CaptureCarrier,
+    /// The `capture_rate` key.
+    CaptureRate,
     /// The `centre_screen` key.
     CentreScreen,
     /// The `centre_world` key.
@@ -83,13 +87,15 @@ pub enum ManifestKey {
 impl ManifestKey {
     /// Every key, for the test that checks each one against the key alphabet.
     #[cfg(test)]
-    const ALL: [Self; 33] = [
+    const ALL: [Self; 35] = [
         Self::AffineA,
         Self::AffineB,
         Self::Background,
         Self::Bbox,
         Self::AffineC,
         Self::Camera,
+        Self::CaptureCarrier,
+        Self::CaptureRate,
         Self::CentreScreen,
         Self::CentreWorld,
         Self::AffineD,
@@ -133,6 +139,8 @@ impl From<ManifestKey> for JsonKey {
             ManifestKey::Bbox => "bbox",
             ManifestKey::AffineC => "c",
             ManifestKey::Camera => "camera",
+            ManifestKey::CaptureCarrier => "capture_carrier",
+            ManifestKey::CaptureRate => "capture_rate",
             ManifestKey::CentreScreen => "centre_screen",
             ManifestKey::CentreWorld => "centre_world",
             ManifestKey::AffineD => "d",

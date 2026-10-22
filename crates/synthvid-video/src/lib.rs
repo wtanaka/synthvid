@@ -28,6 +28,8 @@ pub mod frame_bounds;
 pub mod json_names;
 pub mod keys;
 pub mod manifest;
+#[cfg(test)]
+mod manifest_capture_tests;
 pub mod manifest_error;
 pub mod manifest_values;
 pub mod names;
@@ -47,5 +49,7 @@ pub use manifest::{
 pub use names::{BackgroundName, ShapeName};
 pub use render::{render, CameraStep, GeneratedEntry, GenerationError, ObjectStep};
 pub use render_output::{ManifestJson, MediaBytes};
-pub use video_spec::{Container, DisplayRotation, Encoding, VideoSpec, VideoSpecError};
+pub use video_spec::{
+    CaptureRate, Container, DisplayRotation, Encoding, VideoSpec, VideoSpecError,
+};
 pub use writer::{JsonArray, JsonEntryName, JsonInt, JsonKey, JsonObject};

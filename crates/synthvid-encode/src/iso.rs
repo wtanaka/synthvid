@@ -2,12 +2,10 @@
 use core::error::Error;
 use core::fmt;
 use core::num::TryFromIntError;
-use synthvid_scene::Dimensions;
+use synthvid_scene::{Dimensions, FrameRates};
 
 use crate::byte_views::{ByteSink, FrameList};
-use crate::iso_helpers::{
-    patch_u32_be, write_ftyp, write_mdat, write_moov, FrameRates, TrackParams,
-};
+use crate::iso_helpers::{patch_u32_be, write_ftyp, write_mdat, write_moov, TrackParams};
 use crate::iso_types::{ByteOffset, U32Be};
 use crate::media::{ContainerFile, EncodedFrame};
 
@@ -20,6 +18,9 @@ pub enum IsoError {
     SizeOverflow,
     /// Track matrix computation failed (dimensions too large).
     TrackMatrixOverflow,
+    /// The capture rate's numerator or denominator does not fit the `cfps` box's
+    /// 32-bit fields.
+    CaptureRateTooLarge,
 }
 
 impl fmt::Display for IsoError {
@@ -28,6 +29,7 @@ impl fmt::Display for IsoError {
             Self::NoFrames => write!(f, "no frames provided"),
             Self::SizeOverflow => write!(f, "frame data size overflow"),
             Self::TrackMatrixOverflow => write!(f, "track matrix dimensions too large"),
+            Self::CaptureRateTooLarge => write!(f, "capture rate too large for cfps box"),
         }
     }
 }
@@ -39,6 +41,12 @@ impl IsoError {
     /// conversion error says nothing more than that.
     pub(crate) const fn size_overflow(_: TryFromIntError) -> Self {
         Self::SizeOverflow
+    }
+
+    /// A capture rate term too large for a 32-bit `cfps` field; the conversion
+    /// error says nothing more than that.
+    pub(crate) const fn capture_rate_too_large(_: TryFromIntError) -> Self {
+        Self::CaptureRateTooLarge
     }
 }
 

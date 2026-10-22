@@ -19,62 +19,44 @@ mod cover_names;
 #[path = "cover_values.rs"]
 mod cover_values;
 
+#[path = "cover_capture_pairs.rs"]
+mod cover_capture_pairs;
+
+#[path = "cover_error.rs"]
+mod cover_error;
+
+#[path = "cover_container.rs"]
+mod cover_container;
+
+use cover_capture_pairs::{CapturePair, CAPTURE_PAIRS};
+pub use cover_error::CatalogError;
+
 #[cfg(test)]
 #[path = "cover_tests.rs"]
 mod cover_tests;
 
-use crate::scene_builder::SceneBuildError;
-use core::error::Error;
-use core::fmt;
-use core::num::NonZeroU16;
-use cover_names::DefectName;
+#[cfg(test)]
+#[path = "cover_test_entries.rs"]
+pub mod cover_test_entries;
+
+#[cfg(test)]
+pub(crate) use cover_test_entries::{avi_truncated_entry, entry_like, AxisValues, EntrySize};
+
+use crate::scene_builder::{frame_rate_from_axis, SceneBuildError};
+use core::num::{NonZeroU16, NonZeroU32};
+use cover_container::EntryContainer;
+use cover_names::{CaptureName, DefectName};
 use synthvid_encode::defects::Defect;
-use synthvid_scene::Dimensions;
+use synthvid_scene::{Dimensions, FrameRates, FrameRatesError, RatePair};
 use synthvid_video::json_names::JsonEntryName;
-use synthvid_video::{Container, DisplayRotation, Encoding, VideoSpec};
-
-/// Error type for catalog generation.
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum CatalogError {
-    /// A dimension value was zero (rejected by Width or Height constructor).
-    ZeroDimension,
-    /// A frame rate value was invalid.
-    InvalidFrameRate,
-    /// A resolved axis index was out of range.
-    AxisIndexOutOfRange,
-    /// No entry can hold both values of a required pair, or an axis has no
-    /// value compatible with the values already chosen. Some compatibility
-    /// rule rules out a pair without excluding it from the pairs required.
-    UnsatisfiableObligation,
-    /// A truncation offset was zero, which would cut nothing.
-    ZeroTruncationOffset,
-    /// A frame count axis value was zero.
-    ZeroFrameCount,
-}
-
-impl fmt::Display for CatalogError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::ZeroDimension => write!(f, "dimension value was zero"),
-            Self::InvalidFrameRate => write!(f, "frame rate was invalid"),
-            Self::AxisIndexOutOfRange => write!(f, "resolved axis index was out of range"),
-            Self::UnsatisfiableObligation => {
-                write!(f, "a required pair of axis values cannot be combined")
-            }
-            Self::ZeroTruncationOffset => write!(f, "truncation offset was zero"),
-            Self::ZeroFrameCount => write!(f, "frame count was zero"),
-        }
-    }
-}
-
-impl Error for CatalogError {}
+use synthvid_video::{CaptureRate, Container, DisplayRotation, Encoding, VideoSpec};
 
 // Re-export axis types from the submodule
 pub use cover_axes::{
     BackgroundAxis, CodingAxis, ContainerAxis, FrameCountValue, FrameRateValue, MotionAxis,
     ScaleAxis, ShapeAxis, TrackMatrixAxis,
 };
-pub use cover_names::MediaName;
+pub use cover_names::{ManifestName, MediaName};
 
 /// A catalog entry: a scene description with all parameters specified.
 ///
@@ -97,35 +79,14 @@ pub struct Entry {
     motion: MotionAxis,
     /// Pixel encoding.
     coding: CodingAxis,
-    /// Container format.
-    container: ContainerAxis,
+    /// Container format, with the capture rate only an ISO container can record.
+    container: EntryContainer,
     /// Display matrix transformation.
     track_matrix: TrackMatrixAxis,
     /// Physical scale declaration.
     scale: ScaleAxis,
     /// Optional defect.
     defect: Option<Defect>,
-}
-
-/// The name an entry's manifest and media files share, assembled from the entry's axis values.
-///
-/// Only [`Entry::manifest_name`] builds one. [`Entry::to_video_spec`] passes it through
-/// `JsonEntryName::new`, so a manifest never carries a name that was not checked.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ManifestName(String);
-
-impl ManifestName {
-    /// The name as text.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl fmt::Display for ManifestName {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
 }
 
 impl Entry {
@@ -174,7 +135,7 @@ impl Entry {
     /// Container format.
     #[must_use]
     pub const fn container(&self) -> ContainerAxis {
-        self.container
+        self.container.axis()
     }
 
     /// Display matrix transformation.
@@ -187,6 +148,12 @@ impl Entry {
     #[must_use]
     pub const fn scale(&self) -> ScaleAxis {
         self.scale
+    }
+
+    /// Capture rate declared in the metadata.
+    #[must_use]
+    pub const fn capture(&self) -> CaptureRate {
+        self.container.capture()
     }
 
     /// Optional defect.
@@ -203,7 +170,7 @@ impl Entry {
     #[must_use]
     pub fn manifest_name(&self) -> ManifestName {
         ManifestName(format!(
-            "{:04}x{:04}-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}",
+            "{:04}x{:04}-{}-{}-{}-{}-{}-{}-{}-{}-{}{}-{}",
             self.dimensions.width.get().get(),
             self.dimensions.height.get().get(),
             self.frame_count,
@@ -212,9 +179,10 @@ impl Entry {
             self.shape,
             self.motion,
             self.coding,
-            self.container,
+            self.container.axis(),
             self.track_matrix,
             self.scale,
+            CaptureName(self.container.capture()),
             DefectName(self.defect.as_ref()),
         ))
     }
@@ -226,7 +194,7 @@ impl Entry {
     /// gives the text suitable for use as a filename.
     #[must_use]
     pub fn media_name(&self) -> MediaName {
-        MediaName::new(self.manifest_name(), self.container)
+        MediaName::new(self.manifest_name(), self.container.axis())
     }
 
     /// Converts this entry to a `VideoSpec` with explicit parameters.
@@ -257,8 +225,8 @@ impl Entry {
         // The catalogue crosses every container with every rotation, but only
         // ISO can record one; the AVI entries keep the axis in their name alone.
         let container = match self.container {
-            ContainerAxis::Iso => Container::Iso { rotation },
-            ContainerAxis::Avi => Container::Avi,
+            EntryContainer::Iso { capture } => Container::Iso { rotation, capture },
+            EntryContainer::Avi => Container::Avi,
         };
 
         let name = JsonEntryName::new(self.manifest_name().as_str())
@@ -448,7 +416,9 @@ pub fn generate_catalogue() -> Result<Vec<Entry>, CatalogError> {
         shape: ShapeAxis::Disc,
         motion: MotionAxis::Fixed,
         coding: CodingAxis::Raw,
-        container: ContainerAxis::Iso,
+        container: EntryContainer::Iso {
+            capture: CaptureRate::PlaybackOnly,
+        },
         track_matrix: TrackMatrixAxis::Identity,
         scale: ScaleAxis::Undeclared,
         defect: None,
@@ -467,13 +437,88 @@ pub fn generate_catalogue() -> Result<Vec<Entry>, CatalogError> {
         shape: ShapeAxis::Disc,
         motion: MotionAxis::Fixed,
         coding: CodingAxis::MotionJpeg,
-        container: ContainerAxis::Iso,
+        container: EntryContainer::Iso {
+            capture: CaptureRate::PlaybackOnly,
+        },
         track_matrix: TrackMatrixAxis::Identity,
         scale: ScaleAxis::Undeclared,
         defect: Some(Defect::NoContainerSize),
     });
 
+    result.extend(capture_singletons()?);
+
     Ok(result)
+}
+
+/// The nine ISO singletons whose metadata declares a capture rate, each at a playback rate from
+/// [`CAPTURE_PAIRS`]. A reader that looks only at the container's playback rate gets every
+/// time-derived quantity wrong by the ratio between the two rates.
+///
+/// # Errors
+///
+/// Returns `CatalogError::InvalidFrameRate` if a capture rate cannot be built.
+fn capture_singletons() -> Result<Vec<Entry>, CatalogError> {
+    CAPTURE_PAIRS.iter().map(capture_singleton).collect()
+}
+
+/// A 16 by 16 ten-frame ISO singleton played at the pair's playback rate and captured at
+/// its capture fraction, frames per second, in the pair's carrier.
+///
+/// # Errors
+///
+/// Returns `CatalogError::InvalidFrameRate` if the capture or playback rate is not a positive
+/// frame rate, and `CatalogError::CaptureEqualsPlayback` if the pair's capture rate equals its
+/// playback rate.
+fn capture_singleton(pair: &CapturePair) -> Result<Entry, CatalogError> {
+    use cover_axes::{make_dimensions, RawSize};
+
+    let denom = NonZeroU32::new(pair.capture.denom.0).ok_or(CatalogError::InvalidFrameRate)?;
+    let capture = synthvid_scene::FrameRate::from_fraction(pair.capture.numer.0, denom)
+        .map_err(|synthvid_scene::FrameRateError::NonPositive| CatalogError::InvalidFrameRate)?;
+    let playback =
+        frame_rate_from_axis(pair.playback).map_err(|_error| CatalogError::InvalidFrameRate)?;
+    let frame_rates = FrameRates::distinct_in(RatePair { playback, capture }, pair.carrier)
+        .map_err(|FrameRatesError::CaptureEqualsPlayback| CatalogError::CaptureEqualsPlayback)?;
+    let distinct = frame_rates
+        .distinct_capture()
+        .ok_or(CatalogError::CaptureEqualsPlayback)?;
+    Ok(Entry {
+        dimensions: make_dimensions(RawSize {
+            width: NonZeroU16::new(16),
+            height: NonZeroU16::new(16),
+        })?,
+        frame_count: FrameCountValue::new(10)?,
+        frame_rate: pair.playback,
+        background: BackgroundAxis::Solid,
+        shape: ShapeAxis::Disc,
+        motion: MotionAxis::Fixed,
+        coding: CodingAxis::Raw,
+        container: EntryContainer::Iso {
+            capture: CaptureRate::Distinct(distinct),
+        },
+        track_matrix: TrackMatrixAxis::Identity,
+        scale: ScaleAxis::Undeclared,
+        defect: None,
+    })
+}
+
+/// The container an entry takes from its selected axis value. A selected ISO container
+/// starts with no capture rate beyond the playback rate.
+fn entry_container(
+    axes: &cover_axes::AxisArrays,
+    sel: &cover_greedy::AxisSelection,
+) -> Result<EntryContainer, CatalogError> {
+    let value = axes
+        .containers
+        .get(sel.container.0)
+        .copied()
+        .ok_or(CatalogError::AxisIndexOutOfRange)?;
+    Ok(match value {
+        ContainerAxis::Iso => EntryContainer::Iso {
+            capture: CaptureRate::PlaybackOnly,
+        },
+        ContainerAxis::Avi => EntryContainer::Avi,
+    })
 }
 
 /// Constructs an `Entry` from an `AxisSelection`, resolving indices to actual values.
@@ -517,11 +562,7 @@ fn entry_from_selection(
             .get(sel.coding.0)
             .copied()
             .ok_or(CatalogError::AxisIndexOutOfRange)?,
-        container: axes
-            .containers
-            .get(sel.container.0)
-            .copied()
-            .ok_or(CatalogError::AxisIndexOutOfRange)?,
+        container: entry_container(axes, sel)?,
         track_matrix: axes
             .track_matrices
             .get(sel.track_matrix.0)
@@ -555,34 +596,13 @@ pub(super) fn sample_entry_for_test() -> Result<Entry, synthvid_testkit::Fail> {
         shape: ShapeAxis::Disc,
         motion: MotionAxis::Fixed,
         coding: CodingAxis::Raw,
-        container: ContainerAxis::Iso,
+        container: EntryContainer::Iso {
+            capture: CaptureRate::PlaybackOnly,
+        },
         track_matrix: TrackMatrixAxis::Identity,
         scale: ScaleAxis::Undeclared,
         defect: None,
     })
-}
-
-/// The axis values a test overrides on an entry, leaving its size and frame count.
-#[cfg(test)]
-pub(crate) struct AxisValues {
-    /// Frame rate.
-    pub(crate) frame_rate: FrameRateValue,
-    /// Background type.
-    pub(crate) background: BackgroundAxis,
-    /// Shape type.
-    pub(crate) shape: ShapeAxis,
-    /// Motion type.
-    pub(crate) motion: MotionAxis,
-    /// Pixel encoding.
-    pub(crate) coding: CodingAxis,
-    /// Container format.
-    pub(crate) container: ContainerAxis,
-    /// Display matrix transformation.
-    pub(crate) track_matrix: TrackMatrixAxis,
-    /// Physical scale declaration.
-    pub(crate) scale: ScaleAxis,
-    /// Optional defect.
-    pub(crate) defect: Option<Defect>,
 }
 
 #[cfg(test)]
@@ -594,73 +614,19 @@ impl Entry {
         self.shape = axes.shape;
         self.motion = axes.motion;
         self.coding = axes.coding;
-        self.container = axes.container;
+        self.set_container_axis(axes.container);
         self.track_matrix = axes.track_matrix;
         self.scale = axes.scale;
         self.defect = axes.defect;
+    }
+
+    /// Replaces the container axis, keeping the capture rate an ISO container already had.
+    pub(crate) fn set_container_axis(&mut self, axis: ContainerAxis) {
+        self.container = self.container.with_axis(axis);
     }
 
     /// Replaces the defect of this entry.
     pub(crate) fn set_defect(&mut self, defect: Option<Defect>) {
         self.defect = defect;
     }
-}
-
-/// The picture size and frame count a test-built entry starts from.
-#[cfg(test)]
-#[derive(Clone, Copy, Debug)]
-pub(crate) enum EntrySize {
-    /// 16 by 16 pixels, one frame.
-    Tiny1,
-    /// 16 by 16 pixels, ten frames.
-    Tiny10,
-    /// 320 by 240 pixels, ten frames.
-    Qvga10,
-}
-
-/// Builds a catalogue-shaped entry for a test: the dimensions and frame count
-/// of the first catalogue entry of the given `size`, then `edit`.
-///
-/// The covering array chooses which combinations the catalogue holds, so a
-/// test that needs one particular combination builds it rather than hoping
-/// the catalogue still contains it.
-#[cfg(test)]
-pub(crate) fn entry_like(
-    size: EntrySize,
-    edit: impl FnOnce(&mut Entry),
-) -> Result<Entry, synthvid_testkit::Fail> {
-    use synthvid_testkit::OrFail as _;
-    let prefix = match size {
-        EntrySize::Tiny1 => "0016x0016-1-",
-        EntrySize::Tiny10 => "0016x0016-10-",
-        EntrySize::Qvga10 => "0320x0240-10-",
-    };
-    let mut entry = generate_catalogue()
-        .or_fail()?
-        .into_iter()
-        .find(|entry| entry.manifest_name().as_str().starts_with(prefix))
-        .or_fail()?;
-    edit(&mut entry);
-    Ok(entry)
-}
-
-#[cfg(test)]
-/// The AVI entry the truncation digest is pinned on: motion-JPEG frames in
-/// an AVI cut just before the `movi` list.
-pub(crate) fn avi_truncated_entry() -> Result<Entry, synthvid_testkit::Fail> {
-    use synthvid_encode::defects::{BoxAddress, BoxStep, BoxTag, ContainerKind};
-    entry_like(EntrySize::Tiny10, |entry| {
-        entry.frame_rate = FrameRateValue::Sixty;
-        entry.background = BackgroundAxis::Checker;
-        entry.shape = ShapeAxis::Rect;
-        entry.motion = MotionAxis::Linear;
-        entry.coding = CodingAxis::MotionJpeg;
-        entry.container = ContainerAxis::Avi;
-        entry.track_matrix = TrackMatrixAxis::Rotate90;
-        entry.scale = ScaleAxis::Undeclared;
-        entry.defect = Some(Defect::TruncateBefore(
-            BoxAddress::top(ContainerKind::Avi, BoxStep::first(BoxTag::new(*b"RIFF")))
-                .child(BoxStep::first(BoxTag::new(*b"movi"))),
-        ));
-    })
 }

@@ -22,10 +22,7 @@ fn make_iso_two_frames() -> Result<Media, Fail> {
     let height = Height::new(1).or_fail()?;
     let frame = EncodedFrame::raw(&make_test_frame()?);
     encode_iso(
-        crate::FrameRates {
-            playback: FrameRate::from_fps(24).or_fail()?,
-            capture: None,
-        },
+        synthvid_scene::FrameRates::playback_only(FrameRate::from_fps(24).or_fail()?),
         &[frame.clone(), frame],
         crate::TrackParams {
             width,

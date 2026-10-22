@@ -6,7 +6,11 @@ use crate::iso::{IsoCodec, IsoError, TrackMatrix};
 use crate::iso_types::{BoxSize, BoxType, ByteOffset, I32Be, U16Be, U32Be};
 use crate::media::EncodedFrame;
 use crate::sample_table::{write_stbl, StcoOffsetInfo};
-use synthvid_scene::{Dimensions, FrameRate, Height, Width};
+use core::num::NonZeroU32;
+use synthvid_scene::{CaptureCarrier, Dimensions, FrameRate, FrameRates, Height, Width};
+
+mod binary32;
+use binary32::{binary32_bits, Numerator};
 
 /// Writes a complete ISO box: a placeholder size, `tag`, then `body`'s own
 /// writes, then patches the size field from the bytes `body` actually
@@ -39,15 +43,6 @@ pub(crate) fn write_box<T>(
     patch_u32_be(sink, ByteOffset(start_pos), U32Be(size));
 
     Ok(result)
-}
-
-/// The frame rates of an ISO track.
-#[derive(Copy, Clone, Debug)]
-pub struct FrameRates {
-    /// Playback frame rate.
-    pub playback: FrameRate,
-    /// Optional capture frame rate (if different from playback).
-    pub capture: Option<FrameRate>,
 }
 
 /// Total duration of the movie in movie-timescale units
@@ -173,11 +168,24 @@ pub(crate) fn write_moov(
             // Write mvhd (movie header)
             let frame_count =
                 FrameCount::new(u32::try_from(frames.0.len()).map_err(IsoError::size_overflow)?);
-            let movie_duration = MovieDuration::new(frame_rates.playback, frame_count)?;
-            write_mvhd(moov_sink, frame_rates.playback, movie_duration)?;
+            let movie_duration = MovieDuration::new(frame_rates.playback(), frame_count)?;
+            write_mvhd(moov_sink, frame_rates.playback(), movie_duration)?;
 
             // Write trak (track) and get stco offset info
-            write_trak(moov_sink, frame_rates, frames, track_params, movie_duration)
+            let stco_info =
+                write_trak(moov_sink, frame_rates, frames, track_params, movie_duration)?;
+
+            // A distinct capture rate is recorded as metadata only, as the last child of moov.
+            // Its carrier is one value, so udta and meta are never both written and their
+            // order is never a choice.
+            if let Some(capture) = frame_rates.distinct_capture() {
+                match capture.carrier {
+                    CaptureCarrier::ProjectBox => write_udta(moov_sink, capture.rate)?,
+                    CaptureCarrier::QuickTimeMeta => write_meta(moov_sink, capture.rate)?,
+                }
+            }
+
+            Ok(stco_info)
         },
     )
 }
@@ -319,23 +327,14 @@ fn write_mdia(
         sink,
         BoxType(*b"mdia"),
         |mdia_sink| -> Result<StcoOffsetInfo, IsoError> {
-            // Decide which rate to use for media: capture rate if provided, else playback rate.
-            // This decision is made once and passed to lower functions, avoiding Option handling there.
-            let media_rate = match frame_rates.capture {
-                // Real, non-circular distinction: when a given capture rate
-                // is numerically identical to playback, either arm yields
-                // the same value, but the two are still checked against a
-                // genuine fact (equal vs. distinct rates), not a
-                // fabricated guard invented only to reshape this match.
-                Some(capture) if capture.ratio() == frame_rates.playback.ratio() => capture,
-                Some(capture) => capture,
-                None => frame_rates.playback,
-            };
+            // Media timing follows the playback rate, so the container advertises
+            // one consistent rate regardless of the capture rate.
+            let playback = frame_rates.playback();
 
-            // Write mdhd (media header) with the media's native rate
+            // Write mdhd (media header) at the playback rate
             let frame_count =
                 FrameCount::new(u32::try_from(frames.0.len()).map_err(IsoError::size_overflow)?);
-            write_mdhd(mdia_sink, media_rate, frame_count)?;
+            write_mdhd(mdia_sink, playback, frame_count)?;
 
             // Write hdlr (handler reference)
             write_hdlr(mdia_sink)?;
@@ -346,64 +345,155 @@ fn write_mdia(
                 frames,
                 Dimensions::new(track_params.width, track_params.height),
                 track_params.codec,
-                media_rate,
+                playback,
             )?;
-
-            // Write elst (edit list) if capture rate differs from playback rate
-            // The elst box can carry timing information that distinguishes capture from playback
-            if let Some(_capture) = frame_rates.capture {
-                write_elst_with_capture_rate(mdia_sink, frame_rates.playback, frame_count)?;
-            }
 
             Ok(stco_info)
         },
     )
 }
 
-/// Writes an elst box (edit list) with standard fields.
-/// The capture rate relationship is encoded via differing mdhd/mvhd timescales and stts `sample_delta`.
-fn write_elst_with_capture_rate(
-    sink: &mut ByteSink<'_>,
-    playback_rate: FrameRate,
-    frame_count: FrameCount,
-) -> Result<(), IsoError> {
+/// Writes the udta box (user data), which holds the capture-rate metadata.
+fn write_udta(sink: &mut ByteSink<'_>, capture: FrameRate) -> Result<(), IsoError> {
+    write_box(sink, BoxType(*b"udta"), |udta_sink| {
+        write_cfps(udta_sink, capture)
+    })
+}
+
+/// Writes the cfps box: the exact reduced capture rate as big-endian
+/// numerator then denominator, after a version 0 header with zero flags.
+fn write_cfps(sink: &mut ByteSink<'_>, capture: FrameRate) -> Result<(), IsoError> {
     write_box(
         sink,
-        BoxType(*b"elst"),
-        |elst_sink| -> Result<(), IsoError> {
-            elst_sink.0.push(0); // Version 0
-            elst_sink.0.extend_from_slice(&[0, 0, 0]); // Flags
-            write_u32_be(elst_sink, U32Be(1)); // Entry count
+        BoxType(*b"cfps"),
+        |cfps_sink| -> Result<(), IsoError> {
+            cfps_sink.0.push(0); // Version 0
+            cfps_sink.0.extend_from_slice(&[0, 0, 0]); // Flags
 
-            // Segment duration in mvhd (movie) timescale units:
-            // frame_count frames * playback_rate.denom() units per frame = total duration in movie timescale
-            let playback_ratio = playback_rate.ratio();
-            let playback_denom =
-                u32::try_from(playback_ratio.denom().get()).map_err(IsoError::size_overflow)?;
-            let segment_duration = frame_count
-                .get()
-                .checked_mul(playback_denom)
-                .ok_or(IsoError::SizeOverflow)?;
-            write_u32_be(elst_sink, U32Be(segment_duration));
-
-            // Media time: start from the beginning of the media
-            write_u32_be(elst_sink, U32Be(0));
-
-            // Media rate: normal playback speed (1.0 in 16.16 fixed point)
-            write_u32_be(elst_sink, U32Be(0x0001_0000));
+            let rate = capture.ratio();
+            let numer = u32::try_from(rate.numer().0).map_err(IsoError::capture_rate_too_large)?;
+            let denom =
+                u32::try_from(rate.denom().get()).map_err(IsoError::capture_rate_too_large)?;
+            write_u32_be(cfps_sink, U32Be(numer));
+            write_u32_be(cfps_sink, U32Be(denom));
 
             Ok(())
         },
     )
 }
 
-/// Writes the mdhd box (media header).
+/// The `QuickTime`-style metadata key that names the capture rate.
+const CAPTURE_FPS_KEY: &[u8] = b"com.apple.quicktime.capture.fps";
+
+/// The namespace of a `keys` entry: the metadata handler `mdta`.
+const MDTA: [u8; 4] = *b"mdta";
+
+/// The `ilst` item type: the big-endian index of the capture key, which is 1.
+const CAPTURE_FPS_INDEX: [u8; 4] = [0, 0, 0, 1];
+
+/// The `data` box type indicator for a big-endian float32 value.
+const FLOAT32_BE_INDICATOR: u32 = 23;
+
+/// Writes the meta box: the capture rate as a `QuickTime`-style metadata item.
 ///
-/// The `media_rate` parameter is the media's native rate: either the capture rate
-/// (when a distinct one is provided) or the playback rate (when no distinct capture rate).
+/// It is the last child of `moov`, after `trak`. A capture rate is carried either here or
+/// in `udta`, never both. Its layout is a full box, version 0 with zero flags, holding in
+/// order
+/// - `hdlr`: a full box, handler type `mdta`, the other fields zero, a one-byte null name;
+/// - `keys`: a full box, entry count 1, then one entry of u32 size, namespace `mdta`
+///   and the key bytes `com.apple.quicktime.capture.fps` (the entry is not a box);
+/// - `ilst`: one item box whose type is the big-endian key index 1, holding one `data`
+///   box: type indicator 23, locale 0, then the capture rate as a big-endian float32.
+fn write_meta(sink: &mut ByteSink<'_>, capture: FrameRate) -> Result<(), IsoError> {
+    write_box(
+        sink,
+        BoxType(*b"meta"),
+        |meta_sink| -> Result<(), IsoError> {
+            meta_sink.0.extend_from_slice(&[0, 0, 0, 0]); // Version 0 and flags
+            write_meta_hdlr(meta_sink)?;
+            write_meta_keys(meta_sink)?;
+            write_meta_ilst(meta_sink, capture)
+        },
+    )
+}
+
+/// Writes the hdlr box of a meta box: handler type `mdta`, the other fields zero, and
+/// a name holding only its null terminator.
+fn write_meta_hdlr(sink: &mut ByteSink<'_>) -> Result<(), IsoError> {
+    write_box(
+        sink,
+        BoxType(*b"hdlr"),
+        |hdlr_sink| -> Result<(), IsoError> {
+            hdlr_sink.0.extend_from_slice(&[0, 0, 0, 0]); // Version 0 and flags
+            write_u32_be(hdlr_sink, U32Be(0)); // Pre-defined
+            hdlr_sink.0.extend_from_slice(&MDTA); // Handler type
+            hdlr_sink.0.extend_from_slice(&[0; 12]); // Reserved
+            hdlr_sink.0.push(0); // Name: a null-terminated string holding no characters
+            Ok(())
+        },
+    )
+}
+
+/// Writes the keys box: one entry naming the capture rate key in the `mdta` namespace.
+fn write_meta_keys(sink: &mut ByteSink<'_>) -> Result<(), IsoError> {
+    write_box(
+        sink,
+        BoxType(*b"keys"),
+        |keys_sink| -> Result<(), IsoError> {
+            keys_sink.0.extend_from_slice(&[0, 0, 0, 0]); // Version 0 and flags
+            write_u32_be(keys_sink, U32Be(1)); // Entry count
+
+            // The entry's size counts its own 4-byte size field and the 4-byte namespace.
+            let key_size = u32::try_from(CAPTURE_FPS_KEY.len())
+                .map_err(IsoError::size_overflow)?
+                .checked_add(8)
+                .ok_or(IsoError::SizeOverflow)?;
+            write_u32_be(keys_sink, U32Be(key_size));
+            keys_sink.0.extend_from_slice(&MDTA);
+            keys_sink.0.extend_from_slice(CAPTURE_FPS_KEY);
+            Ok(())
+        },
+    )
+}
+
+/// Writes the ilst box: the capture rate as the item the key index 1 names.
+fn write_meta_ilst(sink: &mut ByteSink<'_>, capture: FrameRate) -> Result<(), IsoError> {
+    let rate = capture.ratio();
+    let numer_raw = u32::try_from(rate.numer().0).map_err(IsoError::capture_rate_too_large)?;
+    // A zero numerator has no binary32 word; the type refuses it, as an oversized term is refused.
+    let numer = NonZeroU32::try_from(numer_raw).map_err(|_error| IsoError::CaptureRateTooLarge)?;
+    let denom_raw = u32::try_from(rate.denom().get()).map_err(IsoError::capture_rate_too_large)?;
+    let denom = NonZeroU32::try_from(denom_raw).map_err(|_error| IsoError::CaptureRateTooLarge)?;
+    let bits = binary32_bits(Numerator(numer), denom)?;
+
+    write_box(
+        sink,
+        BoxType(*b"ilst"),
+        |ilst_sink| -> Result<(), IsoError> {
+            write_box(
+                ilst_sink,
+                BoxType(CAPTURE_FPS_INDEX),
+                |item_sink| -> Result<(), IsoError> {
+                    write_box(
+                        item_sink,
+                        BoxType(*b"data"),
+                        |data_sink| -> Result<(), IsoError> {
+                            write_u32_be(data_sink, U32Be(FLOAT32_BE_INDICATOR));
+                            write_u32_be(data_sink, U32Be(0)); // Locale
+                            write_u32_be(data_sink, bits);
+                            Ok(())
+                        },
+                    )
+                },
+            )
+        },
+    )
+}
+
+/// Writes the mdhd box (media header), timed at the playback rate.
 fn write_mdhd(
     sink: &mut ByteSink<'_>,
-    media_rate: FrameRate,
+    playback: FrameRate,
     frame_count: FrameCount,
 ) -> Result<(), IsoError> {
     write_box(
@@ -415,8 +505,8 @@ fn write_mdhd(
             write_u32_be(mdhd_sink, U32Be(0)); // Creation time
             write_u32_be(mdhd_sink, U32Be(0)); // Modification time
 
-            // Timescale: the media's native rate
-            let rate = media_rate.ratio();
+            // Timescale: the playback rate numerator
+            let rate = playback.ratio();
             let fps_numer = u32::try_from(rate.numer().0).map_err(IsoError::size_overflow)?;
             let fps_denom = u32::try_from(rate.denom().get()).map_err(IsoError::size_overflow)?;
             write_u32_be(mdhd_sink, U32Be(fps_numer));
@@ -456,7 +546,7 @@ fn write_minf(
     frames: FrameList<'_>,
     dimensions: Dimensions,
     codec: IsoCodec,
-    media_rate: FrameRate,
+    playback: FrameRate,
 ) -> Result<StcoOffsetInfo, IsoError> {
     write_box(
         sink,
@@ -469,7 +559,7 @@ fn write_minf(
             write_dinf(minf_sink)?;
 
             // Write stbl (sample table) and get stco offset info
-            write_stbl(minf_sink, frames, dimensions, codec, media_rate)
+            write_stbl(minf_sink, frames, dimensions, codec, playback)
         },
     )
 }

@@ -19,7 +19,7 @@ use crate::names::{BackgroundName, ShapeName};
 use crate::render_output::ManifestJson;
 use crate::writer::{JsonArray, JsonInt, JsonObject, RawJson};
 use synthvid_scene::{
-    Dimensions, FrameCount, FrameIndex, FrameRate, FrameSpan, ObjectIndex, Ratio,
+    CaptureCarrier, Dimensions, FrameCount, FrameIndex, FrameRates, FrameSpan, ObjectIndex, Ratio,
 };
 
 pub use crate::manifest_values::{
@@ -32,6 +32,14 @@ pub use crate::manifest_values::{
 /// left to fail and no panic path in this module.
 pub(crate) fn key(manifest_key: ManifestKey) -> JsonKey {
     manifest_key.into()
+}
+
+/// The manifest's JSON string for the box that carries a distinct capture rate.
+fn carrier_json(carrier: CaptureCarrier) -> RawJson {
+    match carrier {
+        CaptureCarrier::ProjectBox => RawJson(String::from(r#""cfps""#)),
+        CaptureCarrier::QuickTimeMeta => RawJson(String::from(r#""meta""#)),
+    }
 }
 
 /// What one object looked like in one frame.
@@ -188,8 +196,8 @@ pub struct ManifestHeader {
     background: BackgroundName,
     /// Frame dimensions in pixels.
     dimensions: Dimensions,
-    /// Exact frame rate.
-    frame_rate: FrameRate,
+    /// Playback frame rate, and the distinct capture rate when one is present.
+    frame_rates: FrameRates,
     /// Catalog entry name.
     name: JsonEntryName,
     /// Scene units per world unit, if declared.
@@ -208,14 +216,14 @@ impl ManifestHeader {
     pub const fn new(
         name: JsonEntryName,
         dimensions: Dimensions,
-        frame_rate: FrameRate,
+        frame_rates: FrameRates,
         background: BackgroundName,
         scale: Option<Ratio>,
     ) -> Self {
         Self {
             background,
             dimensions,
-            frame_rate,
+            frame_rates,
             name,
             scale: match scale {
                 Some(ratio) => Some(ManifestRatio::from_ratio(ratio)),
@@ -292,7 +300,17 @@ impl Manifest {
             key(ManifestKey::FrameCount),
             JsonInt(NonZeroI64::from(self.frame_count.get()).get()),
         );
-        root.insert_ratio(key(ManifestKey::FrameRate), self.header.frame_rate.get());
+        root.insert_ratio(
+            key(ManifestKey::FrameRate),
+            self.header.frame_rates.playback().get(),
+        );
+        if let Some(capture) = self.header.frame_rates.distinct_capture() {
+            root.insert_ratio(key(ManifestKey::CaptureRate), capture.rate.get());
+            root.insert_encoded(
+                key(ManifestKey::CaptureCarrier),
+                carrier_json(capture.carrier),
+            );
+        }
 
         let mut frames_array = JsonArray::new();
         // frame_count is derived from frames.len(), so zipping pairs each frame with its index.

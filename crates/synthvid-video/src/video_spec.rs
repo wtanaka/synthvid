@@ -11,7 +11,7 @@ use crate::json_names::JsonEntryName;
 use core::error::Error;
 use core::fmt;
 use synthvid_encode::{ChromaSampling, Defect, Quality};
-use synthvid_scene::Scene;
+use synthvid_scene::{DistinctCapture, FrameRate, FrameRates, FrameRatesError, RatePair, Scene};
 
 /// A display rotation, independent of video content.
 ///
@@ -56,14 +56,42 @@ pub enum Encoding {
     },
 }
 
+/// The capture rate an ISO container declares beside its playback rate.
+///
+/// Only the ISO container has one, because AVI cannot carry a capture rate. A distinct
+/// rate names the box that carries it, so the rate is held in exactly one form.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CaptureRate {
+    /// No distinct capture rate: the media runs at the playback rate.
+    PlaybackOnly,
+    /// Captured at this rate, in the box the carrier names. A specification refuses the
+    /// rate when it equals the playback rate.
+    Distinct(DistinctCapture),
+}
+
+impl CaptureRate {
+    /// The distinct capture rate and its carrier, or `None` when the media runs at the
+    /// playback rate.
+    #[must_use]
+    pub const fn distinct(self) -> Option<DistinctCapture> {
+        match self {
+            Self::PlaybackOnly => None,
+            Self::Distinct(capture) => Some(capture),
+        }
+    }
+}
+
 /// File container format for the encoded video.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum Container {
-    /// ISO base media format (MP4), with the display rotation its track matrix carries.
+    /// ISO base media format (MP4), with the display rotation its track matrix carries and
+    /// the capture rate its metadata declares.
     Iso {
         /// The rotation recorded in the track matrix.
         rotation: DisplayRotation,
+        /// The capture rate recorded in the metadata.
+        capture: CaptureRate,
     },
     /// AVI format, which has no rotation to record.
     Avi,
@@ -87,10 +115,26 @@ pub struct VideoSpec {
     scene: Scene,
     /// How frames are encoded.
     encoding: Encoding,
-    /// File container format.
-    container: Container,
+    /// The distinct capture rate, validated once when the specification is built. The
+    /// playback rate is `scene.frame_rate` and is not stored a second time.
+    capture: Option<DistinctCapture>,
+    /// The container's shape. Its capture rate is in `capture`.
+    shape: ContainerShape,
     /// Optional defect to apply to the media bytes after encoding.
     defect: Option<Defect>,
+}
+
+/// The container's shape without its capture rate, which a specification keeps in its
+/// validated capture part.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ContainerShape {
+    /// ISO, with the rotation its track matrix carries.
+    Iso {
+        /// The rotation recorded in the track matrix.
+        rotation: DisplayRotation,
+    },
+    /// AVI, which has no rotation to record.
+    Avi,
 }
 
 /// Why a combination of encoding, container and defect cannot be a specification.
@@ -100,6 +144,8 @@ pub enum VideoSpecError {
     /// The defect that leaves the size out of the container needs motion-JPEG frames in an
     /// ISO container: only then does the size survive in the frames for a reader to find.
     SizeOmissionNeedsMjpegInIso,
+    /// The playback and capture rates were refused by the scene's frame rates.
+    FrameRates(FrameRatesError),
 }
 
 impl fmt::Display for VideoSpecError {
@@ -108,6 +154,7 @@ impl fmt::Display for VideoSpecError {
             Self::SizeOmissionNeedsMjpegInIso => formatter.write_str(
                 "omitting the size from the container needs motion-JPEG frames in an ISO container",
             ),
+            Self::FrameRates(error) => fmt::Display::fmt(error, formatter),
         }
     }
 }
@@ -163,10 +210,56 @@ const fn check_size_omission(
         } => match container {
             Container::Iso {
                 rotation: _rotation,
+                capture: _capture,
             } => Ok(()),
             Container::Avi => Err(VideoSpecError::SizeOmissionNeedsMjpegInIso),
         },
         Encoding::Raw => Err(VideoSpecError::SizeOmissionNeedsMjpegInIso),
+    }
+}
+
+/// Splits a container into the shape it is written in and the capture part it declares,
+/// refusing a capture rate equal to the playback rate.
+///
+/// The equality rule is applied only by [`FrameRates::distinct_in`], here, once per
+/// construction. Only the capture part is returned: the playback rate is the scene's.
+///
+/// # Errors
+///
+/// Returns [`VideoSpecError::FrameRates`] wrapping [`FrameRatesError::CaptureEqualsPlayback`]
+/// when an ISO container's capture rate equals `frame_rate`.
+fn split_container(
+    frame_rate: FrameRate,
+    container: Container,
+) -> Result<(ContainerShape, Option<DistinctCapture>), VideoSpecError> {
+    match container {
+        Container::Iso { rotation, capture } => {
+            let frame_rates = match capture.distinct() {
+                None => FrameRates::playback_only(frame_rate),
+                Some(DistinctCapture { rate, carrier }) => FrameRates::distinct_in(
+                    RatePair {
+                        playback: frame_rate,
+                        capture: rate,
+                    },
+                    carrier,
+                )
+                .map_err(VideoSpecError::FrameRates)?,
+            };
+            Ok((
+                ContainerShape::Iso { rotation },
+                frame_rates.distinct_capture(),
+            ))
+        }
+        Container::Avi => Ok((ContainerShape::Avi, None)),
+    }
+}
+
+/// The capture rate a stored capture part declares, in the form a container carries.
+#[must_use]
+const fn capture_rate_of(capture: Option<DistinctCapture>) -> CaptureRate {
+    match capture {
+        Some(distinct) => CaptureRate::Distinct(distinct),
+        None => CaptureRate::PlaybackOnly,
     }
 }
 
@@ -175,7 +268,8 @@ impl VideoSpec {
     ///
     /// # Errors
     ///
-    /// Returns [`VideoSpecError`] when the defect cannot meet the encoding and container.
+    /// Returns [`VideoSpecError`] when the defect cannot meet the encoding and container, or
+    /// when the capture rate equals the scene's playback rate.
     pub fn new(
         name: JsonEntryName,
         scene: Scene,
@@ -184,11 +278,13 @@ impl VideoSpec {
         defect: Option<Defect>,
     ) -> Result<Self, VideoSpecError> {
         check_defect(encoding, container, defect.as_ref())?;
+        let (shape, capture) = split_container(scene.frame_rate, container)?;
         Ok(Self {
             name,
             scene,
             encoding,
-            container,
+            capture,
+            shape,
             defect,
         })
     }
@@ -214,7 +310,25 @@ impl VideoSpec {
     /// Returns the container format.
     #[must_use]
     pub const fn container(&self) -> Container {
-        self.container
+        match self.shape {
+            ContainerShape::Iso { rotation } => Container::Iso {
+                rotation,
+                capture: capture_rate_of(self.capture),
+            },
+            ContainerShape::Avi => Container::Avi,
+        }
+    }
+
+    /// Returns the validated playback and capture rates. The playback rate is the
+    /// scene's, and the capture part is the one validated at construction.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`VideoSpecError::FrameRates`] when the stored capture rate equals the
+    /// scene's playback rate.
+    pub fn frame_rates(&self) -> Result<FrameRates, VideoSpecError> {
+        FrameRates::from_playback_and_capture(self.scene.frame_rate, self.capture)
+            .map_err(VideoSpecError::FrameRates)
     }
 
     /// Returns a reference to the optional defect.
@@ -227,8 +341,20 @@ impl VideoSpec {
     ///
     /// A combination the defect cannot meet is not refused here; [`render()`](fn@crate::render)
     /// refuses it.
-    #[must_use]
-    pub fn with_container(self, container: Container) -> Self {
-        Self { container, ..self }
+    ///
+    /// # Errors
+    ///
+    /// Returns [`VideoSpecError::FrameRates`] when the new container's capture rate equals
+    /// the scene's playback rate.
+    pub fn with_container(self, container: Container) -> Result<Self, VideoSpecError> {
+        let (shape, capture) = split_container(self.scene.frame_rate, container)?;
+        Ok(Self {
+            capture,
+            shape,
+            ..self
+        })
     }
 }
+
+#[cfg(test)]
+mod tests;

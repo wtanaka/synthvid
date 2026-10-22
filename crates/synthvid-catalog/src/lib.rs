@@ -51,6 +51,8 @@ pub use scene_builder::SceneBuildError;
 pub use sha256::{sha256, DIGEST_SIZE};
 
 #[cfg(test)]
+mod capture_tests;
+#[cfg(test)]
 mod object_state_tests;
 #[cfg(test)]
 mod video_spec_tests;

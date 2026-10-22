@@ -1,6 +1,8 @@
 use super::*;
 use crate::testutil::Frac;
-use synthvid_scene::{raster::Corners, Affine, Bounds, FrameCountError, Height, Point, Width};
+use synthvid_scene::{
+    raster::Corners, Affine, Bounds, FrameCountError, FrameRate, Height, Point, Width,
+};
 use synthvid_testkit::{ensure, ensure_eq, Fail, OrFail as _};
 
 fn identity_camera() -> Result<ManifestAffine, Fail> {
@@ -48,7 +50,7 @@ impl Head {
         Ok(ManifestHeader::new(
             JsonEntryName::new(name).or_fail()?,
             Dimensions::new(Width::new(side).or_fail()?, Height::new(side).or_fail()?),
-            FrameRate::new(Frac(rate, 1).ratio()?).or_fail()?,
+            FrameRates::playback_only(FrameRate::new(Frac(rate, 1).ratio()?).or_fail()?),
             background,
             scale,
         ))

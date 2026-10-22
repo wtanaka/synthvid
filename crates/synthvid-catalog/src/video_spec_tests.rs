@@ -8,7 +8,7 @@ use crate::generator::generate_entry;
 use crate::sha256;
 use synthvid_encode::defects::{BoxPath, BoxTag, Defect};
 use synthvid_testkit::{ensure_eq, ensure_ne, Fail, OrFail as _};
-use synthvid_video::{render, Container, DisplayRotation, Encoding};
+use synthvid_video::{render, CaptureRate, Container, DisplayRotation, Encoding};
 
 #[test]
 fn frozen_digest_mjpeg_avi_rot90() {
@@ -193,7 +193,13 @@ fn check_16x16_name_and_axis_mapping() -> Result<(), Fail> {
             };
             match entry.container() {
                 ContainerAxis::Iso => {
-                    ensure_eq!(spec.container(), Container::Iso { rotation });
+                    ensure_eq!(
+                        spec.container(),
+                        Container::Iso {
+                            rotation,
+                            capture: entry.capture(),
+                        }
+                    );
                 }
                 ContainerAxis::Avi => {
                     ensure_eq!(spec.container(), Container::Avi);
@@ -220,7 +226,13 @@ fn check_rotation_changes_iso_but_not_manifest() -> Result<(), Fail> {
             DisplayRotation::Rot270,
         ]
         .into_iter()
-        .any(|rotation| spec.container() == Container::Iso { rotation });
+        .any(|rotation| {
+            spec.container()
+                == Container::Iso {
+                    rotation,
+                    capture: CaptureRate::PlaybackOnly,
+                }
+        });
         if rotated_iso && spec.defect().is_none() {
             rotated_spec = Some(spec);
             break;
@@ -230,9 +242,14 @@ fn check_rotation_changes_iso_but_not_manifest() -> Result<(), Fail> {
 
     let has_defect = spec.defect().is_some();
     let rotated = render(&spec).or_fail()?;
-    let identity = render(&spec.with_container(Container::Iso {
-        rotation: DisplayRotation::Identity,
-    }))
+    let identity = render(
+        &spec
+            .with_container(Container::Iso {
+                rotation: DisplayRotation::Identity,
+                capture: CaptureRate::PlaybackOnly,
+            })
+            .or_fail()?,
+    )
     .or_fail()?;
 
     ensure_eq!(rotated.manifest_json(), identity.manifest_json());

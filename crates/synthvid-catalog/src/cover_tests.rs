@@ -9,7 +9,7 @@ mod tests {
     use core::num::NonZeroU64;
     use std::path::Path;
     use synthvid_scene::{Height, Width};
-    use synthvid_testkit::{ensure, ensure_eq, ensure_ne, Fail, OrFail as _};
+    use synthvid_testkit::{ensure, ensure_eq, ensure_ne, refusal, Fail, OrFail as _};
 
     fn check_entry_names_are_unique() -> Result<(), Fail> {
         let catalogue = generate_catalogue().or_fail()?;
@@ -251,7 +251,7 @@ mod tests {
         );
 
         let mut entry_avi = entry_iso;
-        entry_avi.container = ContainerAxis::Avi;
+        entry_avi.set_container_axis(ContainerAxis::Avi);
         let media_name_avi = entry_avi.media_name().to_string();
         let avi_path = Path::new(media_name_avi.as_str());
         ensure!(
@@ -382,7 +382,7 @@ mod tests {
             for cont in &containers {
                 let found = catalogue
                     .iter()
-                    .any(|entry| entry.coding == *cod && entry.container == *cont);
+                    .any(|entry| entry.coding == *cod && entry.container() == *cont);
                 ensure!(found, "catalog must have pair ({cod:?}, {cont:?})");
             }
         }
@@ -430,7 +430,7 @@ mod tests {
                 if let Some(kind) = cover_axes::defect_container_kind(defect) {
                     ensure_eq!(
                         kind,
-                        cover_axes::container_kind(entry.container),
+                        cover_axes::container_kind(entry.container()),
                         "entry {} pairs a container with a defect addressed in the other format: {:?}",
                         entry.manifest_name().as_str(),
                         defect
@@ -460,7 +460,7 @@ mod tests {
             let Some(defect) = entry.defect.clone() else {
                 continue;
             };
-            let combination = (entry.container, entry.coding, defect);
+            let combination = (entry.container(), entry.coding, defect);
             if seen.contains(&combination) {
                 continue;
             }
@@ -479,7 +479,9 @@ mod tests {
             if let Err(cause) = generated {
                 return Err(Fail::here(format_args!(
                     "{:?} on {:?} {:?} fails to apply: {cause:?}",
-                    entry.defect, entry.container, entry.coding,
+                    entry.defect,
+                    entry.container(),
+                    entry.coding,
                 )));
             }
         }
@@ -546,7 +548,7 @@ mod tests {
     fn no_dim_entry(coding: CodingAxis, container: ContainerAxis) -> Result<Entry, Fail> {
         entry_like(EntrySize::Tiny10, |entry| {
             entry.coding = coding;
-            entry.container = container;
+            entry.set_container_axis(container);
             entry.defect = Some(Defect::NoContainerSize);
         })
     }
@@ -583,7 +585,8 @@ mod tests {
         let spec = no_dim_entry(CodingAxis::MotionJpeg, ContainerAxis::Iso)?
             .to_video_spec()
             .or_fail()?
-            .with_container(Container::Avi);
+            .with_container(Container::Avi)
+            .or_fail()?;
         ensure_eq!(
             synthvid_video::render(&spec).map(|_entry| ()),
             Err(synthvid_video::GenerationError::Specification(
@@ -596,5 +599,70 @@ mod tests {
     #[test]
     fn render_refuses_size_omission_moved_to_avi() {
         assert_eq!(check_render_refuses_size_omission_moved_to_avi(), Ok(()));
+    }
+
+    fn check_capture_names_are_derived_from_the_rate() -> Result<(), Fail> {
+        let catalogue = generate_catalogue().or_fail()?;
+        let names: BTreeSet<String> = catalogue
+            .iter()
+            .map(|entry| entry.manifest_name().as_str().to_owned())
+            .collect();
+        for added in [
+            "0016x0016-10-30fps-solid-disc-fixed-raw-iso-identity-unscaled-cap240-nodef",
+            "0016x0016-10-ntsc-solid-disc-fixed-raw-iso-identity-unscaled-cap1000-nodef",
+            "0016x0016-10-ntsc-solid-disc-fixed-raw-iso-identity-unscaled-cap24000x1001-nodef",
+            "0016x0016-10-ntsc-solid-disc-fixed-raw-iso-identity-unscaled-cap25-nodef",
+            "0016x0016-10-30fps-solid-disc-fixed-raw-iso-identity-unscaled-cap12-nodef",
+            "0016x0016-10-30fps-solid-disc-fixed-raw-iso-identity-unscaled-cap120000x1001-nodef",
+            "0016x0016-10-30fps-solid-disc-fixed-raw-iso-identity-unscaled-qtcap240-nodef",
+            "0016x0016-10-ntsc-solid-disc-fixed-raw-iso-identity-unscaled-qtcap24000x1001-nodef",
+            "0016x0016-10-30fps-solid-disc-fixed-raw-iso-identity-unscaled-qtcap12-nodef",
+        ] {
+            ensure!(names.contains(added), "missing capture entry: {added}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn capture_names_are_derived_from_the_rate() {
+        assert_eq!(check_capture_names_are_derived_from_the_rate(), Ok(()));
+    }
+
+    fn check_catalogue_has_138_entries_nine_captured() -> Result<(), Fail> {
+        let catalogue = generate_catalogue().or_fail()?;
+        ensure_eq!(catalogue.len(), 138);
+        let captured = catalogue
+            .iter()
+            .filter(|entry| entry.capture() != CaptureRate::PlaybackOnly)
+            .count();
+        ensure_eq!(captured, 9);
+        Ok(())
+    }
+
+    #[test]
+    fn catalogue_has_138_entries_nine_captured() {
+        assert_eq!(check_catalogue_has_138_entries_nine_captured(), Ok(()));
+    }
+
+    /// A capture pair whose capture equals its playback is refused when its singleton is
+    /// built, so the catalogue cannot contain it.
+    #[test]
+    fn capture_pair_equal_to_playback_is_refused_at_build_time() {
+        use super::super::cover_capture_pairs::{
+            CaptureDenominator, CaptureFraction, CaptureNumerator, CapturePair,
+        };
+        let pair = CapturePair {
+            playback: FrameRateValue::Thirty,
+            capture: CaptureFraction {
+                numer: CaptureNumerator(30),
+                denom: CaptureDenominator(1),
+            },
+            carrier: synthvid_scene::CaptureCarrier::ProjectBox,
+        };
+        let outcome = refusal(capture_singleton(&pair)).and_then(|error| {
+            ensure_eq!(error, CatalogError::CaptureEqualsPlayback);
+            Ok(())
+        });
+        assert_eq!(outcome, Ok(()));
     }
 }

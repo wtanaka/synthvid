@@ -1,7 +1,21 @@
 //! Tests of the failure value and its conversions.
 
-use super::{Fail, OrFail as _};
+use super::{refusal, Fail, OrFail as _};
 use crate::{ensure, ensure_eq, ensure_ne};
+
+fn check_refusal_yields_the_error_and_rejects_acceptance() -> Result<(), Fail> {
+    ensure_eq!(refusal(Err::<(), u8>(7))?, 7);
+    ensure!(refusal(Ok::<(), u8>(())).is_err());
+    Ok(())
+}
+
+#[test]
+fn a_refusal_yields_its_error_and_an_acceptance_fails() {
+    assert_eq!(
+        check_refusal_yields_the_error_and_rejects_acceptance(),
+        Ok(())
+    );
+}
 
 fn check_passes() -> Result<(), Fail> {
     let parsed: u8 = "7".parse().or_fail()?;

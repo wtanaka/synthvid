@@ -51,5 +51,20 @@ impl<T> OrFail<T> for Option<T> {
     }
 }
 
+/// The error a step returned, for a check that expects the step to refuse.
+///
+/// # Errors
+///
+/// Returns a [`Fail`] when `result` is `Ok`, because the step was accepted.
+#[track_caller]
+pub fn refusal<T, E>(result: Result<T, E>) -> Result<E, Fail> {
+    match result {
+        Ok(_) => Err(Fail::here(format_args!(
+            "the step was accepted, but a refusal was expected"
+        ))),
+        Err(error) => Ok(error),
+    }
+}
+
 #[cfg(test)]
 mod tests;

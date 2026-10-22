@@ -24,6 +24,7 @@
 //! | [`rng`]    | deterministic pseudo-random number generation           |
 //! | [`color`]  | pixel color, buffer sizing, channel blending            |
 //! | [`frame`]  | owned RGB pixel buffers with a checked length invariant |
+//! | [`frame_rates`] | playback and optional distinct capture frame rates      |
 //! | [`trig`]   | platform-independent sine and cosine                    |
 //! | [`geom`]   | points, vectors, and exact affine transforms            |
 //! | [`motion`] | closed-form evaluation of motion over frames            |
@@ -62,6 +63,7 @@
 pub mod camera;
 pub mod color;
 pub mod frame;
+pub mod frame_rates;
 pub mod geom;
 pub mod motion;
 pub mod raster;
@@ -80,6 +82,9 @@ pub use crate::camera::{
 };
 pub use crate::color::{required_buffer_len, Alpha, Channel, Rgb8};
 pub use crate::frame::{Frame, FrameError, PixelBuffer};
+pub use crate::frame_rates::{
+    CaptureCarrier, DistinctCapture, FrameRates, FrameRatesError, RatePair,
+};
 pub use crate::geom::{Affine, Point, Similarity, Vector};
 pub use crate::motion::position_at;
 pub use crate::raster::{

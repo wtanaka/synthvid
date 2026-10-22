@@ -108,6 +108,62 @@ keeps the largest entry near 30 MB.
 
 `raw` is uncompressed RGB; `mjpeg` is motion-JPEG.
 
+Nine further entries sit outside the covering array. They are small ISO files
+that declare a capture rate beside a playback rate, in one of two boxes. Six
+write it in the project box `moov/udta/cfps`; three write it in the
+QuickTime-style `moov/meta` box. Each entry pairs a playback rate with a
+capture rate:
+
+- 30 played, 240 captured (`cfps`);
+- 30000/1001 played, 1000 captured (`cfps`);
+- 30000/1001 played, 24000/1001 captured (`cfps`);
+- 30000/1001 played, 25 captured (`cfps`);
+- 30 played, 12 captured (`cfps`);
+- 30 played, 120000/1001 captured (`cfps`);
+- 30 played, 240 captured (`meta`);
+- 30000/1001 played, 24000/1001 captured (`meta`);
+- 30 played, 12 captured (`meta`).
+
+The capture rate is any positive rational whose reduced numerator and reduced
+denominator each fit a `u32`. A rate with a term above `u32::MAX` is refused with
+`CaptureRateTooLarge`. The name segment is `cap<n>` when
+the reduced rate is an integer and `cap<n>x<d>` when it is a fraction, such as
+`cap24000x1001`. It sits after the scale segment and before the defect segment.
+An entry whose rate is in the `meta` box puts `qt` before `cap`, so its
+segment is `qtcap<n>` or `qtcap<n>x<d>`: `qtcap240`, `qtcap24000x1001`,
+`qtcap12`. The `qt` marks the carrier, so the two forms of one rate have
+different names. The media is timed at the playback rate. The capture rate is
+not an axis of the array, so every other entry carries none.
+
+The `cfps` box is a project-specific box inside `moov/udta`, not a registered
+ISO box, and standard tools ignore it. Its layout is version 0, three zero flag
+bytes, then the reduced capture rate as numerator and denominator, each a
+big-endian `u32`. Because `cfps` keeps the exact rational, it is the form that
+carries a rate exactly, within the `u32` limit on each term.
+
+The `meta` box is a QuickTime-style metadata box, which standard tools may
+read. It is the last child of `moov`, after `trak`, and a file carries its
+capture rate in `udta` or in `meta`, never both. Its layout, every box with
+its size, is:
+
+- `meta`: a full box, version 0 with three zero flag bytes, holding in order
+  the three boxes below;
+- `hdlr`: a full box, handler type `mdta`, the other fields zero, and a name of
+  one zero byte (the null terminator of an empty string);
+- `keys`: a full box with entry count 1, then one key entry of a u32 size, the
+  namespace `mdta` and the key bytes `com.apple.quicktime.capture.fps`. The
+  entry is not a box;
+- `ilst`: one item box whose type is the big-endian key index 1, holding one
+  `data` box with type indicator 23, locale 0, and the capture rate as a
+  big-endian IEEE-754 float32.
+
+The float32 loses exactness: 24000/1001 is 23.976023976..., and its nearest
+float32 is 0x41BFCEE6, which is 23.976024627685547. A reader of `meta` gets
+that approximation, while `cfps` keeps the exact reduced rational. The float32
+is computed in integer arithmetic, rounded to nearest with ties to even, so it
+does not depend on the platform's floating point. The container's own timing
+(`mvhd`, `tkhd`, `mdhd`, `stts`) is always the playback rate in both forms.
+
 The defect axis contains the no-defect case (`nodef`) and fourteen single
 faults: `trunc-before` (file cut just before a box) and `trunc-within` (file cut
 part-way into a box's own bytes; between them they name every possible cut

@@ -80,9 +80,11 @@ pub use crate::defects::{
 };
 pub use crate::huffman::Component;
 pub use crate::iso::{encode_iso, IsoCodec, IsoError, TrackMatrix};
-pub use crate::iso_helpers::{FrameRates, TrackParams};
+pub use crate::iso_helpers::TrackParams;
 pub use crate::jpeg::encode_jpeg;
 pub use crate::media::{ContainerFile, EncodedFrame};
 
+#[cfg(test)]
+mod iso_capture_tests;
 #[cfg(test)]
 mod tests;

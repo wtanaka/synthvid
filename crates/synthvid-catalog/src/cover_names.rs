@@ -8,9 +8,10 @@ use super::cover_axes::{
     BackgroundAxis, CodingAxis, ContainerAxis, FrameCountValue, FrameRateValue, MotionAxis,
     ScaleAxis, ShapeAxis, TrackMatrixAxis,
 };
-use super::ManifestName;
 use core::fmt;
 use synthvid_encode::defects::Defect;
+use synthvid_scene::CaptureCarrier;
+use synthvid_video::CaptureRate;
 
 impl fmt::Display for FrameCountValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -105,6 +106,37 @@ impl fmt::Display for ScaleAxis {
     }
 }
 
+/// The name segment of an entry's capture rate.
+///
+/// Empty for [`CaptureRate::PlaybackOnly`]. Otherwise `-cap` and the rate in
+/// lowest terms: `<n>` when the rate is an integer, `<n>x<d>` when it is not.
+/// The `x` keeps the segment within the lowercase letters, digits and hyphens
+/// that entry names allow, as the dimensions segment does. A rate carried in the
+/// `QuickTime` `meta` box puts `qt` before `cap`, so `-qtcap240`: the marker tells
+/// the two carriers apart.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct CaptureName(pub(super) CaptureRate);
+
+impl fmt::Display for CaptureName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let Some(capture) = self.0.distinct() else {
+            return Ok(());
+        };
+        let marker = match capture.carrier {
+            CaptureCarrier::ProjectBox => "",
+            CaptureCarrier::QuickTimeMeta => "qt",
+        };
+        let ratio = capture.rate.ratio();
+        let numer = ratio.numer().0;
+        let denom = ratio.denom().get();
+        if denom == 1 {
+            write!(f, "-{marker}cap{numer}")
+        } else {
+            write!(f, "-{marker}cap{numer}x{denom}")
+        }
+    }
+}
+
 /// The name fragment of an entry's defect: `nodef` when it has none.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct DefectName<'defect>(
@@ -172,5 +204,26 @@ impl fmt::Display for MediaName {
             ContainerAxis::Avi => "avi",
         };
         write!(f, "{}-media.{ext}", self.manifest)
+    }
+}
+
+/// The name an entry's manifest and media files share, assembled from the entry's axis values.
+///
+/// Only `Entry::manifest_name` builds one. `Entry::to_video_spec` passes it through
+/// `JsonEntryName::new`, so a manifest never carries a name that was not checked.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ManifestName(pub(super) String);
+
+impl ManifestName {
+    /// The name as text.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for ManifestName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
     }
 }

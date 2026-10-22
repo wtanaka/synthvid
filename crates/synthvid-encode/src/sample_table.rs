@@ -24,7 +24,7 @@ pub(crate) fn write_stbl(
     frames: FrameList<'_>,
     dimensions: Dimensions,
     codec: IsoCodec,
-    media_rate: FrameRate,
+    playback: FrameRate,
 ) -> Result<StcoOffsetInfo, IsoError> {
     let Dimensions { width, height } = dimensions;
     write_box(
@@ -36,7 +36,7 @@ pub(crate) fn write_stbl(
 
             // Write stts (decoding time to sample)
             let frame_count = u32::try_from(frames.0.len()).map_err(IsoError::size_overflow)?;
-            write_stts(stbl_buffer, FrameCount::new(frame_count), media_rate)?;
+            write_stts(stbl_buffer, FrameCount::new(frame_count), playback)?;
 
             // Write stsc (sample to chunk)
             write_stsc(stbl_buffer)?;
@@ -146,14 +146,12 @@ fn write_mjpeg_sample_entry(
 
 /// Writes the stts box (decoding time to sample).
 ///
-/// Uses the frame rate's denominator as the `sample_delta`, ensuring exact frame rate
+/// Uses the playback rate's denominator as the `sample_delta`, ensuring exact frame rate
 /// representation in playback (timescale / `sample_delta` = numer / denom = exact rate).
-/// The `media_rate` parameter is the media's native rate: either the capture rate
-/// (when a distinct one is provided) or the playback rate (when no distinct capture rate).
 fn write_stts(
     buffer: &mut ByteSink<'_>,
     frame_count: FrameCount,
-    media_rate: FrameRate,
+    playback: FrameRate,
 ) -> Result<(), IsoError> {
     write_box(
         buffer,
@@ -164,10 +162,10 @@ fn write_stts(
             write_u32_be(stts_buffer, U32Be(1)); // Entry count
             write_u32_be(stts_buffer, U32Be(frame_count.get())); // Sample count
 
-            // Sample delta is media rate denominator; combined with mdhd timescale
-            // (which is the numerator), this gives exact media frame rate: timescale / sample_delta
+            // Sample delta is the playback denominator; combined with the mdhd timescale
+            // (the playback numerator), this gives the exact playback frame rate.
             let sample_delta =
-                u32::try_from(media_rate.ratio().denom().get()).map_err(IsoError::size_overflow)?;
+                u32::try_from(playback.ratio().denom().get()).map_err(IsoError::size_overflow)?;
             write_u32_be(stts_buffer, U32Be(sample_delta));
 
             Ok(())

@@ -228,7 +228,7 @@ pub(super) fn get_entry_axis_value(
         CoverAxis::Shape => position_of(&axes.shapes, &entry.shape),
         CoverAxis::Motion => position_of(&axes.motions, &entry.motion),
         CoverAxis::Coding => position_of(&axes.codings, &entry.coding),
-        CoverAxis::Container => position_of(&axes.containers, &entry.container),
+        CoverAxis::Container => position_of(&axes.containers, &entry.container()),
         CoverAxis::TrackMatrix => position_of(&axes.track_matrices, &entry.track_matrix),
         CoverAxis::Scale => position_of(&axes.scales, &entry.scale),
         CoverAxis::Defect => position_of(&axes.defects, &entry.defect),
