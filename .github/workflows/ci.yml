@@ -30,10 +30,8 @@ env:
 # cache can make a run faster but can never make a failure disappear.
 
 jobs:
-  # Both architectures run the identical job. Cross-architecture reproducibility
-  # is proved transitively: each one regenerates the whole corpus from scratch
-  # and verifies it against the committed catalog.lock, so if both pass they
-  # necessarily produced identical bytes. No artifact passing is needed.
+  # Both architectures run the identical job. The corpus job below runs
+  # alongside this one.
   check:
     name: check (${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
@@ -73,23 +71,23 @@ jobs:
           rustup toolchain install
           rustc -Vv
 
-      - name: Formatting
-        run: cargo fmt --all -- --check
-
-      - name: Lints
-        run: cargo clippy --release --locked --all-targets --all-features -- -D warnings
-
       # Saves downloading the .deb files on every run. Only package archives
       # are cached, never the package index. The key is the runner image
       # version, because the package versions (and so the .deb files) change
       # with each image. apt checks every cached .deb against its index hash
       # and downloads any that do not match, so a stale entry costs a download
       # and never installs the wrong package.
+      # ImageVersion is an environment variable of the runner's operating
+      # system, not part of the workflow's env context, so it has to be
+      # copied there before a cache key can use it.
+      - name: Read the runner image version
+        run: echo "RUNNER_IMAGE_VERSION=$ImageVersion" >> "$GITHUB_ENV"
+
       - name: Restore external decoder packages
         uses: actions/cache@v6
         with:
           path: ${{ runner.temp }}/apt-archives
-          key: apt-${{ runner.os }}-${{ runner.arch }}-${{ env.ImageVersion }}
+          key: apt-${{ runner.os }}-${{ runner.arch }}-${{ env.RUNNER_IMAGE_VERSION }}
 
       - name: Install external JPEG decoder tools
         run: |
@@ -105,20 +103,65 @@ jobs:
           # apt ran as root: hand the archive back so the cache step can read it.
           sudo chown -R "$(id -u):$(id -g)" "$archives"
 
+      # ci/check-all.sh runs fmt, clippy, tests and rustdoc, each in its own
+      # freshly emptied target directory. The workflow does not repeat them as
+      # separate steps, because that would do the same work twice.
       - name: Repository guards
         run: sh ci/check-all.sh
 
-      - name: Tests
-        run: cargo test --release --locked --all
+  # Each architecture regenerates the whole corpus from scratch and verifies it
+  # against the committed catalog.lock, so if both pass they necessarily
+  # produced identical bytes. No artifact passing is needed. This job runs in
+  # parallel with check.
+  corpus:
+    name: corpus (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-latest
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
 
-      - name: Documentation
-        run: cargo doc --release --locked --no-deps --all
-        env:
-          RUSTDOCFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      # Everything above this line tests the code. Everything below tests the
-      # claim the project exists to make: the corpus is regenerated from
-      # scratch and must match the committed digests byte for byte.
+      # Same pinned-toolchain cache as the check job; see the note there.
+      - name: Read the pinned toolchain version
+        run: echo "RUST_TOOLCHAIN=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" >> "$GITHUB_ENV"
+
+      - name: Restore the pinned toolchain
+        uses: actions/cache@v6
+        with:
+          path: ~/.rustup/toolchains/${{ env.RUST_TOOLCHAIN }}-*
+          key: rustup-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml') }}
+
+      - name: Install the toolchain
+        run: |
+          rustup toolchain install
+          rustc -Vv
+
+      # Same apt archive cache as the check job; see the note there. The key
+      # is the same, so the two jobs share one cache entry.
+      # ImageVersion is an environment variable of the runner's operating
+      # system, not part of the workflow's env context, so it has to be
+      # copied there before a cache key can use it.
+      - name: Read the runner image version
+        run: echo "RUNNER_IMAGE_VERSION=$ImageVersion" >> "$GITHUB_ENV"
+
+      - name: Restore external decoder packages
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/apt-archives
+          key: apt-${{ runner.os }}-${{ runner.arch }}-${{ env.RUNNER_IMAGE_VERSION }}
+
+      # Everything in this job tests the claim the project exists to make: the
+      # corpus is regenerated from scratch and must match the committed digests
+      # byte for byte.
       - name: Generate the corpus
         if: hashFiles('catalog.lock') != ''
         run: cargo run --release --locked -p synthvid-cli -- generate --out "$RUNNER_TEMP/corpus"
