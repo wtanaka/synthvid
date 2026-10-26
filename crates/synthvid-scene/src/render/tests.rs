@@ -1,5 +1,4 @@
 use super::*;
-use crate::camera::{Rotation, Zoom};
 use crate::color::{Channel, Rgb8};
 use crate::frame::{PixelColumn, PixelCoord, PixelRow};
 use crate::ratio::Numerator;
@@ -7,45 +6,44 @@ use crate::scene::{
     Background, BlobCount, BlobRadii, BlobRadius, FrameSpan, Motion, Object, Shape,
 };
 use crate::testutil::Frac;
-use crate::units::{FrameCount, FrameRate, Height, Seed, Width};
+use crate::units::{Height, Seed, Width};
+use crate::view::{Rotation, Zoom};
 use synthvid_testkit::{ensure, ensure_eq, Fail, OrFail as _};
 
-/// Builds a camera that follows `origin` with no rotation and unit magnification.
-fn still_camera_at(origin: Point) -> Result<Camera, Fail> {
+/// Builds a view that follows `origin` with no rotation and unit magnification.
+fn still_view_at(origin: Point) -> Result<View, Fail> {
     let angle = Turns::new(Ratio::from_integer(Numerator(0)));
     let unit = Zoom::Fixed(Magnification::new(Ratio::from_integer(Numerator(1))).or_fail()?);
-    Ok(Camera::new(
+    Ok(View::new(
         Motion::Fixed(origin),
         Rotation::Fixed(angle),
         unit,
     ))
 }
 
-/// Builds a camera fixed at the scene origin with unit magnification, which is the identity placement.
-fn identity_camera() -> Result<Camera, Fail> {
+/// Builds a view fixed at the scene origin with unit magnification, which is the identity placement.
+fn identity_view() -> Result<View, Fail> {
     let zero = Ratio::from_integer(Numerator(0));
-    still_camera_at(Point {
+    still_view_at(Point {
         across: zero,
         down: zero,
     })
 }
 
-/// Builds a scene with the given backdrop and objects on an 8x8 frame.
-fn small_scene(background: Background, objects: Vec<Object>) -> Result<Scene, Fail> {
+/// Builds the 8x8 frame dimensions that the small scenes are rendered at.
+fn small_dimensions() -> Result<Dimensions, Fail> {
     let width = Width::new(8).or_fail()?;
     let height = Height::new(8).or_fail()?;
-    let rate = FrameRate::from_fps(30).or_fail()?;
-    let count = FrameCount::new(4).or_fail()?;
-    let camera = identity_camera()?;
-    Ok(Scene {
-        dimensions: Dimensions::new(width, height),
-        frame_rate: rate,
-        frame_count: count,
+    Ok(Dimensions::new(width, height))
+}
+
+/// Builds a scene with the given backdrop and objects.
+fn small_scene(background: Background, objects: Vec<Object>) -> Scene {
+    Scene {
         scale: None,
         background,
-        camera,
         objects,
-    })
+    }
 }
 
 /// Builds the visibility span covering all four frames of [`small_scene`].
@@ -100,11 +98,12 @@ fn check_render_frame_twice_byte_identical() -> Result<(), Fail> {
         count: BlobCount(6),
         radii: BlobRadii::spanning([BlobRadius(1), BlobRadius(3)]),
     };
-    let scene = small_scene(seed_bg, vec![first, second])?;
+    let scene = small_scene(seed_bg, vec![first, second]);
     for frame_number in 0..4_u32 {
         let frame = FrameIndex::new(frame_number);
-        let once = render_frame(&scene, frame).or_fail()?;
-        let twice = render_frame(&scene, frame).or_fail()?;
+        let once = render_frame(&scene, &identity_view()?, small_dimensions()?, frame).or_fail()?;
+        let twice =
+            render_frame(&scene, &identity_view()?, small_dimensions()?, frame).or_fail()?;
         ensure_eq!(
             once.data(),
             twice.data(),
@@ -141,17 +140,18 @@ fn check_render_into_dirty_buffer_equals_fresh() -> Result<(), Fail> {
         yellow,
         span,
     );
-    let scene = small_scene(Background::Solid(blue), vec![object])?;
+    let scene = small_scene(Background::Solid(blue), vec![object]);
     let frame = FrameIndex::new(1);
-    let fresh = render_frame(&scene, frame).or_fail()?;
-    let mut dirty = Frame::zeroed(scene.dimensions).or_fail()?;
+    let view = identity_view()?;
+    let fresh = render_frame(&scene, &view, small_dimensions()?, frame).or_fail()?;
+    let mut dirty = Frame::zeroed(small_dimensions()?).or_fail()?;
     dirty.fill(Rgb8 {
         red: Channel(255),
         green: Channel(0),
         blue: Channel(255),
     });
     ensure_eq!(
-        render_into(&scene, frame, &mut dirty),
+        render_into(&scene, &view, frame, &mut dirty),
         Ok(()),
         "rendering into a matching buffer must succeed"
     );
@@ -159,35 +159,6 @@ fn check_render_into_dirty_buffer_equals_fresh() -> Result<(), Fail> {
         dirty.data(),
         fresh.data(),
         "rendering into a dirty buffer must equal a fresh render"
-    );
-    Ok(())
-}
-
-#[test]
-fn render_into_rejects_mismatched_dimensions() {
-    assert_eq!(check_render_into_rejects_mismatched_dimensions(), Ok(()));
-}
-
-fn check_render_into_rejects_mismatched_dimensions() -> Result<(), Fail> {
-    let scene = small_scene(
-        Background::Solid(Rgb8 {
-            red: Channel(1),
-            green: Channel(2),
-            blue: Channel(3),
-        }),
-        Vec::new(),
-    )?;
-    let wide = Width::new(16).or_fail()?;
-    let tall = scene.dimensions.height;
-    let wrong = Dimensions::new(wide, tall);
-    let mut out = Frame::zeroed(wrong).or_fail()?;
-    ensure_eq!(
-        render_into(&scene, FrameIndex::new(0), &mut out),
-        Err(RenderError::MismatchedDimensions {
-            expected: scene.dimensions,
-            actual: wrong,
-        }),
-        "a buffer with different dimensions must be rejected"
     );
     Ok(())
 }
@@ -203,7 +174,7 @@ fn check_empty_scene_equals_hidden_objects() -> Result<(), Fail> {
         green: Channel(34),
         blue: Channel(56),
     });
-    let empty = small_scene(ground, Vec::new())?;
+    let empty = small_scene(ground, Vec::new());
     let hidden_span = FrameSpan::new(FrameIndex::new(2)..FrameIndex::new(3)).or_fail()?;
     let four = Ratio::from_integer(Numerator(4));
     let object = fixed_disc(
@@ -219,15 +190,18 @@ fn check_empty_scene_equals_hidden_objects() -> Result<(), Fail> {
         },
         hidden_span,
     );
-    let with_hidden = small_scene(ground, vec![object])?;
-    let background_only = render_frame(&empty, FrameIndex::new(0)).or_fail()?;
-    let with_objects = render_frame(&with_hidden, FrameIndex::new(0)).or_fail()?;
+    let with_hidden = small_scene(ground, vec![object]);
+    let view = identity_view()?;
+    let dimensions = small_dimensions()?;
+    let background_only = render_frame(&empty, &view, dimensions, FrameIndex::new(0)).or_fail()?;
+    let with_objects =
+        render_frame(&with_hidden, &view, dimensions, FrameIndex::new(0)).or_fail()?;
     ensure_eq!(
         background_only.data(),
         with_objects.data(),
         "an object outside its span must draw nothing"
     );
-    let shown = render_frame(&with_hidden, FrameIndex::new(2)).or_fail()?;
+    let shown = render_frame(&with_hidden, &view, dimensions, FrameIndex::new(2)).or_fail()?;
     ensure!(
         shown.data() != background_only.data(),
         "an object inside its span must change the frame"
@@ -277,10 +251,12 @@ fn check_declaration_order_last_wins() -> Result<(), Fail> {
         blue,
         span,
     );
-    let first_wins = small_scene(Background::Solid(black), vec![over.clone(), under.clone()])?;
-    let second_wins = small_scene(Background::Solid(black), vec![under, over])?;
-    let first = render_frame(&first_wins, FrameIndex::new(0)).or_fail()?;
-    let second = render_frame(&second_wins, FrameIndex::new(0)).or_fail()?;
+    let first_wins = small_scene(Background::Solid(black), vec![over.clone(), under.clone()]);
+    let second_wins = small_scene(Background::Solid(black), vec![under, over]);
+    let view = identity_view()?;
+    let dimensions = small_dimensions()?;
+    let first = render_frame(&first_wins, &view, dimensions, FrameIndex::new(0)).or_fail()?;
+    let second = render_frame(&second_wins, &view, dimensions, FrameIndex::new(0)).or_fail()?;
     ensure_eq!(
         first.pixel(PixelCoord::new(PixelColumn(4), PixelRow(4))),
         Some(red),
@@ -295,11 +271,11 @@ fn check_declaration_order_last_wins() -> Result<(), Fail> {
 }
 
 #[test]
-fn camera_overflow_names_frame() {
-    assert_eq!(check_camera_overflow_names_frame(), Ok(()));
+fn view_overflow_names_frame() {
+    assert_eq!(check_view_overflow_names_frame(), Ok(()));
 }
 
-fn check_camera_overflow_names_frame() -> Result<(), Fail> {
+fn check_view_overflow_names_frame() -> Result<(), Fail> {
     let scene = small_scene(
         Background::Solid(Rgb8 {
             red: Channel(0),
@@ -307,12 +283,12 @@ fn check_camera_overflow_names_frame() -> Result<(), Fail> {
             blue: Channel(0),
         }),
         Vec::new(),
-    )?;
+    );
     let max = Ratio::from_integer(Numerator(i64::MAX));
     let one = Ratio::from_integer(Numerator(1));
     let zero = Ratio::from_integer(Numerator(0));
     let unit = Magnification::new(one).or_fail()?;
-    let camera = Camera::new(
+    let view = View::new(
         Motion::Fixed(Point {
             across: one,
             down: zero,
@@ -323,15 +299,13 @@ fn check_camera_overflow_names_frame() -> Result<(), Fail> {
         },
         Zoom::Fixed(unit),
     );
-    let mut overflowing = scene;
-    overflowing.camera = camera;
-    let result = render_frame(&overflowing, FrameIndex::new(1));
+    let result = render_frame(&scene, &view, small_dimensions()?, FrameIndex::new(1));
     ensure_eq!(
         result,
-        Err(RenderError::CameraOverflow {
+        Err(RenderError::ViewOverflow {
             frame: FrameIndex::new(1)
         }),
-        "a camera placement overflow must name the frame"
+        "a view placement overflow must name the frame"
     );
     Ok(())
 }
@@ -383,8 +357,13 @@ fn check_object_overflow_names_object_index() -> Result<(), Fail> {
             blue: Channel(0),
         }),
         vec![valid, overflow],
-    )?;
-    let result = render_frame(&overflowing, FrameIndex::new(0));
+    );
+    let result = render_frame(
+        &overflowing,
+        &identity_view()?,
+        small_dimensions()?,
+        FrameIndex::new(0),
+    );
     ensure_eq!(
         result,
         Err(RenderError::ObjectOverflow {
@@ -424,10 +403,16 @@ fn check_off_screen_shape_renders_successfully() -> Result<(), Fail> {
             blue: Channel(0),
         }),
         vec![off],
-    )?;
-    let frame = render_frame(&scene, FrameIndex::new(0)).or_fail()?;
+    );
+    let frame = render_frame(
+        &scene,
+        &identity_view()?,
+        small_dimensions()?,
+        FrameIndex::new(0),
+    )
+    .or_fail()?;
     let expected = Frame::from_color(
-        scene.dimensions,
+        small_dimensions()?,
         Rgb8 {
             red: Channel(0),
             green: Channel(0),
@@ -456,10 +441,16 @@ fn check_no_objects_equals_background() -> Result<(), Fail> {
             blue: Channel(56),
         }),
         Vec::new(),
-    )?;
-    let frame = render_frame(&scene, FrameIndex::new(0)).or_fail()?;
+    );
+    let frame = render_frame(
+        &scene,
+        &identity_view()?,
+        small_dimensions()?,
+        FrameIndex::new(0),
+    )
+    .or_fail()?;
     let expected = Frame::from_color(
-        scene.dimensions,
+        small_dimensions()?,
         Rgb8 {
             red: Channel(12),
             green: Channel(34),
@@ -476,11 +467,11 @@ fn check_no_objects_equals_background() -> Result<(), Fail> {
 }
 
 #[test]
-fn identity_camera_maps_scene_to_pixels() {
-    assert_eq!(check_identity_camera_maps_scene_to_pixels(), Ok(()));
+fn identity_view_maps_scene_to_pixels() {
+    assert_eq!(check_identity_view_maps_scene_to_pixels(), Ok(()));
 }
 
-fn check_identity_camera_maps_scene_to_pixels() -> Result<(), Fail> {
+fn check_identity_view_maps_scene_to_pixels() -> Result<(), Fail> {
     let black = Rgb8 {
         red: Channel(0),
         green: Channel(0),
@@ -504,8 +495,14 @@ fn check_identity_camera_maps_scene_to_pixels() -> Result<(), Fail> {
         }),
         span,
     );
-    let scene = small_scene(Background::Solid(black), vec![object])?;
-    let frame = render_frame(&scene, FrameIndex::new(0)).or_fail()?;
+    let scene = small_scene(Background::Solid(black), vec![object]);
+    let frame = render_frame(
+        &scene,
+        &identity_view()?,
+        small_dimensions()?,
+        FrameIndex::new(0),
+    )
+    .or_fail()?;
     ensure_eq!(
         frame.pixel(PixelCoord::new(PixelColumn(2), PixelRow(2))),
         Some(red),
@@ -520,11 +517,11 @@ fn check_identity_camera_maps_scene_to_pixels() -> Result<(), Fail> {
 }
 
 #[test]
-fn camera_translation_shifts_objects() {
-    assert_eq!(check_camera_translation_shifts_objects(), Ok(()));
+fn view_translation_shifts_objects() {
+    assert_eq!(check_view_translation_shifts_objects(), Ok(()));
 }
 
-fn check_camera_translation_shifts_objects() -> Result<(), Fail> {
+fn check_view_translation_shifts_objects() -> Result<(), Fail> {
     let black = Rgb8 {
         red: Channel(0),
         green: Channel(0),
@@ -551,7 +548,7 @@ fn check_camera_translation_shifts_objects() -> Result<(), Fail> {
     let zero = Ratio::from_integer(Numerator(0));
     let one = Ratio::from_integer(Numerator(1));
     let unit = Magnification::new(one).or_fail()?;
-    let shifted_camera = Camera::new(
+    let shifted_view = View::new(
         Motion::Fixed(Point {
             across: two,
             down: zero,
@@ -559,24 +556,22 @@ fn check_camera_translation_shifts_objects() -> Result<(), Fail> {
         Rotation::Fixed(Turns::new(zero)),
         Zoom::Fixed(unit),
     );
-    let frame_width = Width::new(8).or_fail()?;
-    let frame_height = Height::new(8).or_fail()?;
-    let rate = FrameRate::from_fps(30).or_fail()?;
-    let count = FrameCount::new(4).or_fail()?;
     let scene = Scene {
-        dimensions: Dimensions::new(frame_width, frame_height),
-        frame_rate: rate,
-        frame_count: count,
         scale: None,
         background: Background::Solid(black),
-        camera: shifted_camera,
         objects: vec![object],
     };
-    let frame = render_frame(&scene, FrameIndex::new(0)).or_fail()?;
+    let frame = render_frame(
+        &scene,
+        &shifted_view,
+        small_dimensions()?,
+        FrameIndex::new(0),
+    )
+    .or_fail()?;
     ensure_eq!(
         frame.pixel(PixelCoord::new(PixelColumn(0), PixelRow(2))),
         Some(red),
-        "moving the camera by (2, 0) must shift the disc left by two pixels"
+        "moving the view by (2, 0) must shift the disc left by two pixels"
     );
     ensure_eq!(
         frame.pixel(PixelCoord::new(PixelColumn(2), PixelRow(2))),

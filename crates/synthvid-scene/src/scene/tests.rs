@@ -1,9 +1,7 @@
 use super::*;
-use crate::camera::{Magnification, Rotation, Turns, Zoom};
 use crate::color::Channel;
 use crate::ratio::Numerator;
 use crate::testutil::Frac;
-use crate::units::{Height, Width};
 use synthvid_testkit::{ensure, ensure_eq, Fail, OrFail as _};
 
 /// Builds the fixed point at the origin for motion tests.
@@ -14,18 +12,6 @@ fn origin_point() -> Point {
         across: zero,
         down: zero,
     }
-}
-
-/// Builds the identity camera: still at the origin with unit magnification.
-fn fixed_camera() -> Result<Camera, Fail> {
-    let origin = origin_point();
-    let angle = Turns::new(Ratio::from_integer(Numerator(0)));
-    let unit = Zoom::Fixed(Magnification::new(Ratio::from_integer(Numerator(1))).or_fail()?);
-    Ok(Camera::new(
-        Motion::Fixed(origin),
-        Rotation::Fixed(angle),
-        unit,
-    ))
 }
 
 #[test]
@@ -134,14 +120,8 @@ fn scene_clone_compares_equal() {
 }
 
 fn check_scene_clone_compares_equal() -> Result<(), Fail> {
-    let width = Width::new(64).or_fail()?;
-    let height = Height::new(48).or_fail()?;
-    let dimensions = Dimensions::new(width, height);
-    let rate = FrameRate::from_fps(30).or_fail()?;
-    let count = FrameCount::new(4).or_fail()?;
     let unit = Ratio::from_integer(Numerator(2));
     let scale = Scale::new(unit).or_fail()?;
-    let camera = fixed_camera()?;
     let origin = origin_point();
     let radius = Ratio::from_integer(Numerator(5));
     let span = FrameSpan::new(FrameIndex::new(0)..FrameIndex::new(4)).or_fail()?;
@@ -152,12 +132,8 @@ fn check_scene_clone_compares_equal() -> Result<(), Fail> {
     };
     let disc = Object::new(Shape::Disc { radius }, red, Motion::Fixed(origin), span);
     let scene = Scene {
-        dimensions,
-        frame_rate: rate,
-        frame_count: count,
         scale: Some(scale),
         background: Background::Solid(red),
-        camera,
         objects: vec![disc],
     };
     let cloned = scene.clone();
@@ -263,22 +239,12 @@ fn every_background() -> Result<[Background; 6], Fail> {
 }
 
 /// Builds a small scene with the given backdrop and objects.
-fn small_scene(background: Background, objects: Vec<Object>) -> Result<Scene, Fail> {
-    let width = Width::new(32).or_fail()?;
-    let height = Height::new(32).or_fail()?;
-    let dimensions = Dimensions::new(width, height);
-    let rate = FrameRate::from_fps(60).or_fail()?;
-    let count = FrameCount::new(8).or_fail()?;
-    let camera = fixed_camera()?;
-    Ok(Scene {
-        dimensions,
-        frame_rate: rate,
-        frame_count: count,
+fn small_scene(background: Background, objects: Vec<Object>) -> Scene {
+    Scene {
         scale: None,
         background,
-        camera,
         objects,
-    })
+    }
 }
 
 #[test]
@@ -296,7 +262,7 @@ fn check_scene_backgrounds_round_trip() -> Result<(), Fail> {
     };
     let objects = every_shape_objects(green, span);
     for background in backgrounds {
-        let scene = small_scene(background, objects.clone())?;
+        let scene = small_scene(background, objects.clone());
         let cloned = scene.clone();
         ensure_eq!(
             cloned,
@@ -324,7 +290,7 @@ fn check_scene_shapes_round_trip() -> Result<(), Fail> {
     ensure_eq!(slice.len(), 4, "one object per shape variant must exist");
     let backgrounds = every_background()?;
     let first = backgrounds[0];
-    let scene = small_scene(first, objects)?;
+    let scene = small_scene(first, objects);
     let cloned = scene.clone();
     ensure_eq!(
         cloned,
@@ -354,7 +320,7 @@ fn check_scene_inequality() -> Result<(), Fail> {
         blue: Channel(0),
     };
     let objects = every_shape_objects(green, span);
-    let scene = small_scene(first, objects)?;
+    let scene = small_scene(first, objects);
     let mut altered = scene.clone();
     altered.background = Background::Solid(green);
     ensure!(

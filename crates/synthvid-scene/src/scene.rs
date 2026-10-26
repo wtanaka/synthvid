@@ -1,8 +1,8 @@
 //! Scene description.
 //!
-//! Plain data and nothing else. [`Background`], [`Shape`], [`Object`],
-//! [`Camera`], and [`Scene`] describe what is in the frame; evaluation of
-//! motion and drawing of pixels belong to later concerns and live elsewhere.
+//! Plain data and nothing else. [`Background`], [`Shape`], [`Object`], and
+//! [`Scene`] describe the world; evaluation of motion and drawing of pixels
+//! belong to later concerns and live elsewhere.
 //! Every type here is [`Clone`] and [`PartialEq`], so a future canonical text
 //! form can round-trip a scene and compare the result with [`Eq`].
 
@@ -15,11 +15,10 @@ use core::fmt;
 use core::num::NonZeroU16;
 use core::ops::Range;
 
-use crate::camera::Camera;
 use crate::color::Rgb8;
 use crate::geom::{Point, Vector};
 use crate::ratio::Ratio;
-use crate::units::{Dimensions, FrameCount, FrameIndex, FrameRate, Seed};
+use crate::units::{FrameCount, FrameIndex, Seed};
 
 pub use blobs::{BlobCount, BlobRadii, BlobRadius};
 pub use membership::Membership;
@@ -105,7 +104,7 @@ impl FrameSpan {
     }
 }
 
-/// Position of an object or camera property as a closed-form function of frame.
+/// Position of an object or view property as a closed-form function of frame.
 ///
 /// Every variant evaluates at a frame index without touching any other frame,
 /// so results are identical whether frames run forwards, backwards, or
@@ -277,28 +276,21 @@ impl Object {
     }
 }
 
-/// Declarative description of a video sequence.
+/// Declarative description of the world a video shows.
 ///
-/// Plain data: dimensions, rate, length, an optional physical [`Scale`], a
-/// [`Background`], a [`Camera`], and the [`Object`]s drawn in declaration
-/// order. Later concerns evaluate motion and draw pixels; this type only
-/// holds what they evaluate. A Scene describes sensible content and nothing
-/// here validates that; output that is deliberately nonsensical belongs in the
-/// video description, not the scene.
+/// Plain data: an optional physical [`Scale`], a [`Background`], and the
+/// [`Object`]s drawn in declaration order. The view, the frame dimensions, and
+/// the timing belong to the recording, not the world, so they are supplied
+/// when a frame is rendered. Later concerns evaluate motion and draw pixels;
+/// this type only holds what they evaluate. A Scene describes sensible content
+/// and nothing here validates that; output that is deliberately nonsensical
+/// belongs in the video description, not the scene.
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct Scene {
-    /// Frame dimensions in pixels.
-    pub dimensions: Dimensions,
-    /// Exact frame rate in frames per second, never stored as a float.
-    pub frame_rate: FrameRate,
-    /// Number of frames in the sequence.
-    pub frame_count: FrameCount,
     /// Optional physical interpretation of scene units.
     pub scale: Option<Scale>,
     /// Backdrop drawn before any object.
     pub background: Background,
-    /// Camera transform applied to the whole frame.
-    pub camera: Camera,
     /// Objects drawn in declaration order.
     pub objects: Vec<Object>,
 }

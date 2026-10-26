@@ -1,5 +1,7 @@
-use crate::manifest::{Manifest, ManifestAffine, ManifestFrame, ManifestHeader};
+use crate::manifest::{Manifest, ManifestAffine, ManifestCamera, ManifestFrame, ManifestHeader};
+use crate::medium::Medium;
 use crate::names::BackgroundName;
+use crate::optics::Optics;
 use crate::testutil::Frac;
 use crate::writer::JsonEntryName;
 use synthvid_scene::{
@@ -10,7 +12,7 @@ use synthvid_testkit::{ensure, Fail, OrFail as _};
 /// A serialised manifest, as the writer emits it.
 struct ManifestText(String);
 
-fn identity_camera() -> Result<ManifestAffine, Fail> {
+fn identity_view() -> Result<ManifestAffine, Fail> {
     Ok(ManifestAffine::from_affine(&Affine {
         xx: Frac(1, 1).ratio()?,
         xy: Frac(0, 1).ratio()?,
@@ -23,7 +25,7 @@ fn identity_camera() -> Result<ManifestAffine, Fail> {
 
 /// Serializes a one-frame manifest with an empty scene around the given header.
 fn one_frame_json(header: ManifestHeader) -> Result<ManifestText, Fail> {
-    let frame = ManifestFrame::new(&identity_camera()?, Vec::new());
+    let frame = ManifestFrame::new(&identity_view()?, Vec::new());
     let manifest = Manifest::new(header, Vec::new(), vec![frame]).or_fail()?;
     Ok(ManifestText(
         manifest.to_canonical_json().as_str().to_owned(),
@@ -41,7 +43,11 @@ fn ntsc_header(extra: Option<FrameRate>) -> Result<ManifestHeader, Fail> {
     };
     Ok(ManifestHeader::new(
         JsonEntryName::new("capture-keys").or_fail()?,
-        Dimensions::new(Width::new(16).or_fail()?, Height::new(16).or_fail()?),
+        &ManifestCamera::new(
+            Dimensions::new(Width::new(16).or_fail()?, Height::new(16).or_fail()?),
+            Medium::Off,
+            Optics::Off,
+        ),
         frame_rates,
         BackgroundName::Solid,
         None,
@@ -106,7 +112,11 @@ fn ntsc_header_in(carrier: CaptureCarrier) -> Result<ManifestHeader, Fail> {
     let frame_rates = FrameRates::distinct_in(RatePair { playback, capture }, carrier).or_fail()?;
     Ok(ManifestHeader::new(
         JsonEntryName::new("capture-keys").or_fail()?,
-        Dimensions::new(Width::new(16).or_fail()?, Height::new(16).or_fail()?),
+        &ManifestCamera::new(
+            Dimensions::new(Width::new(16).or_fail()?, Height::new(16).or_fail()?),
+            Medium::Off,
+            Optics::Off,
+        ),
         frame_rates,
         BackgroundName::Solid,
         None,

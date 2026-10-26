@@ -51,6 +51,8 @@ macro_rules! low_64 {
     }};
 }
 
+pub(crate) use low_64;
+
 impl Rng {
     /// Creates a deterministic pseudo-random number generator from a [`Seed`].
     #[must_use]

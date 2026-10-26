@@ -1,4 +1,4 @@
-use super::super::coverage::pixel_centre;
+use super::super::coverage::pixel_center;
 use super::super::coverage_types::{Column, Row};
 use super::*;
 use crate::color::{Channel, Rgb8};
@@ -33,7 +33,7 @@ fn painted_centres(frame: &Frame, ground: Rgb8) -> Vec<Point> {
     for row in 0..height {
         for column in 0..width {
             if frame.pixel(PixelCoord::new(PixelColumn(column), PixelRow(row))) != Some(ground) {
-                found.push(pixel_centre(Column(column), Row(row)));
+                found.push(pixel_center(Column(column), Row(row)));
             }
         }
     }

@@ -5,7 +5,7 @@ use synthvid_scene::{
 };
 use synthvid_testkit::{ensure, ensure_eq, Fail, OrFail as _};
 
-fn identity_camera() -> Result<ManifestAffine, Fail> {
+fn identity_view() -> Result<ManifestAffine, Fail> {
     Ok(ManifestAffine::from_affine(&Affine {
         xx: Frac(1, 1).ratio()?,
         xy: Frac(0, 1).ratio()?,
@@ -49,7 +49,11 @@ impl Head {
         let Self(name, background, side, rate, scale) = self;
         Ok(ManifestHeader::new(
             JsonEntryName::new(name).or_fail()?,
-            Dimensions::new(Width::new(side).or_fail()?, Height::new(side).or_fail()?),
+            &ManifestCamera::new(
+                Dimensions::new(Width::new(side).or_fail()?, Height::new(side).or_fail()?),
+                Medium::Off,
+                Optics::Off,
+            ),
             FrameRates::playback_only(FrameRate::new(Frac(rate, 1).ratio()?).or_fail()?),
             background,
             scale,
@@ -65,7 +69,7 @@ fn one_object_manifest(
     on_screen: OnScreen,
 ) -> Result<Manifest, Fail> {
     let state = FrameObjectState::new(ObjectIndex::new(0), bbox, centre, None, on_screen);
-    let frame = ManifestFrame::new(&identity_camera()?, vec![state]);
+    let frame = ManifestFrame::new(&identity_view()?, vec![state]);
     let span = FrameSpan::new(FrameIndex::new(0)..FrameIndex::new(1)).or_fail()?;
     let decl = ManifestObjectDecl::new(ObjectIndex::new(0), shape, span);
     Manifest::new(head, vec![decl], vec![frame]).or_fail()

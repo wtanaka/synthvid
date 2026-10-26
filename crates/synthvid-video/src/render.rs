@@ -1,18 +1,26 @@
 //! Pipeline for rendering a video specification.
 //!
 //! Turns a [`VideoSpec`] into a manifest and media bytes. The pipeline is deterministic and
-//! produces byte-identical output for identical inputs.
+//! produces byte-identical output for identical inputs. The frames of a flat shot are produced
+//! by the flat pipeline; the manifest is built here from those frames.
 
-use crate::manifest::{
-    Manifest, ManifestAffine, ManifestFrame, ManifestHeader, ManifestObjectDecl,
-};
+use crate::deep::DeepRenderError;
+use crate::deep_pipeline::render_deep_shot_frames;
+use crate::flat_pipeline::render_flat_frames;
+use crate::grain::{apply_film_grain, GrainError};
+use crate::manifest::{Manifest, ManifestCamera, ManifestHeader, ManifestObjectDecl};
+use crate::manifest_deep::{deep_manifest_json, DeepManifestError};
 use crate::manifest_error::ManifestError;
+use crate::medium::Medium;
 use crate::names::{BackgroundName, ShapeName};
-use crate::object_state::frame_objects;
 use crate::render_output::{EncodedFrames, ManifestJson, MediaBytes};
+use crate::rig::DeepShot;
+use crate::sensor::{apply_sensor_noise, SensorError};
+use crate::shot::{FlatShot, Shot};
 use crate::video_spec::{
     check_defect, Container, DisplayRotation, Encoding, VideoSpec, VideoSpecError,
 };
+use crate::vignette::VignetteError;
 use core::error::Error;
 use core::fmt;
 use core::num::TryFromIntError;
@@ -21,19 +29,18 @@ use synthvid_encode::{
     IsoCodec, TrackMatrix,
 };
 use synthvid_scene::{
-    render_into, Background, Camera, Dimensions, Frame, FrameIndex, FrameRates, ObjectIndex,
-    Overflow, Scale, Scene, Shape,
+    Background, Dimensions, Frame, FrameIndex, FrameRates, ObjectIndex, Scale, Shape,
 };
 
-/// A step of the exact camera arithmetic that failed.
+/// A step of the exact view arithmetic that failed.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
-pub enum CameraStep {
-    /// Evaluating the camera centre.
-    Centre,
-    /// Evaluating the camera rotation.
+pub enum ViewStep {
+    /// Evaluating the view center.
+    Center,
+    /// Evaluating the view rotation.
     Rotation,
-    /// Evaluating the camera magnification.
+    /// Evaluating the view magnification.
     Zoom,
     /// Negating the rotation angle.
     NegateAngle,
@@ -50,10 +57,10 @@ pub enum CameraStep {
 }
 
 /// Writes the step as a phrase.
-impl fmt::Display for CameraStep {
+impl fmt::Display for ViewStep {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
-            Self::Centre => "evaluating the centre",
+            Self::Center => "evaluating the center",
             Self::Rotation => "evaluating the rotation",
             Self::Zoom => "evaluating the magnification",
             Self::NegateAngle => "negating the angle",
@@ -108,11 +115,11 @@ pub enum GenerationError {
     Specification(VideoSpecError),
     /// The frame buffer could not be allocated.
     FrameBuffer(synthvid_scene::FrameError),
-    /// A step of the camera arithmetic failed.
-    CameraMath(CameraStep),
+    /// A step of the view arithmetic failed.
+    ViewMath(ViewStep),
     /// There are more objects than an object index can number.
     ObjectIndexOutOfRange(TryFromIntError),
-    /// The camera similarity could not be widened to an affine without overflow.
+    /// The view similarity could not be widened to an affine without overflow.
     AffineConversion,
     /// Scene frame rendering failed.
     SceneFrameRender(synthvid_scene::RenderError),
@@ -130,6 +137,16 @@ pub enum GenerationError {
     AviEncodingFailed(synthvid_encode::AviError),
     /// Defect application failed.
     DefectApplicationFailed(synthvid_encode::DefectError),
+    /// The sensor noise of a frame could not be applied.
+    SensorNoise(SensorError),
+    /// The film grain of a frame could not be applied.
+    FilmGrain(GrainError),
+    /// The vignette of a frame could not be applied.
+    Vignette(VignetteError),
+    /// A deep shot's frame could not be sampled from its stage.
+    DeepRender(DeepRenderError),
+    /// A deep shot's manifest could not be written from its stage and rig.
+    DeepManifest(DeepManifestError),
 }
 
 impl fmt::Display for GenerationError {
@@ -138,7 +155,7 @@ impl fmt::Display for GenerationError {
             Self::FrameBuffer(error) => {
                 write!(formatter, "frame buffer allocation failed: {error}")
             }
-            Self::CameraMath(step) => write!(formatter, "camera arithmetic failed {step}"),
+            Self::ViewMath(step) => write!(formatter, "view arithmetic failed {step}"),
             Self::ObjectIndexOutOfRange(error) => {
                 write!(formatter, "object index out of range: {error}")
             }
@@ -167,11 +184,22 @@ impl fmt::Display for GenerationError {
             Self::DefectApplicationFailed(error) => {
                 write!(formatter, "defect application failed: {error}")
             }
+            Self::SensorNoise(error) => write!(formatter, "sensor noise failed: {error}"),
+            Self::FilmGrain(error) => write!(formatter, "film grain failed: {error}"),
+            Self::Vignette(error) => write!(formatter, "vignette failed: {error}"),
+            Self::DeepRender(error) => write!(formatter, "deep shot rendering failed: {error}"),
+            Self::DeepManifest(error) => write!(formatter, "deep manifest failed: {error}"),
         }
     }
 }
 
 impl Error for GenerationError {}
+
+impl From<DeepRenderError> for GenerationError {
+    fn from(error: DeepRenderError) -> Self {
+        Self::DeepRender(error)
+    }
+}
 
 /// Result of rendering a video specification: manifest JSON and media bytes.
 #[derive(Clone, Debug)]
@@ -205,42 +233,35 @@ impl GeneratedEntry {
     }
 }
 
-/// Renders frames and builds encoded frames and manifest frames.
-fn render_frames_to_manifest(
-    spec: &VideoSpec,
-    scene: &Scene,
-) -> Result<(EncodedFrames, Vec<ManifestFrame>), GenerationError> {
-    let mut manifest_frames = Vec::new();
-    let mut encoded_frames = Vec::new();
-
-    let mut frame_buffer = Frame::zeroed(scene.dimensions).map_err(GenerationError::FrameBuffer)?;
-
-    for frame_idx in 0..scene.frame_count.get().get() {
-        let frame_index = FrameIndex::new(frame_idx);
-
-        render_into(scene, frame_index, &mut frame_buffer)
-            .map_err(GenerationError::SceneFrameRender)?;
-        let rendered_frame = &frame_buffer;
-
-        let encoded = match spec.encoding() {
-            Encoding::Raw => EncodedFrame::raw(rendered_frame),
-            Encoding::Mjpeg { quality, chroma } => encode_jpeg(rendered_frame, quality, chroma),
-        };
-        encoded_frames.push(encoded);
-
-        let camera_affine = compute_camera_affine(&scene.camera, frame_index)?;
-        let camera_manifest = ManifestAffine::from_affine(
-            &camera_affine
-                .to_affine()
-                .map_err(|Overflow| GenerationError::AffineConversion)?,
-        );
-
-        let objects = frame_objects(scene, frame_index)?;
-        let manifest_frame = ManifestFrame::new(&camera_manifest, objects);
-        manifest_frames.push(manifest_frame);
+/// Applies a medium to a rendered frame: nothing, sensor noise, or film grain, as the medium
+/// records the light.
+///
+/// # Errors
+///
+/// Returns `Err(GenerationError::SensorNoise)` or `Err(GenerationError::FilmGrain)` when the
+/// medium cannot be applied to the frame.
+pub(crate) fn apply_medium(
+    frame: &mut Frame,
+    medium: Medium,
+    index: FrameIndex,
+) -> Result<(), GenerationError> {
+    match medium {
+        Medium::Off => Ok(()),
+        Medium::Sensor(noise) => {
+            apply_sensor_noise(frame, &noise, index).map_err(GenerationError::SensorNoise)
+        }
+        Medium::Film(grain) => {
+            apply_film_grain(frame, &grain, index).map_err(GenerationError::FilmGrain)
+        }
     }
+}
 
-    Ok((EncodedFrames(encoded_frames), manifest_frames))
+/// Encodes one rendered frame in the given encoding.
+pub(crate) fn encode_frame(encoding: Encoding, frame: &Frame) -> EncodedFrame {
+    match encoding {
+        Encoding::Raw => EncodedFrame::raw(frame),
+        Encoding::Mjpeg { quality, chroma } => encode_jpeg(frame, quality, chroma),
+    }
 }
 
 /// The manifest name of a background.
@@ -288,41 +309,26 @@ const fn shape_name_of(shape: &Shape) -> ShapeName {
     }
 }
 
-/// Renders a video specification to produce manifest and media bytes.
-///
-/// This function takes an explicit specification (`VideoSpec`) and performs:
-/// 1. Scene validation
-/// 2. Frame rendering and encoding
-/// 3. Manifest construction
-/// 4. Container creation
-/// 5. Defect application
+/// The manifest and encoded frames of a flat shot, with the header built from its scene and camera.
 ///
 /// # Errors
 ///
-/// Returns `GenerationError` if any step fails.
-pub fn render(spec: &VideoSpec) -> Result<GeneratedEntry, GenerationError> {
-    let scene = spec.scene();
-
-    check_defect(spec.encoding(), spec.container(), spec.defect())
-        .map_err(GenerationError::Specification)?;
-    let frame_rates = spec.frame_rates().map_err(GenerationError::Specification)?;
-
-    // Check raw capacity for raw coding
-    if spec.encoding() == Encoding::Raw
-        && synthvid_encode::raw_frames_fit_classic_container(scene.dimensions, scene.frame_count)
-            == ContainerFit::TooLarge
-    {
-        return Err(GenerationError::RawCapacityExceeded);
-    }
-
-    let (encoded_frames, manifest_frames) = render_frames_to_manifest(spec, scene)?;
+/// Returns the errors of the frame rendering, the object declarations, and the manifest.
+fn render_flat_shot(
+    spec: &VideoSpec,
+    flat: &FlatShot,
+    frame_rates: FrameRates,
+) -> Result<(EncodedFrames, ManifestJson), GenerationError> {
+    let scene = flat.scene();
+    let camera = flat.camera();
+    let (encoded_frames, manifest_frames) = render_flat_frames(flat, spec.encoding())?;
 
     // Build manifest header
     let background_name = background_name_of(&scene.background);
 
     let header = ManifestHeader::new(
         spec.name().clone(),
-        scene.dimensions,
+        &ManifestCamera::new(camera.dimensions(), camera.medium(), camera.optics()),
         frame_rates,
         background_name,
         scene.scale.map(Scale::get),
@@ -341,7 +347,63 @@ pub fn render(spec: &VideoSpec) -> Result<GeneratedEntry, GenerationError> {
     // Create the manifest
     let manifest = Manifest::new(header, manifest_objects, manifest_frames)
         .map_err(GenerationError::ManifestConstruction)?;
-    let manifest_json = manifest.to_canonical_json();
+    Ok((encoded_frames, manifest.to_canonical_json()))
+}
+
+/// The manifest and encoded frames of a deep shot. The frames are rendered from the stage, and
+/// the manifest is written from the shot itself.
+///
+/// # Errors
+///
+/// Returns the errors of the frame rendering and of the deep manifest.
+fn render_deep_shot(
+    spec: &VideoSpec,
+    deep: &DeepShot,
+) -> Result<(EncodedFrames, ManifestJson), GenerationError> {
+    let frames = render_deep_shot_frames(deep)?;
+    let encoded: Vec<EncodedFrame> = frames
+        .iter()
+        .map(|frame| encode_frame(spec.encoding(), frame))
+        .collect();
+    let manifest_json =
+        deep_manifest_json(spec.name(), deep).map_err(GenerationError::DeepManifest)?;
+    Ok((EncodedFrames(encoded), manifest_json))
+}
+
+/// Renders a video specification to produce manifest and media bytes.
+///
+/// This function takes an explicit specification (`VideoSpec`) and performs:
+/// 1. Specification checks
+/// 2. Frame rendering and encoding
+/// 3. Manifest construction
+/// 4. Container creation
+/// 5. Defect application
+///
+/// A flat shot and a deep shot share every step after the frames and the manifest.
+///
+/// # Errors
+///
+/// Returns `GenerationError` if any step fails.
+pub fn render(spec: &VideoSpec) -> Result<GeneratedEntry, GenerationError> {
+    check_defect(spec.encoding(), spec.container(), spec.defect())
+        .map_err(GenerationError::Specification)?;
+    let frame_rates = spec.frame_rates().map_err(GenerationError::Specification)?;
+    let recorder = spec.recorder();
+
+    // Check raw capacity for raw coding
+    if spec.encoding() == Encoding::Raw
+        && synthvid_encode::raw_frames_fit_classic_container(
+            recorder.dimensions(),
+            recorder.timing().count(),
+        ) == ContainerFit::TooLarge
+    {
+        return Err(GenerationError::RawCapacityExceeded);
+    }
+
+    let (encoded_frames, manifest_json) = match spec.shot() {
+        Shot::Flat(flat) => render_flat_shot(spec, flat, frame_rates)?,
+        Shot::Deep(deep) => render_deep_shot(spec, deep)?,
+    };
 
     let mut media_bytes = build_container(spec, frame_rates, &encoded_frames)?;
 
@@ -360,13 +422,12 @@ fn build_container(
     frame_rates: FrameRates,
     encoded_frames: &EncodedFrames,
 ) -> Result<ContainerFile, GenerationError> {
-    let scene = spec.scene();
+    let dims = spec.recorder().dimensions();
     Ok(match spec.container() {
         Container::Iso {
             rotation,
             capture: _capture,
         } => {
-            let dims = scene.dimensions;
             let track_matrix = build_track_matrix_from_rotation(rotation, dims)?;
             encode_iso(
                 frame_rates,
@@ -389,8 +450,8 @@ fn build_container(
         Container::Avi => encode_avi(
             frame_rates.playback(),
             &encoded_frames.0,
-            scene.dimensions.width,
-            scene.dimensions.height,
+            dims.width,
+            dims.height,
             match spec.encoding() {
                 Encoding::Raw => AviCodec::UncompressedRgb,
                 Encoding::Mjpeg {
@@ -400,77 +461,6 @@ fn build_container(
             },
         )
         .map_err(GenerationError::AviEncodingFailed)?,
-    })
-}
-
-/// Computes a camera affine transform for a frame.
-fn compute_camera_affine(
-    camera: &Camera,
-    frame: FrameIndex,
-) -> Result<synthvid_scene::Similarity, GenerationError> {
-    use synthvid_scene::{position_at, rotation_at, zoom_at};
-
-    let centre = position_at(&camera.motion, frame)
-        .map_err(|Overflow| GenerationError::CameraMath(CameraStep::Centre))?;
-    let angle = rotation_at(&camera.rotation, frame)
-        .map_err(|Overflow| GenerationError::CameraMath(CameraStep::Rotation))?;
-    let magnification = zoom_at(&camera.zoom, frame)
-        .map_err(|Overflow| GenerationError::CameraMath(CameraStep::Zoom))?;
-
-    let zoom = magnification.get();
-    let angle_value = angle.get();
-    let turn = angle_value
-        .checked_neg()
-        .map_err(|Overflow| GenerationError::CameraMath(CameraStep::NegateAngle))?;
-    let cos = synthvid_scene::cos_turns(turn)
-        .map_err(|Overflow| GenerationError::CameraMath(CameraStep::Cosine))?;
-    let sin = synthvid_scene::sin_turns(turn)
-        .map_err(|Overflow| GenerationError::CameraMath(CameraStep::Sine))?;
-    let neg_sin = sin
-        .checked_neg()
-        .map_err(|Overflow| GenerationError::CameraMath(CameraStep::LinearTerms))?;
-
-    let scale_cos = zoom
-        .checked_mul(cos)
-        .map_err(|Overflow| GenerationError::CameraMath(CameraStep::LinearTerms))?;
-    let scale_neg_sin = zoom
-        .checked_mul(neg_sin)
-        .map_err(|Overflow| GenerationError::CameraMath(CameraStep::LinearTerms))?;
-    let scale_sin = zoom
-        .checked_mul(sin)
-        .map_err(|Overflow| GenerationError::CameraMath(CameraStep::LinearTerms))?;
-
-    let ax = scale_cos
-        .checked_mul(centre.across)
-        .map_err(|Overflow| GenerationError::CameraMath(CameraStep::TranslationX))?;
-    let bx = scale_neg_sin
-        .checked_mul(centre.down)
-        .map_err(|Overflow| GenerationError::CameraMath(CameraStep::TranslationX))?;
-    let sum_x = ax
-        .checked_add(bx)
-        .map_err(|Overflow| GenerationError::CameraMath(CameraStep::TranslationX))?;
-    let tx = sum_x
-        .checked_neg()
-        .map_err(|Overflow| GenerationError::CameraMath(CameraStep::TranslationX))?;
-
-    let cx = scale_sin
-        .checked_mul(centre.across)
-        .map_err(|Overflow| GenerationError::CameraMath(CameraStep::TranslationY))?;
-    let dx = scale_cos
-        .checked_mul(centre.down)
-        .map_err(|Overflow| GenerationError::CameraMath(CameraStep::TranslationY))?;
-    let sum_y = cx
-        .checked_add(dx)
-        .map_err(|Overflow| GenerationError::CameraMath(CameraStep::TranslationY))?;
-    let ty = sum_y
-        .checked_neg()
-        .map_err(|Overflow| GenerationError::CameraMath(CameraStep::TranslationY))?;
-
-    Ok(synthvid_scene::Similarity {
-        xx: scale_cos,
-        xy: scale_neg_sin,
-        tx,
-        ty,
     })
 }
 
@@ -495,3 +485,6 @@ fn build_track_matrix_from_rotation(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod deep_tests;

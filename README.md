@@ -83,6 +83,150 @@ Example:
 { "frame_rate": { "den": 1, "num": 30 } }
 ```
 
+A flat manifest may also carry the optional members `medium` and `optics`.
+Each is written only when it is not ideal. Both belong to schema 1, so a flat
+manifest with either member still has `"schema_version":1`.
+
+`medium` is an object whose `kind` is `sensor` or `film`. Seeds are written as
+strings of decimal digits. A sensor writes:
+
+| Member          | Type    | Definition                                  |
+| --------------- | ------- | ------------------------------------------- |
+| `column`        | integer | column offset spread, raw Q8.8 (256 is 1.0) |
+| `kind`          | string  | `sensor`                                    |
+| `pattern_seed`  | string  | fixed-pattern seed                          |
+| `prnu`          | integer | per-sensel gain spread, parts per 65536     |
+| `read`          | integer | read-noise deviation, raw Q8.8              |
+| `shot`          | integer | shot-noise slope, raw Q8.8                  |
+| `temporal_seed` | string  | temporal noise seed                         |
+
+Shot noise is drawn from the light a sensel receives before any clamp to the code
+range, so a sensel brighter than full scale is noisier than one at full scale.
+The sensor saturates once, after the noise is added: the sum is rounded and then
+clamped to `0` through `255`.
+
+Film writes `blur`, `density`, `spread` (integers, raw Q8.8), `kind` (`film`),
+`radius` (rational, a ratio of the frame height), and `seed` (string).
+
+`optics` is written only for a vignette: `{"kind":"vignette","strength":N}`,
+where `strength` is a raw Q8.8 integer.
+
+### Deep shot manifest
+
+A deep shot has `"schema_version":2` and records no bounding boxes or screen
+positions. Its members, in canonical key order:
+
+| Member           | Type     | Definition                                               |
+| ---------------- | -------- | -------------------------------------------------------- |
+| `backdrop`       | object   | `{"blue","green","red"}`, integers 0 to 255              |
+| `dimensions`     | object   | `{"height":h,"width":w}`, output size in sensels         |
+| `frame_count`    | integer  | number of frames                                         |
+| `frame_rate`     | rational | playback rate                                            |
+| `frames`         | array    | one element per frame, in index order                    |
+| `medium`         | object   | as in a flat manifest; absent when the medium is `Off`   |
+| `name`           | string   | catalog entry name                                       |
+| `objects`        | array    | one declaration per layer, in stage order                |
+| `optics`         | object   | the lens object; always written                          |
+| `pixel_samples`  | integer  | samples along each axis of a sensel: 1, 2, 4, or 8       |
+| `projection`     | string   | `perspective`                                            |
+| `schema_version` | integer  | `2`                                                      |
+
+Each element of `frames` contains `camera` (`roll` rational, and integers `x`,
+`y`, `z`), `index`, and `objects`. Each element of `frames[].objects` contains
+`index`, `x`, `y`, and `z`, and lists only the layers whose visible span contains
+the frame, including layers behind the camera.
+
+Each element of `objects` contains `fill` (`{"blue","green","red"}`), `index`,
+`shape`, and `visible` (`{"end":E,"start":S}`). Its shape members are:
+
+- `disc`: `radius` (integer, world units).
+- `rect`: `half_height` and `half_width` (integers).
+- `polygon`: `vertices` (array of `{"x":X,"y":Y}`).
+
+The `optics` object has `aperture`, `focal_length` (rational, in frame heights),
+`kind` (`lens`), and `vignette`. An `aperture` is `{"kind":"pinhole"}`, or an iris
+with `focus` (an integer distance or `"infinity"`), `frame_height`, `kind`
+(`iris`), `samples` (2, 4, or 8), `shape` (`{"kind":"disc"}` or
+`{"kind":"polygon","blades":B}`), and `stop` (`f1_4` through `f22`). A `vignette`
+is `{"kind":"none"}` or `{"kind":"vignette","strength":N}`.
+
+The `perspective` projection places a point at offset `(dx, dy)` from the camera
+axis and depth `z` at `16 * h * fn * (X, Y) / z` in 1/256-sensel units from the
+frame center. `h` is the output height in sensels, `fn` the focal length in
+sixteenths of a frame height, and `(X, Y)` the offset `(dx, dy)` rotated by the
+roll.
+
+### Lens model
+
+A lens is either a pinhole or an iris. An iris has an f-number `Nn/Nd`, an
+outline, a focus distance `s`, a frame height `H` in world units, and an
+aperture grid of `A` samples per axis, where `A` is 2, 4, or 8. The focal
+length is `f = fn * H / 16` world units, where `fn` is the lens focal length in
+sixteenths of a frame height.
+
+The manifest names an f-number by its stop. Each stop is the exact ratio below,
+which is the `Nn/Nd` of the blur formula; the decimal column is for reading
+only.
+
+| Stop   | f-number | Decimal |
+| ------ | -------- | ------- |
+| `f1_4` | 7/5      | 1.4     |
+| `f2`   | 2        | 2       |
+| `f2_8` | 14/5     | 2.8     |
+| `f4`   | 4        | 4       |
+| `f5_6` | 28/5     | 5.6     |
+| `f8`   | 8        | 8       |
+| `f11`  | 11       | 11      |
+| `f16`  | 16       | 16      |
+| `f22`  | 22       | 22      |
+
+Focus. A focus `s` must lie at least eight focal lengths from the lens, that is
+`2 * s >= fn * H`. A closer focus, `2 * s < fn * H`, is refused with an error.
+A focus at infinity and a pinhole are always accepted.
+
+Thin-lens approximation. A thin lens of focal length `f` focused at distance
+`s` forms its image at distance `v = f * s / (s - f)`. The blur formula below
+takes the image distance to be `f` instead. That is a first-order
+approximation, valid when the focus distance is much larger than the focal
+length. At the closest focus allowed, `s = 8 * f`, the image distance is
+`8 * f / 7`, so the approximation is off by one-seventh of `f`, and the error
+shrinks for every farther focus.
+
+Lens shift. Looking through the aperture sample with odd numerators `g` across
+and `k` down, a layer at depth `z` shifts in the image, along each axis, by the
+following amounts in 1/256-sensel units, where `h` is the output frame height in
+sensels:
+
+- focused at `s`: `-H * fn^2 * h * Nd * g * (s - z) / (2 * Nn * A * z * s)`;
+- focused at infinity: `-H * fn^2 * h * Nd * g / (2 * Nn * A * z)`.
+
+Each shift is rounded once, half up, to 1/256-sensel units. The sample's unit
+aperture coordinate is `g / A`, so `g` ranges over odd values with `|g| <= A - 1`.
+
+Aperture samples. The candidates of a grid are the points `(g / A, k / A)` with
+`g` and `k` odd and within `A - 1` of zero. The outline is a disc of radius 1 or
+a regular polygon whose vertex `m` lies at the cosine and sine of `m / n` turns,
+where `n` is the blade count. A candidate is kept when it and its point
+reflection through the center both lie inside or on the outline. The kept set is
+therefore centrally symmetric: its numerators sum to zero on each axis, so a
+defocused layer does not shift sideways by the mean aperture coordinate.
+
+A shape and grid with no kept candidate is refused with an error. A three-blade
+outline on the two-by-two grid is one such case: no candidate and its reflection
+both lie inside the triangle. A polygon with four or more blades always
+keeps points. The candidates nearest the center lie at a distance of `sqrt(2) / A`,
+at most 0.707, and the polygon contains the circle of radius `cos(pi / n)`,
+which is at least 0.707 for `n` at least 4, so those candidates and their
+reflections are inside or on the outline. A triangle, whose inradius is 1/2,
+keeps points on the four-by-four and eight-by-eight grids, and is refused only
+on the two-by-two grid.
+
+Guard band. Lattice units are 1/256 sensel. A layer whose projected extent, or
+whose lens shift, has a magnitude above 2^28 lattice units, which is 2^20
+sensels, fails the render with an error. Such a layer is not clipped or culled,
+so a frame is never silently wrong. A layer must be kept farther from the camera
+or made smaller to render.
+
 ## 4. Catalog
 
 The catalog is a pairwise covering array over the axes below: every pair of
@@ -163,6 +307,34 @@ that approximation, while `cfps` keeps the exact reduced rational. The float32
 is computed in integer arithmetic, rounded to nearest with ties to even, so it
 does not depend on the platform's floating point. The container's own timing
 (`mvhd`, `tkhd`, `mdhd`, `stts`) is always the playback rate in both forms.
+
+Ten further entries record through a sensor or film medium instead of an ideal
+one. Each is a 64 by 48 ISO file of ten frames at 30 frames per second, with a
+gradient background, a disc, fixed motion and no defect, once in raw pixels and
+once in motion-JPEG. Each name ends in `rec` and the preset's name. The five
+presets are:
+
+- `reclowiso`: sensor, shot 18, read 128, prnu 0, column 0, temporal seed 1001,
+  pattern seed 2001;
+- `rechighiso`: sensor, shot 128, read 640, prnu 0, column 0, temporal seed 1002,
+  pattern seed 2002;
+- `recbanded`: sensor, shot 18, read 128, prnu 655, column 384, temporal seed
+  1003, pattern seed 2003;
+- `recfinegrain`: film, radius 1/400, spread 0, density 256, blur 0, seed 3001;
+- `reccoarsegrain`: film, radius 1/16, spread 77, density 256, blur 128, seed
+  3002.
+
+The sensor and film values are raw Q8_8 numbers, except `prnu`, which is in
+parts per 65536, and the radius, which is a fraction of the frame height. The
+pairwise covering array does not include these ten entries.
+
+Four further entries are deep shots, one per depth effect: parallax, where layers
+at different depths cross the frame at different speeds as the camera moves; roll,
+where the camera turns about its axis; disc bokeh, where out-of-focus highlights
+blur into discs; and hexagonal bokeh, where the same highlights blur into
+hexagons. The pairwise covering array does not include these four entries. A deep shot
+has its own stage, so its name has no background, shape or motion segment: its name is
+the flat name without those three segments, ending in the depth segment.
 
 The defect axis contains the no-defect case (`nodef`) and fourteen single
 faults: `trunc-before` (file cut just before a box) and `trunc-within` (file cut

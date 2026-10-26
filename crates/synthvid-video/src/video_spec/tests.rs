@@ -1,8 +1,11 @@
 use super::*;
+use crate::camera::Timing;
+use crate::medium::Medium;
+use crate::optics::Optics;
 use crate::testutil::Frac;
 use synthvid_scene::{
-    Background, Camera, CaptureCarrier, Channel, Dimensions, FrameCount, Height, Magnification,
-    Motion, Numerator, Point, Ratio, Rgb8, Rotation, Turns, Width, Zoom,
+    Background, CaptureCarrier, Channel, Dimensions, FrameCount, Height, Magnification, Motion,
+    Numerator, Point, Ratio, Rgb8, Rotation, Turns, View, Width, Zoom,
 };
 use synthvid_testkit::{ensure_eq, refusal, Fail, OrFail as _};
 
@@ -18,30 +21,39 @@ fn project_box(rate: FrameRate) -> CaptureRate {
     })
 }
 
-/// A two-frame, 16 by 16 grey scene at the given playback rate.
-fn scene_at(frame_rate: FrameRate) -> Result<Scene, Fail> {
-    let origin = Point {
-        across: Ratio::from_integer(Numerator(0)),
-        down: Ratio::from_integer(Numerator(0)),
-    };
-    let camera = Camera::new(
-        Motion::Fixed(origin),
-        Rotation::Fixed(Turns::new(Ratio::from_integer(Numerator(0)))),
-        Zoom::Fixed(Magnification::new(Ratio::from_integer(Numerator(1))).or_fail()?),
-    );
-    Ok(Scene {
-        dimensions: Dimensions::new(Width::new(16).or_fail()?, Height::new(16).or_fail()?),
-        frame_rate,
-        frame_count: FrameCount::new(2).or_fail()?,
+/// A two-frame gray scene with no objects.
+fn scene() -> Scene {
+    Scene {
         scale: None,
         background: Background::Solid(Rgb8 {
             red: Channel(128),
             green: Channel(128),
             blue: Channel(128),
         }),
-        camera,
         objects: Vec::new(),
-    })
+    }
+}
+
+/// A still camera of 16 by 16 sensels that records two frames at the given playback rate.
+fn camera_at(frame_rate: FrameRate) -> Result<Camera, Fail> {
+    let origin = Point {
+        across: Ratio::from_integer(Numerator(0)),
+        down: Ratio::from_integer(Numerator(0)),
+    };
+    let view = View::new(
+        Motion::Fixed(origin),
+        Rotation::Fixed(Turns::new(Ratio::from_integer(Numerator(0)))),
+        Zoom::Fixed(Magnification::new(Ratio::from_integer(Numerator(1))).or_fail()?),
+    );
+    Ok(Camera::new(
+        view,
+        Optics::Off,
+        &Recorder::new(
+            Medium::Off,
+            Dimensions::new(Width::new(16).or_fail()?, Height::new(16).or_fail()?),
+            Timing::new(frame_rate, FrameCount::new(2).or_fail()?),
+        ),
+    ))
 }
 
 fn iso(capture: CaptureRate) -> Container {
@@ -58,10 +70,9 @@ fn spec_with(
 ) -> Result<Result<VideoSpec, VideoSpecError>, Fail> {
     Ok(VideoSpec::new(
         JsonEntryName::new("capture-spec").or_fail()?,
-        scene_at(playback)?,
-        Encoding::Raw,
-        container,
-        None,
+        scene(),
+        camera_at(playback)?,
+        Format::new(Encoding::Raw, container, None),
     ))
 }
 
@@ -160,4 +171,59 @@ fn equal_ntsc_capture_is_refused_in_other_spelling() {
         check_equal_capture_refused_for_ntsc_in_other_spelling(),
         Ok(())
     );
+}
+
+fn check_playback_rate_comes_from_camera() -> Result<(), Fail> {
+    let playback = rate(Frac(30000, 1001))?;
+    let spec = spec_with(playback, Container::Avi)?.or_fail()?;
+    ensure_eq!(spec.recorder().timing().rate(), playback);
+    ensure_eq!(spec.frame_rates().or_fail()?.playback(), playback);
+    Ok(())
+}
+
+/// The playback rate of a specification is the rate its camera's timing declares, here the
+/// awkward NTSC rate 30000/1001.
+#[test]
+fn playback_rate_comes_from_camera() {
+    assert_eq!(check_playback_rate_comes_from_camera(), Ok(()));
+}
+
+fn check_camera_round_trips() -> Result<(), Fail> {
+    let camera = camera_at(rate(Frac(30000, 1001))?)?;
+    let spec = VideoSpec::new(
+        JsonEntryName::new("camera-spec").or_fail()?,
+        scene(),
+        camera.clone(),
+        Format::new(Encoding::Raw, Container::Avi, None),
+    )
+    .or_fail()?;
+    ensure_eq!(spec.camera(), Some(&camera));
+    Ok(())
+}
+
+/// A specification returns the camera it was built with.
+#[test]
+fn camera_round_trips() {
+    assert_eq!(check_camera_round_trips(), Ok(()));
+}
+
+/// A specification built from a scene and camera holds a flat shot of them.
+fn check_built_spec_holds_flat_shot() -> Result<(), Fail> {
+    let spec = spec_with(rate(Frac(30000, 1001))?, Container::Avi)?.or_fail()?;
+    match spec.shot() {
+        Shot::Flat(flat) => {
+            ensure_eq!(flat.scene(), &scene());
+            ensure_eq!(spec.recorder(), flat.camera().recorder());
+            Ok(())
+        }
+        Shot::Deep(_) => Err(Fail::here(format_args!(
+            "a specification built from a scene and camera must hold a flat shot"
+        ))),
+    }
+}
+
+/// A specification built from a scene and a camera holds a flat shot of them.
+#[test]
+fn built_spec_holds_flat_shot() {
+    assert_eq!(check_built_spec_holds_flat_shot(), Ok(()));
 }

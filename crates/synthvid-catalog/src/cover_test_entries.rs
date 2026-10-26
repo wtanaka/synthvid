@@ -66,9 +66,11 @@ pub(crate) fn avi_truncated_entry() -> Result<Entry, synthvid_testkit::Fail> {
     use synthvid_encode::defects::{BoxAddress, BoxStep, BoxTag, ContainerKind};
     entry_like(EntrySize::Tiny10, |entry| {
         entry.frame_rate = FrameRateValue::Sixty;
-        entry.background = BackgroundAxis::Checker;
-        entry.shape = ShapeAxis::Rect;
-        entry.motion = MotionAxis::Linear;
+        entry.scene = EntryScene::Flat(FlatScene::new(
+            BackgroundAxis::Checker,
+            ShapeAxis::Rect,
+            MotionAxis::Linear,
+        ));
         entry.coding = CodingAxis::MotionJpeg;
         entry.set_container_axis(ContainerAxis::Avi);
         entry.track_matrix = TrackMatrixAxis::Rotate90;

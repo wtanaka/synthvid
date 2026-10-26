@@ -7,6 +7,7 @@
 
 use core::num::NonZeroI64;
 
+use crate::camera::Camera;
 use crate::frame_bounds::FrameBounds;
 use crate::manifest::{FrameObjectState, ManifestBounds, ManifestPoint, OnScreen};
 use crate::manifest_values::OnScreenError;
@@ -52,7 +53,7 @@ fn world_centre(centre: Point, scale: Scale) -> Result<ManifestPoint, Generation
     }))
 }
 
-/// Records every object the renderer draws at `frame`.
+/// Records every object the renderer draws at `frame`, as `camera` views them.
 ///
 /// [`synthvid_scene::render_into`] takes the same placements from the scene
 /// crate's `object_states`, and the extent is built from the same geometry
@@ -66,8 +67,10 @@ fn world_centre(centre: Point, scale: Scale) -> Result<ManifestPoint, Generation
 /// or a world coordinate does.
 pub fn frame_objects(
     scene: &Scene,
+    camera: &Camera,
     frame: FrameIndex,
 ) -> Result<Vec<FrameObjectState>, GenerationError> {
+    let dimensions = camera.dimensions();
     let frame_bounds = FrameBounds(
         Bounds::new(Corners {
             min: Point {
@@ -76,16 +79,17 @@ pub fn frame_objects(
             },
             max: Point {
                 across: Ratio::from_integer(Numerator(
-                    NonZeroI64::from(scene.dimensions.width.get()).get(),
+                    NonZeroI64::from(dimensions.width.get()).get(),
                 )),
                 down: Ratio::from_integer(Numerator(
-                    NonZeroI64::from(scene.dimensions.height.get()).get(),
+                    NonZeroI64::from(dimensions.height.get()).get(),
                 )),
             },
         })
         .map_err(|BoundsError::Inverted| GenerationError::ObjectState(ObjectStep::FrameBounds))?,
     );
-    let states = object_states(scene, frame).map_err(GenerationError::SceneFrameRender)?;
+    let states =
+        object_states(scene, camera.view(), frame).map_err(GenerationError::SceneFrameRender)?;
     let mut objects = Vec::new();
     for state in states {
         match state.extent {

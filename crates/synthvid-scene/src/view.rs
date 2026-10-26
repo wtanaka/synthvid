@@ -1,4 +1,4 @@
-//! Camera rotation and magnification as closed-form functions of the frame number.
+//! View rotation and magnification as closed-form functions of the frame number.
 //!
 //! Translation is a position over time and reuses [`Motion`]. Rotation and magnification are not
 //! positions: an angle is a single scalar in turns, and a magnification is a
@@ -52,7 +52,7 @@ impl fmt::Display for MagnificationError {
 
 impl Error for MagnificationError {}
 
-/// A camera magnification.
+/// A view magnification.
 ///
 /// The value is strictly positive by construction: [`Magnification::new`]
 /// rejects zero and negative ratios, and every [`Zoom`] variant only holds
@@ -81,7 +81,7 @@ impl Magnification {
     }
 }
 
-/// Camera rotation as a closed-form function of the frame number.
+/// View rotation as a closed-form function of the frame number.
 ///
 /// Every variant evaluates at a frame index without touching any other frame,
 /// so results are identical whether frames run forwards, backwards, or
@@ -100,7 +100,7 @@ pub enum Rotation {
     },
 }
 
-/// Camera magnification as a closed-form function of the frame number.
+/// View magnification as a closed-form function of the frame number.
 ///
 /// Every variant evaluates at a frame index without touching any other frame,
 /// so results are identical whether frames run forwards, backwards, or
@@ -123,19 +123,19 @@ pub enum Zoom {
     },
 }
 
-/// Camera transform of a scene.
+/// View transform of a scene.
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
-pub struct Camera {
-    /// Translation of the camera center as a function of frame.
+pub struct View {
+    /// Translation of the view center as a function of frame.
     pub motion: Motion,
-    /// Rotation of the camera as a function of frame.
+    /// Rotation of the view as a function of frame.
     pub rotation: Rotation,
-    /// Magnification of the camera as a function of frame.
+    /// Magnification of the view as a function of frame.
     pub zoom: Zoom,
 }
 
-impl Camera {
-    /// Creates a camera from its translation, rotation, and magnification.
+impl View {
+    /// Creates a view from its translation, rotation, and magnification.
     #[must_use]
     pub const fn new(motion: Motion, rotation: Rotation, zoom: Zoom) -> Self {
         Self {

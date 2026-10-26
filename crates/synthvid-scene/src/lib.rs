@@ -17,19 +17,22 @@
 //!
 //! | Module     | Owns                                                    |
 //! | ---------- | ------------------------------------------------------- |
-//! | [`camera`] | camera rotation and magnification over frames         |
+//! | [`view`]   | view translation, rotation and zoom over frames         |
 //! | [`ratio`]  | exact rational arithmetic                               |
 //! | [`render`] | closed-form frame rendering                             |
 //! | [`units`]  | frame indices and counts, dimensions, frame rate, seed  |
 //! | [`rng`]    | deterministic pseudo-random number generation           |
+//! | [`gauss`]  | normal draws, per-stream seeds, integer square roots    |
 //! | [`color`]  | pixel color, buffer sizing, channel blending            |
 //! | [`frame`]  | owned RGB pixel buffers with a checked length invariant |
 //! | [`frame_rates`] | playback and optional distinct capture frame rates      |
 //! | [`trig`]   | platform-independent sine and cosine                    |
 //! | [`geom`]   | points, vectors, and exact affine transforms            |
+//! | [`lattice`] | exact coverage on a 1/256-sensel integer lattice       |
 //! | [`motion`] | closed-form evaluation of motion over frames            |
 //! | [`raster`] | drawing geometry onto a frame                           |
 //! | [`scene`]  | declarative scene description                           |
+//! | [`stage`]  | flat cut-outs on depth planes and their closed-form tracks |
 //!
 //! New work belongs in the module that owns its concern. A concern that fits
 //! none of them is a new module, declared here alongside the others.
@@ -60,32 +63,40 @@
 //! ```
 #![forbid(unsafe_code)]
 
-pub mod camera;
 pub mod color;
 pub mod frame;
 pub mod frame_rates;
+pub mod gauss;
 pub mod geom;
+pub mod lattice;
 pub mod motion;
 pub mod raster;
 pub mod ratio;
 pub mod render;
 pub mod rng;
 pub mod scene;
+pub mod stage;
 pub mod trig;
 pub mod units;
+pub mod view;
 
 #[cfg(test)]
 pub mod testutil;
 
-pub use crate::camera::{
-    rotation_at, zoom_at, Camera, Magnification, MagnificationError, Rotation, Turns, Zoom,
-};
 pub use crate::color::{required_buffer_len, Alpha, Channel, Rgb8};
 pub use crate::frame::{Frame, FrameError, PixelBuffer};
 pub use crate::frame_rates::{
     CaptureCarrier, DistinctCapture, FrameRates, FrameRatesError, RatePair,
 };
+pub use crate::gauss::{
+    isqrt, normal_draw, normal_from_uniform_draws, stream_seed, IntSqrtInput, IntSqrtOutput,
+    NormalDraw, StreamIndex, UniformByte,
+};
 pub use crate::geom::{Affine, Point, Similarity, Vector};
+pub use crate::lattice::{
+    covers, sample_point, Containment, DiscRadius, LatticeBounds, LatticeError, LatticePoint,
+    LatticePolygon, LatticeShape, LatticeShift, PixelGrid, SampleIndex, SampleSlot, SubSensel,
+};
 pub use crate::motion::position_at;
 pub use crate::raster::{
     cross_extent, disc_extent, draw_cross, draw_line, fill_disc, fill_polygon, fill_rect,
@@ -98,8 +109,15 @@ pub use crate::scene::{
     Background, BlobCount, BlobRadii, BlobRadius, Direction, FrameSpan, FrameSpanError, Motion,
     Object, Scale, ScaleError, Scene, Shape,
 };
+pub use crate::stage::{
+    track_at, Coord, CoordError, Cutout, Extent, ExtentError, HalfAcceleration, Layer, LocalPoint,
+    Outline, PerFrame, PerFrameSquared, Position, RawCoord, Stage, Track, TrackError, Velocity,
+};
 pub use crate::trig::{cos_turns, sin_turns};
 pub use crate::units::{
     Dimensions, FrameCount, FrameCountError, FrameIndex, FrameRate, FrameRateError, Height,
     HeightError, ObjectIndex, Seed, Width, WidthError,
+};
+pub use crate::view::{
+    rotation_at, zoom_at, Magnification, MagnificationError, Rotation, Turns, View, Zoom,
 };

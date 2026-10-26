@@ -9,7 +9,7 @@
 use crate::geom::{Point, Vector};
 use crate::ratio::helpers::AxisPixel;
 use crate::ratio::{
-    ceil_ratio, floor_ratio, half_ratio, pixel_centre_ratio, quarter_ratio, Numerator, Overflow,
+    ceil_ratio, floor_ratio, half_ratio, pixel_center_ratio, quarter_ratio, Numerator, Overflow,
     Ratio,
 };
 use core::num::{NonZeroI64, NonZeroU16};
@@ -82,10 +82,10 @@ pub(super) fn clipped_pixel_range(
 ///
 /// The center is `(x + 1 / 2, y + 1 / 2)` as [`Ratio`]s. A `u16` index cannot
 /// overflow the numerator, so this is total.
-pub(super) fn pixel_centre(column: Column, row: Row) -> Point {
+pub(super) fn pixel_center(column: Column, row: Row) -> Point {
     Point {
-        across: pixel_centre_ratio(AxisPixel(column.0)),
-        down: pixel_centre_ratio(AxisPixel(row.0)),
+        across: pixel_center_ratio(AxisPixel(column.0)),
+        down: pixel_center_ratio(AxisPixel(row.0)),
     }
 }
 

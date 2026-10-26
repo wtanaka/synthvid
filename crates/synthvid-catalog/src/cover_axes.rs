@@ -149,6 +149,27 @@ pub enum ScaleAxis {
     Undeclared,
 }
 
+/// Recording axis: the medium the camera records the light through.
+///
+/// The covering array holds every entry at [`RecordingAxis::Ideal`]. The
+/// recording singletons vary it, one non-ideal preset each, and the presets
+/// and their media are defined in `cover_recording`.
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
+pub enum RecordingAxis {
+    /// An ideal recording with no noise.
+    Ideal,
+    /// A sensor at low sensitivity, with shot and read noise.
+    LowIso,
+    /// A sensor at high sensitivity, with stronger shot and read noise.
+    HighIso,
+    /// A sensor with fixed-pattern gain variation and column offsets.
+    Banded,
+    /// Photographic film with fine, sharp grain.
+    FineGrain,
+    /// Photographic film with coarse, spread and blurred grain.
+    CoarseGrain,
+}
+
 /// Holds all axis definitions for the catalog.
 pub(super) struct AxisArrays {
     /// Dimension values.
@@ -193,6 +214,112 @@ pub(super) fn make_dimensions(size: RawSize) -> Result<Dimensions, CatalogError>
         Width::from_nonzero(width),
         Height::from_nonzero(height),
     ))
+}
+
+/// The dimensions axis values, in declared order.
+fn axis_dimensions() -> Result<[Dimensions; 5], CatalogError> {
+    Ok([
+        make_dimensions(RawSize {
+            width: NonZeroU16::new(16),
+            height: NonZeroU16::new(16),
+        })?,
+        make_dimensions(RawSize {
+            width: NonZeroU16::new(320),
+            height: NonZeroU16::new(240),
+        })?,
+        make_dimensions(RawSize {
+            width: NonZeroU16::new(640),
+            height: NonZeroU16::new(480),
+        })?,
+        make_dimensions(RawSize {
+            width: NonZeroU16::new(1280),
+            height: NonZeroU16::new(720),
+        })?,
+        make_dimensions(RawSize {
+            width: NonZeroU16::new(1920),
+            height: NonZeroU16::new(1080),
+        })?,
+    ])
+}
+
+/// The frame count axis values, in declared order.
+fn axis_frame_counts() -> Result<[FrameCountValue; 5], CatalogError> {
+    Ok([
+        FrameCountValue::new(1)?,
+        FrameCountValue::new(10)?,
+        FrameCountValue::new(100)?,
+        FrameCountValue::new(1000)?,
+        FrameCountValue::new(20000)?,
+    ])
+}
+
+/// Defines all axis values for the catalog.
+pub(super) fn define_axes() -> Result<AxisArrays, CatalogError> {
+    // Define all axis values in declared order
+    let dimensions = axis_dimensions()?;
+    let frame_counts = axis_frame_counts()?;
+
+    let frame_rates = [
+        FrameRateValue::Thirty,
+        FrameRateValue::Sixty,
+        FrameRateValue::OneTwenty,
+        FrameRateValue::TwoForty,
+        FrameRateValue::Ntsc,
+        FrameRateValue::Absurd,
+    ];
+
+    let backgrounds = [
+        BackgroundAxis::Solid,
+        BackgroundAxis::Checker,
+        BackgroundAxis::Gradient,
+        BackgroundAxis::Blobs,
+        BackgroundAxis::Grid,
+    ];
+
+    let shapes = [
+        ShapeAxis::Disc,
+        ShapeAxis::Rect,
+        ShapeAxis::Polygon,
+        ShapeAxis::Cross,
+    ];
+
+    let motions = [
+        MotionAxis::Fixed,
+        MotionAxis::Linear,
+        MotionAxis::Ballistic,
+        MotionAxis::Circular,
+        MotionAxis::Oscillating,
+        MotionAxis::Walk,
+    ];
+
+    let codings = [CodingAxis::Raw, CodingAxis::MotionJpeg];
+
+    let containers = [ContainerAxis::Iso, ContainerAxis::Avi];
+
+    let track_matrices = [
+        TrackMatrixAxis::Identity,
+        TrackMatrixAxis::Rotate90,
+        TrackMatrixAxis::Rotate180,
+        TrackMatrixAxis::Rotate270,
+    ];
+
+    let scales = [ScaleAxis::Declared, ScaleAxis::Undeclared];
+
+    let defects = all_defects()?;
+
+    Ok(AxisArrays {
+        dimensions,
+        frame_counts,
+        frame_rates,
+        backgrounds,
+        shapes,
+        motions,
+        codings,
+        containers,
+        track_matrices,
+        scales,
+        defects,
+    })
 }
 
 /// The container format a defect can only be applied to, or `None` when it

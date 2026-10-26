@@ -5,7 +5,7 @@
 //! centre, its screen centre, and its screen-space extent. The renderer takes
 //! each object's scene position from the same [`placement`] call, and the
 //! extent is built from the same geometry helpers (`rect_corners`,
-//! `shifted_vertices`, and the camera transform) that the drawing code uses.
+//! `shifted_vertices`, and the view transform) that the drawing code uses.
 //! The drawing code still rebuilds its own geometry rather than consuming the
 //! mapped points computed here, so the two agree by sharing those helpers, not
 //! by construction.
@@ -16,9 +16,10 @@ use crate::raster::{disc_extent, polygon_extent, BoundsOrEmpty, HalfSize};
 use crate::ratio::{Numerator, Overflow, Ratio};
 use crate::scene::{Membership, Object, Scene, Shape};
 use crate::units::{FrameIndex, ObjectIndex};
+use crate::view::View;
 
 use super::shape::{rect_corners, shifted_vertices};
-use super::{camera_frame, CameraFrame, RenderError};
+use super::{view_frame, RenderError, ViewFrame};
 
 /// Where one visible object is at one frame.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -27,7 +28,7 @@ pub struct ObjectState {
     pub index: ObjectIndex,
     /// The object's motion position, in scene space.
     pub centre_scene: Point,
-    /// That position carried through the camera, in screen space.
+    /// That position carried through the view, in screen space.
     pub centre_screen: Point,
     /// The screen-space box the object is drawn within, or
     /// [`BoundsOrEmpty::Empty`] when it draws nothing.
@@ -77,22 +78,18 @@ pub(super) fn object_index(
 }
 
 /// Returns the screen-space extent of `shape` centred on `at`.
-fn screen_extent(
-    shape: &Shape,
-    at: Point,
-    camera: &CameraFrame,
-) -> Result<BoundsOrEmpty, Overflow> {
+fn screen_extent(shape: &Shape, at: Point, view: &ViewFrame) -> Result<BoundsOrEmpty, Overflow> {
     let map = |points: &[Point], out: &mut Vec<Point>| -> Result<(), Overflow> {
         for point in points {
-            out.push(camera.transform.apply(*point)?);
+            out.push(view.transform.apply(*point)?);
         }
         Ok(())
     };
     let mut mapped = Vec::new();
     match shape {
         Shape::Disc { radius } => {
-            let centre = camera.transform.apply(at)?;
-            disc_extent(centre, radius.checked_mul(camera.zoom)?)
+            let centre = view.transform.apply(at)?;
+            disc_extent(centre, radius.checked_mul(view.zoom)?)
         }
         Shape::Rect {
             half_width,
@@ -141,7 +138,7 @@ fn screen_extent(
     }
 }
 
-/// Evaluates where `object` is at `slot.frame` under `camera`.
+/// Evaluates where `object` is at `slot.frame` under `view`.
 ///
 /// # Errors
 ///
@@ -149,17 +146,17 @@ fn screen_extent(
 /// arithmetic.
 pub(super) fn placement(
     object: &Object,
-    camera: &CameraFrame,
+    view: &ViewFrame,
     slot: Slot,
 ) -> Result<ObjectState, RenderError> {
     let centre_scene =
         position_at(&object.motion, slot.frame).map_err(|Overflow| slot.overflow())?;
-    let centre_screen = camera
+    let centre_screen = view
         .transform
         .apply(centre_scene)
         .map_err(|Overflow| slot.overflow())?;
     let extent =
-        screen_extent(&object.shape, centre_scene, camera).map_err(|Overflow| slot.overflow())?;
+        screen_extent(&object.shape, centre_scene, view).map_err(|Overflow| slot.overflow())?;
     Ok(ObjectState {
         index: slot.object,
         centre_scene,
@@ -169,7 +166,7 @@ pub(super) fn placement(
 }
 
 /// Returns the state of every object visible at `frame`, in declaration
-/// order.
+/// order, as seen through `view`.
 ///
 /// An object whose visibility span contains `frame` is reported even when it
 /// draws nothing; its extent is then [`BoundsOrEmpty::Empty`].
@@ -178,10 +175,14 @@ pub(super) fn placement(
 ///
 /// # Errors
 ///
-/// Returns [`RenderError::CameraOverflow`] or [`RenderError::ObjectOverflow`]
+/// Returns [`RenderError::ViewOverflow`] or [`RenderError::ObjectOverflow`]
 /// when a placement overflows exact arithmetic.
-pub fn object_states(scene: &Scene, frame: FrameIndex) -> Result<Vec<ObjectState>, RenderError> {
-    let camera = camera_frame(&scene.camera, frame)?;
+pub fn object_states(
+    scene: &Scene,
+    view: &View,
+    frame: FrameIndex,
+) -> Result<Vec<ObjectState>, RenderError> {
+    let placed = view_frame(view, frame)?;
     let mut states = Vec::new();
     for (position, object) in scene.objects.iter().enumerate() {
         if object.visible.contains(frame) == Membership::Inside {
@@ -189,7 +190,7 @@ pub fn object_states(scene: &Scene, frame: FrameIndex) -> Result<Vec<ObjectState
                 frame,
                 object: object_index(frame, ObjectPosition(position))?,
             };
-            states.push(placement(object, &camera, slot)?);
+            states.push(placement(object, &placed, slot)?);
         }
     }
     Ok(states)

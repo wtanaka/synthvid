@@ -1,13 +1,18 @@
 //! Video specification: the parameters that explicitly drive rendering.
 //!
-//! A `Scene` describes sensible content. A `VideoSpec` adds the choices that turn a scene
-//! into a file, and its fields have the range of the file format's fields, so it can
-//! describe a file that makes no sense. The manifest header's declared values are the
-//! scene's computed values. A coded size or sample table that differs from the scene's has
-//! no field here, because `Scene` cannot express it; such fields belong on `VideoSpec`,
-//! defaulting to the scene's values. Byte-level corruption stays in the defect list.
+//! A `Scene` describes sensible content, and a `Camera` records it. A `VideoSpec` adds the
+//! choices that turn them into a file, and its fields have the range of the file format's
+//! fields, so it can describe a file that makes no sense. The manifest header's declared
+//! values are the camera's computed values. A coded size or sample table that differs from
+//! the camera's has no field here, because `Camera` cannot express it; such fields belong on
+//! `VideoSpec`, defaulting to the camera's values. Byte-level corruption stays in the defect
+//! list.
 
+use crate::camera::Camera;
 use crate::json_names::JsonEntryName;
+use crate::recorder::Recorder;
+use crate::rig::DeepShot;
+use crate::shot::{FlatShot, Shot};
 use core::error::Error;
 use core::fmt;
 use synthvid_encode::{ChromaSampling, Defect, Quality};
@@ -97,26 +102,72 @@ pub enum Container {
     Avi,
 }
 
+/// How a video is written: its encoding, its container, and an optional defect to apply.
+///
+/// The parts are private, so a format is built only through [`Format::new`]. Whether a
+/// defect can meet the encoding and container is decided when the format is given to
+/// [`VideoSpec::new`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Format {
+    /// How frames are encoded.
+    encoding: Encoding,
+    /// The container the encoded frames are written in.
+    container: Container,
+    /// Optional defect to apply to the media bytes after encoding.
+    defect: Option<Defect>,
+}
+
+impl Format {
+    /// Creates a format from its encoding, container, and optional defect.
+    #[must_use]
+    pub const fn new(encoding: Encoding, container: Container, defect: Option<Defect>) -> Self {
+        Self {
+            encoding,
+            container,
+            defect,
+        }
+    }
+
+    /// Returns the encoding.
+    #[must_use]
+    pub const fn encoding(&self) -> Encoding {
+        self.encoding
+    }
+
+    /// Returns the container format.
+    #[must_use]
+    pub const fn container(&self) -> Container {
+        self.container
+    }
+
+    /// Returns a reference to the optional defect.
+    #[must_use]
+    pub const fn defect(&self) -> Option<&Defect> {
+        self.defect.as_ref()
+    }
+}
+
 /// An explicit video specification that drives rendering.
 ///
-/// All parameters needed to render a video: the scene geometry, encoding parameters,
+/// All parameters needed to render a video: the shot to record, encoding parameters,
 /// container format, and any defects to apply.
 ///
-/// The encoder receives exactly the frames the scene produces. Fields for a coded size
-/// or sample table differing from the scene's are absent because Scene cannot express them;
-/// they belong on this type, defaulting to the scene's values. Byte-level corruption stays
-/// in the defect list.
+/// The shot is either a flat scene recorded by a camera or a deep shot seen through a rig.
+/// The encoder receives exactly the frames the shot's recorder records. Fields for a coded size
+/// or sample table differing from the recorder's are absent because the shot cannot express
+/// them; they belong on this type, defaulting to the recorder's values. Byte-level corruption
+/// stays in the defect list.
 #[derive(Clone, Debug)]
 pub struct VideoSpec {
     /// Manifest name: free text chosen by the spec builder, not derived from or checked
     /// against the codec or container.
     name: JsonEntryName,
-    /// The scene to render: camera, background, objects, frame rate, dimensions.
-    scene: Scene,
+    /// The shot to record: a flat scene and its camera, or a deep shot and its rig.
+    shot: Shot,
     /// How frames are encoded.
     encoding: Encoding,
     /// The container's shape, with its validated capture part when it is ISO. The
-    /// playback rate is `scene.frame_rate` and is not stored a second time.
+    /// playback rate is the shot's recorder timing rate and is not stored a second time.
     shape: ContainerShape,
     /// Optional defect to apply to the media bytes after encoding.
     defect: Option<Defect>,
@@ -145,7 +196,7 @@ pub enum VideoSpecError {
     /// The defect that leaves the size out of the container needs motion-JPEG frames in an
     /// ISO container: only then does the size survive in the frames for a reader to find.
     SizeOmissionNeedsMjpegInIso,
-    /// The playback and capture rates were refused by the scene's frame rates.
+    /// The playback and capture rates were refused by the camera's frame rates.
     FrameRates(FrameRatesError),
 }
 
@@ -224,7 +275,7 @@ const fn check_size_omission(
 ///
 /// The equality rule is applied by [`FrameRates::from_playback_and_capture`] here, at
 /// construction. [`VideoSpec::frame_rates`] applies it again when the rates are read; that
-/// second call cannot fail while the scene is immutable. The playback rate is the scene's.
+/// second call cannot fail while the shot is immutable. The playback rate is the shot's.
 ///
 /// # Errors
 ///
@@ -262,19 +313,46 @@ impl VideoSpec {
     /// # Errors
     ///
     /// Returns [`VideoSpecError`] when the defect cannot meet the encoding and container, or
-    /// when the capture rate equals the scene's playback rate.
+    /// when the capture rate equals the camera's playback rate.
     pub fn new(
         name: JsonEntryName,
         scene: Scene,
-        encoding: Encoding,
-        container: Container,
-        defect: Option<Defect>,
+        camera: Camera,
+        format: Format,
     ) -> Result<Self, VideoSpecError> {
+        let shot = Shot::Flat(Box::new(FlatShot::from_camera(scene, camera)));
+        Self::from_shot(name, shot, format)
+    }
+
+    /// Creates a new video specification for a deep shot seen through its rig.
+    ///
+    /// The playback rate is the rig's recorder timing rate.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`VideoSpecError`] when the defect cannot meet the encoding and container, or
+    /// when the capture rate equals the rig's playback rate.
+    pub fn deep(
+        name: JsonEntryName,
+        deep: DeepShot,
+        format: Format,
+    ) -> Result<Self, VideoSpecError> {
+        Self::from_shot(name, Shot::Deep(Box::new(deep)), format)
+    }
+
+    /// Creates a specification around a shot, checking the defect and splitting the container
+    /// against the shot's playback rate.
+    fn from_shot(name: JsonEntryName, shot: Shot, format: Format) -> Result<Self, VideoSpecError> {
+        let Format {
+            encoding,
+            container,
+            defect,
+        } = format;
         check_defect(encoding, container, defect.as_ref())?;
-        let shape = split_container(scene.frame_rate, container)?;
+        let shape = split_container(shot.recorder().timing().rate(), container)?;
         Ok(Self {
             name,
-            scene,
+            shot,
             encoding,
             shape,
             defect,
@@ -287,10 +365,35 @@ impl VideoSpec {
         &self.name
     }
 
-    /// Returns a reference to the scene.
+    /// Returns the shot to record.
     #[must_use]
-    pub const fn scene(&self) -> &Scene {
-        &self.scene
+    pub const fn shot(&self) -> &Shot {
+        &self.shot
+    }
+
+    /// Returns what records the shot's light: the camera's recorder for a flat shot, and the
+    /// rig's recorder for a deep shot.
+    #[must_use]
+    pub fn recorder(&self) -> Recorder {
+        self.shot.recorder()
+    }
+
+    /// Returns a reference to the scene of a flat shot, or `None` for a deep shot.
+    #[must_use]
+    pub fn scene(&self) -> Option<&Scene> {
+        match &self.shot {
+            Shot::Flat(flat) => Some(flat.scene()),
+            Shot::Deep(_) => None,
+        }
+    }
+
+    /// Returns a reference to the camera that records a flat shot, or `None` for a deep shot.
+    #[must_use]
+    pub fn camera(&self) -> Option<&Camera> {
+        match &self.shot {
+            Shot::Flat(flat) => Some(flat.camera()),
+            Shot::Deep(_) => None,
+        }
     }
 
     /// Returns the encoding.
@@ -312,12 +415,12 @@ impl VideoSpec {
     }
 
     /// Returns the validated playback and capture rates. The playback rate is the
-    /// scene's, and the capture part is the one validated at construction.
+    /// shot's, and the capture part is the one validated at construction.
     ///
     /// # Errors
     ///
     /// Returns [`VideoSpecError::FrameRates`] when the stored capture rate equals the
-    /// scene's playback rate.
+    /// shot's playback rate.
     pub fn frame_rates(&self) -> Result<FrameRates, VideoSpecError> {
         let capture = match self.shape {
             ContainerShape::Iso {
@@ -326,7 +429,7 @@ impl VideoSpec {
             } => capture,
             ContainerShape::Avi => None,
         };
-        FrameRates::from_playback_and_capture(self.scene.frame_rate, capture)
+        FrameRates::from_playback_and_capture(self.shot.recorder().timing().rate(), capture)
             .map_err(VideoSpecError::FrameRates)
     }
 
@@ -344,12 +447,12 @@ impl VideoSpec {
     /// # Errors
     ///
     /// Returns [`VideoSpecError::FrameRates`] when the new container's capture rate equals
-    /// the scene's playback rate.
+    /// the shot's playback rate.
     pub fn with_container(self, container: Container) -> Result<Self, VideoSpecError> {
-        let shape = split_container(self.scene.frame_rate, container)?;
+        let shape = split_container(self.shot.recorder().timing().rate(), container)?;
         Ok(Self {
             name: self.name,
-            scene: self.scene,
+            shot: self.shot,
             encoding: self.encoding,
             shape,
             defect: self.defect,

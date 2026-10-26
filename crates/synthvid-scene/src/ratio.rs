@@ -379,7 +379,10 @@ impl fmt::Display for Ratio {
 }
 
 pub mod helpers;
-pub(crate) use helpers::{ceil_ratio, floor_ratio, half_ratio, pixel_centre_ratio, quarter_ratio};
+pub(crate) use helpers::{
+    ceil_ratio, column_start, derive_stream_seed, floor_ratio, half_ratio, irwin_hall_sample,
+    pixel_center_ratio, quarter_ratio, row_start, sample_axis, track_axis, GridShift,
+};
 
 #[cfg(test)]
 mod tests;

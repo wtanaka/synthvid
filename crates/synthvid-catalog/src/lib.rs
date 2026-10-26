@@ -53,6 +53,12 @@ pub use sha256::{sha256, DIGEST_SIZE};
 #[cfg(test)]
 mod capture_tests;
 #[cfg(test)]
+mod depth_roll_tests;
+#[cfg(test)]
+mod depth_tests;
+#[cfg(test)]
 mod object_state_tests;
+#[cfg(test)]
+mod recording_tests;
 #[cfg(test)]
 mod video_spec_tests;

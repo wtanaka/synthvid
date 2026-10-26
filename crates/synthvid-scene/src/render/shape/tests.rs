@@ -6,9 +6,9 @@ use crate::testutil::Frac;
 use crate::units::{Dimensions, FrameIndex, Height, ObjectIndex, Width};
 use synthvid_testkit::{ensure, ensure_eq, Fail, OrFail as _};
 
-/// Builds the identity camera placement used for shape tests.
-fn identity_placement() -> CameraFrame {
-    CameraFrame {
+/// Builds the identity view placement used for shape tests.
+fn identity_placement() -> ViewFrame {
+    ViewFrame {
         transform: Similarity::identity(),
         zoom: Ratio::from_integer(Numerator(1)),
     }
@@ -29,9 +29,9 @@ fn render_shape(shape: &Shape, fill: Rgb8) -> Result<Frame, Fail> {
         across: half,
         down: half,
     };
-    let camera = identity_placement();
+    let view = identity_placement();
     let brush = Brush {
-        camera: &camera,
+        view: &view,
         colour: fill,
         slot: Slot {
             frame: FrameIndex::new(0),

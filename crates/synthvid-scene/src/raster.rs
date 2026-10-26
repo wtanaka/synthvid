@@ -21,7 +21,7 @@ use crate::frame::{Frame, PixelColumn, PixelCoord, PixelOutOfBounds, PixelRow};
 use crate::geom::Point;
 use crate::ratio::{half_ratio, Numerator, Overflow, Ratio};
 use coverage::{
-    axis_range, clipped_pixel_range, disc_covers, line_covers, pixel_centre, point_in_polygon,
+    axis_range, clipped_pixel_range, disc_covers, line_covers, pixel_center, point_in_polygon,
     PixelSpan,
 };
 use coverage_types::{Column, Inclusion, Interval, Reach, Row};
@@ -58,7 +58,7 @@ fn paint_covered(
     loop {
         let mut column = columns_first;
         loop {
-            if covers(pixel_centre(Column(column), Row(row)))? == Inclusion::Inside {
+            if covers(pixel_center(Column(column), Row(row)))? == Inclusion::Inside {
                 frame
                     .set_pixel(PixelCoord::new(PixelColumn(column), PixelRow(row)), colour)
                     .map_err(|PixelOutOfBounds| Overflow)?;

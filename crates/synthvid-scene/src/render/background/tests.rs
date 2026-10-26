@@ -1,40 +1,22 @@
 use super::*;
-use crate::camera::{Camera, Magnification, Rotation, Turns, Zoom};
-use crate::scene::{Motion, Scene};
-use crate::units::{Dimensions, FrameCount, FrameRate, Height, Width};
+use crate::scene::Scene;
+use crate::units::{Dimensions, Height, Width};
 use synthvid_testkit::{ensure, ensure_eq, Fail, OrFail as _};
 
-/// Builds the identity camera: still at the origin with unit magnification.
-fn identity_camera() -> Result<Camera, Fail> {
-    let zero = Ratio::from_integer(Numerator(0));
-    let angle = Turns::new(zero);
-    let unit = Zoom::Fixed(Magnification::new(Ratio::from_integer(Numerator(1))).or_fail()?);
-    Ok(Camera::new(
-        Motion::Fixed(Point {
-            across: zero,
-            down: zero,
-        }),
-        Rotation::Fixed(angle),
-        unit,
-    ))
-}
-
-/// Builds an 8x8 scene with the given backdrop and no objects.
-fn bare_scene(background: Background) -> Result<Scene, Fail> {
+/// Builds the 8x8 frame dimensions that the bare scenes are painted at.
+fn bare_dimensions() -> Result<Dimensions, Fail> {
     let width = Width::new(8).or_fail()?;
     let height = Height::new(8).or_fail()?;
-    let rate = FrameRate::from_fps(30).or_fail()?;
-    let count = FrameCount::new(4).or_fail()?;
-    let camera = identity_camera()?;
-    Ok(Scene {
-        dimensions: Dimensions::new(width, height),
-        frame_rate: rate,
-        frame_count: count,
+    Ok(Dimensions::new(width, height))
+}
+
+/// Builds a scene with the given backdrop and no objects.
+fn bare_scene(background: Background) -> Scene {
+    Scene {
         scale: None,
         background,
-        camera,
         objects: Vec::new(),
-    })
+    }
 }
 
 #[test]
@@ -58,8 +40,8 @@ fn check_checker_pixels() -> Result<(), Fail> {
         cell,
         even: red,
         odd: blue,
-    })?;
-    let mut frame = Frame::zeroed(scene.dimensions).or_fail()?;
+    });
+    let mut frame = Frame::zeroed(bare_dimensions()?).or_fail()?;
     paint_background(&mut frame, scene.background).or_fail()?;
     ensure_eq!(
         frame.pixel(PixelCoord::new(PixelColumn(0), PixelRow(0))),
@@ -105,8 +87,8 @@ fn check_grid_pixels() -> Result<(), Fail> {
         spacing,
         line: white,
         ground: black,
-    })?;
-    let mut frame = Frame::zeroed(scene.dimensions).or_fail()?;
+    });
+    let mut frame = Frame::zeroed(bare_dimensions()?).or_fail()?;
     paint_background(&mut frame, scene.background).or_fail()?;
     ensure_eq!(
         frame.pixel(PixelCoord::new(PixelColumn(0), PixelRow(3))),
@@ -151,8 +133,8 @@ fn check_gradient_edges() -> Result<(), Fail> {
         from,
         to,
         direction: Direction::Horizontal,
-    })?;
-    let mut frame = Frame::zeroed(scene.dimensions).or_fail()?;
+    });
+    let mut frame = Frame::zeroed(bare_dimensions()?).or_fail()?;
     paint_background(&mut frame, scene.background).or_fail()?;
     ensure_eq!(
         frame.pixel(PixelCoord::new(PixelColumn(0), PixelRow(0))),
@@ -183,9 +165,9 @@ fn check_blobs_deterministic() -> Result<(), Fail> {
         count: BlobCount(9),
         radii: BlobRadii::spanning([BlobRadius(1), BlobRadius(4)]),
     };
-    let scene = bare_scene(blobs)?;
-    let mut once = Frame::zeroed(scene.dimensions).or_fail()?;
-    let mut twice = Frame::zeroed(scene.dimensions).or_fail()?;
+    let scene = bare_scene(blobs);
+    let mut once = Frame::zeroed(bare_dimensions()?).or_fail()?;
+    let mut twice = Frame::zeroed(bare_dimensions()?).or_fail()?;
     paint_background(&mut once, scene.background).or_fail()?;
     paint_background(&mut twice, scene.background).or_fail()?;
     ensure_eq!(
@@ -193,7 +175,7 @@ fn check_blobs_deterministic() -> Result<(), Fail> {
         twice.data(),
         "blob layout from one seed must paint identically twice"
     );
-    let mut ground_only = Frame::zeroed(scene.dimensions).or_fail()?;
+    let mut ground_only = Frame::zeroed(bare_dimensions()?).or_fail()?;
     paint_background(
         &mut ground_only,
         Background::Blobs {

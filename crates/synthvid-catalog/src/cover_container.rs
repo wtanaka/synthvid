@@ -1,7 +1,28 @@
 //! The container of a catalogue entry, with the capture rate only ISO can record.
 
-use super::ContainerAxis;
-use synthvid_video::CaptureRate;
+use super::cover_axes::{AxisArrays, CodingAxis, TrackMatrixAxis};
+use super::cover_greedy::AxisSelection;
+use super::{CatalogError, ContainerAxis};
+use synthvid_video::{CaptureRate, DisplayRotation, Encoding};
+
+/// The container an entry takes from its selected axis value. A selected ISO container
+/// starts with no capture rate beyond the playback rate.
+pub(super) fn entry_container(
+    axes: &AxisArrays,
+    sel: &AxisSelection,
+) -> Result<EntryContainer, CatalogError> {
+    let value = axes
+        .containers
+        .get(sel.container.0)
+        .copied()
+        .ok_or(CatalogError::AxisIndexOutOfRange)?;
+    Ok(match value {
+        ContainerAxis::Iso => EntryContainer::Iso {
+            capture: CaptureRate::PlaybackOnly,
+        },
+        ContainerAxis::Avi => EntryContainer::Avi,
+    })
+}
 
 /// The container of a catalogue entry.
 ///
@@ -47,6 +68,31 @@ impl EntryContainer {
                 capture: self.capture(),
             },
             ContainerAxis::Avi => Self::Avi,
+        }
+    }
+}
+
+impl CodingAxis {
+    /// The pixel encoding this coding axis value writes into a video specification.
+    pub(super) const fn encoding(self) -> Encoding {
+        match self {
+            Self::Raw => Encoding::Raw,
+            Self::MotionJpeg => Encoding::Mjpeg {
+                quality: synthvid_encode::Quality::Q75,
+                chroma: synthvid_encode::ChromaSampling::Yuv420,
+            },
+        }
+    }
+}
+
+impl TrackMatrixAxis {
+    /// The display rotation this track matrix value records in a video specification.
+    pub(super) const fn rotation(self) -> DisplayRotation {
+        match self {
+            Self::Identity => DisplayRotation::Identity,
+            Self::Rotate90 => DisplayRotation::Rot90,
+            Self::Rotate180 => DisplayRotation::Rot180,
+            Self::Rotate270 => DisplayRotation::Rot270,
         }
     }
 }

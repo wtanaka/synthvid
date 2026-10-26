@@ -1,10 +1,10 @@
 //! Shape drawing for frame rendering.
 //!
 //! [`draw_object`] draws one [`Shape`] centered on a scene-space position
-//! through the camera placement of the parent module. Disc centers pass
-//! through the camera transform and radii scale by the magnification;
+//! through the view placement of the parent module. Disc centers pass
+//! through the view transform and radii scale by the magnification;
 //! rectangles, polygon vertices, and cross bars map corner by corner, so
-//! camera rotation turns them into rotated polygons rather than being
+//! view rotation turns them into rotated polygons rather than being
 //! ignored. A placement that overflows exact arithmetic is an error; see
 //! [`RenderError`](super::RenderError). All arithmetic is exact [`Ratio`]
 //! arithmetic.
@@ -17,7 +17,7 @@ use crate::ratio::{Numerator, Overflow, Ratio};
 use crate::scene::Shape;
 
 use super::placement::Slot;
-use super::{CameraFrame, RenderError};
+use super::{RenderError, ViewFrame};
 
 /// Returns the four corners of an axis-aligned rectangle.
 ///
@@ -48,13 +48,13 @@ pub(super) fn rect_corners(centre: Point, half: HalfSize) -> Result<[Point; 4], 
     ])
 }
 
-/// What one object is drawn with: the camera placement for the frame, the
+/// What one object is drawn with: the view placement for the frame, the
 /// object's fill colour, and the frame and object an overflow is reported
 /// against.
 #[derive(Copy, Clone, Debug)]
-pub(super) struct Brush<'camera> {
-    /// The camera placement for the frame being drawn.
-    pub(super) camera: &'camera CameraFrame,
+pub(super) struct Brush<'view> {
+    /// The view placement for the frame being drawn.
+    pub(super) view: &'view ViewFrame,
     /// The colour the object is filled with.
     pub(super) colour: Rgb8,
     /// The frame and object being drawn.
@@ -65,7 +65,7 @@ pub(super) struct Brush<'camera> {
 ///
 /// # Errors
 ///
-/// Returns [`RenderError::ObjectOverflow`] when a vertex camera transform
+/// Returns [`RenderError::ObjectOverflow`] when a vertex view transform
 /// overflows exact arithmetic.
 fn draw_mapped_polygon(
     frame: &mut Frame,
@@ -74,7 +74,7 @@ fn draw_mapped_polygon(
 ) -> Result<(), RenderError> {
     let mut mapped = Vec::with_capacity(scene.len());
     for vertex in scene {
-        let Ok(screen) = brush.camera.transform.apply(*vertex) else {
+        let Ok(screen) = brush.view.transform.apply(*vertex) else {
             return Err(brush.slot.overflow());
         };
         mapped.push(screen);
@@ -100,11 +100,11 @@ pub(super) fn shifted_vertices(at: Point, vertices: &[Point]) -> Result<Vec<Poin
     Ok(scene)
 }
 
-/// Draws a cross shape through the camera transform.
+/// Draws a cross shape through the view transform.
 ///
 /// The cross is the union of its horizontal and vertical bars, each mapped
-/// corner by corner so that camera rotation turns the bars into rotated
-/// rectangles rather than being ignored. With the identity camera the corners
+/// corner by corner so that view rotation turns the bars into rotated
+/// rectangles rather than being ignored. With the identity view the corners
 /// match the untransformed bars exactly. A negative arm or a non-positive
 /// thickness draws nothing.
 ///
@@ -148,9 +148,9 @@ fn draw_cross_shape(
     draw_mapped_polygon(frame, &tall, brush)
 }
 
-/// Draws one shape centred on `at` through the camera placement.
+/// Draws one shape centred on `at` through the view placement.
 ///
-/// `at` is the object position in scene space. Disc radii scale by the camera
+/// `at` is the object position in scene space. Disc radii scale by the view
 /// magnification; everything else maps corner by corner.
 ///
 /// # Errors
@@ -166,10 +166,10 @@ pub(super) fn draw_object(
     let overflow = || brush.slot.overflow();
     match shape {
         Shape::Disc { radius } => {
-            let Ok(centre) = brush.camera.transform.apply(at) else {
+            let Ok(centre) = brush.view.transform.apply(at) else {
                 return Err(overflow());
             };
-            let Ok(scaled) = radius.checked_mul(brush.camera.zoom) else {
+            let Ok(scaled) = radius.checked_mul(brush.view.zoom) else {
                 return Err(overflow());
             };
             fill_disc(frame, centre, scaled, brush.colour).map_err(|Overflow| overflow())

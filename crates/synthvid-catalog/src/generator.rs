@@ -3,13 +3,12 @@
 //! Converts a catalog entry to a video specification and renders it. The pipeline is
 //! deterministic and produces byte-identical output for identical inputs.
 
-use crate::cover::Entry;
-use crate::cover::ScaleAxis;
+use crate::cover::{Entry, FlatScene, ScaleAxis};
 use crate::scene_builder::SceneBuildError;
 use core::error::Error;
 use core::fmt;
 use synthvid_scene::{FrameCount, Scene};
-use synthvid_video::{render, GeneratedEntry, GenerationError};
+use synthvid_video::{render, Camera, GeneratedEntry, GenerationError, Optics, Recorder, Timing};
 
 /// Why a catalogue entry could not be generated.
 ///
@@ -48,29 +47,49 @@ pub fn generate_entry(entry: &Entry) -> Result<GeneratedEntry, EntryError> {
     render(&spec).map_err(EntryError::Render)
 }
 
-/// Builds a scene from a catalog entry.
-pub(crate) fn build_scene(entry: &Entry) -> Result<Scene, SceneBuildError> {
-    use crate::scene_builder::{
-        build_background, build_camera, build_object_from_entry, declared_scale,
-        frame_rate_from_axis,
-    };
+/// Builds the scene a catalog entry shows: its scale, background, and object, where the
+/// background and object come from the given flat scene.
+pub(crate) fn build_scene(entry: &Entry, flat: FlatScene) -> Result<Scene, SceneBuildError> {
+    use crate::scene_builder::{build_background, build_object_from_entry, declared_scale};
 
-    let frame_rate = frame_rate_from_axis(entry.frame_rate())?;
-    let camera = build_camera()?;
-    let background = build_background(entry);
-    let object = build_object_from_entry(entry)?;
+    let background = build_background(flat.background());
+    let object = build_object_from_entry(entry, flat)?;
 
     Ok(Scene {
-        dimensions: entry.dimensions(),
-        frame_rate,
-        frame_count: FrameCount::new(entry.frame_count().get())
-            .map_err(SceneBuildError::FrameCount)?,
         scale: match entry.scale() {
             ScaleAxis::Undeclared => None,
             ScaleAxis::Declared => Some(declared_scale()?),
         },
         background,
-        camera,
         objects: vec![object],
     })
+}
+
+/// Builds the recorder of a catalog entry: the medium of the entry's recording, the entry's
+/// dimensions, and the entry's timing.
+pub(crate) fn build_recorder(entry: &Entry) -> Result<Recorder, SceneBuildError> {
+    use crate::scene_builder::frame_rate_from_axis;
+
+    let rate = frame_rate_from_axis(entry.frame_rate())?;
+    let count = FrameCount::new(entry.frame_count().get())
+        .map_err(|error| SceneBuildError::FrameCount(Box::new(error)))?;
+    let medium = entry.recording().medium()?;
+
+    Ok(Recorder::new(
+        medium,
+        entry.dimensions(),
+        Timing::new(rate, count),
+    ))
+}
+
+/// Builds the camera that records a catalog entry: a fixed view at the origin with no
+/// optics, and the recorder of the entry.
+pub(crate) fn build_camera(entry: &Entry) -> Result<Camera, SceneBuildError> {
+    use crate::scene_builder::build_view;
+
+    Ok(Camera::new(
+        build_view()?,
+        Optics::Off,
+        &build_recorder(entry)?,
+    ))
 }

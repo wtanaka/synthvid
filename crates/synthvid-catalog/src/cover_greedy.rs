@@ -4,7 +4,7 @@ use super::cover_axes::{
     container_defect_compatible, raw_avi_size_compatible, volume_compatible, AxisArrays,
 };
 use super::cover_values::{Compatibility, Coverage, CoverageCount, ValueCount, ValueIndex};
-use super::CatalogError;
+use super::{CatalogError, FlatScene};
 extern crate alloc;
 use alloc::collections::BTreeSet;
 
@@ -214,7 +214,8 @@ pub(super) fn entry_covers_obligation(
 /// # Errors
 ///
 /// Returns `CatalogError::AxisIndexOutOfRange` when the value is not in the
-/// list, which cannot happen if the entry was built from the same `AxisArrays`.
+/// list, which cannot happen if the entry was built from the same `AxisArrays`,
+/// and when a flat axis is asked of a deep entry, which has no flat axis value.
 pub(super) fn get_entry_axis_value(
     entry: &super::Entry,
     column: CoverAxis,
@@ -224,15 +225,27 @@ pub(super) fn get_entry_axis_value(
         CoverAxis::Dimensions => position_of(&axes.dimensions, &entry.dimensions),
         CoverAxis::FrameCount => position_of(&axes.frame_counts, &entry.frame_count),
         CoverAxis::FrameRate => position_of(&axes.frame_rates, &entry.frame_rate),
-        CoverAxis::Background => position_of(&axes.backgrounds, &entry.background),
-        CoverAxis::Shape => position_of(&axes.shapes, &entry.shape),
-        CoverAxis::Motion => position_of(&axes.motions, &entry.motion),
+        CoverAxis::Background => position_of(&axes.backgrounds, &flat_of(entry)?.background()),
+        CoverAxis::Shape => position_of(&axes.shapes, &flat_of(entry)?.shape()),
+        CoverAxis::Motion => position_of(&axes.motions, &flat_of(entry)?.motion()),
         CoverAxis::Coding => position_of(&axes.codings, &entry.coding),
         CoverAxis::Container => position_of(&axes.containers, &entry.container()),
         CoverAxis::TrackMatrix => position_of(&axes.track_matrices, &entry.track_matrix),
         CoverAxis::Scale => position_of(&axes.scales, &entry.scale),
         CoverAxis::Defect => position_of(&axes.defects, &entry.defect),
     }
+}
+
+/// The flat scene of an entry.
+///
+/// # Errors
+///
+/// Returns `CatalogError::AxisIndexOutOfRange` for a deep entry, which has no flat scene.
+fn flat_of(entry: &super::Entry) -> Result<FlatScene, CatalogError> {
+    entry
+        .scene()
+        .flat()
+        .ok_or(CatalogError::AxisIndexOutOfRange)
 }
 
 /// The position of `wanted` within an axis's value list.

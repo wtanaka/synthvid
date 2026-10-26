@@ -40,7 +40,7 @@ fn first_frame_objects(manifest: &ManifestJson) -> Result<FrameObjects<'_>, Fail
 }
 
 /// A 16x16 one-frame fixed disc of radius 20, centred on the frame at
-/// (8, 8), under the identity camera.
+/// (8, 8), under the identity view.
 ///
 /// Computed by hand, independently of the program:
 ///
@@ -49,7 +49,7 @@ fn first_frame_objects(manifest: &ManifestJson) -> Result<FrameObjects<'_>, Fail
 /// * Intersected with the frame [0, 16] x [0, 16] it is the whole frame,
 ///   area 16 * 16 = 256.
 /// * `on_screen` = 256 / 1600 = 4 / 25.
-/// * `centre_screen` = (8, 8), since the camera is the identity.
+/// * `centre_screen` = (8, 8), since the view is the identity.
 /// * scaled: 5/2 scene units per world unit, so `centre_world` is
 ///   8 / (5/2) = 16/5 on each axis.
 #[test]

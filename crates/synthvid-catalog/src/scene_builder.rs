@@ -1,42 +1,60 @@
 //! Scene construction helpers for catalog entries.
 
 use crate::cover::Entry;
-use crate::cover::{BackgroundAxis, FrameRateValue, MotionAxis, ShapeAxis};
+use crate::cover::{BackgroundAxis, FlatScene, FrameRateValue, MotionAxis, ShapeAxis};
 use core::error::Error;
 use core::fmt;
 use core::num::{NonZeroI64, NonZeroU16};
 use synthvid_scene::Overflow;
 use synthvid_scene::{
-    Background, BlobCount, BlobRadii, BlobRadius, Camera, Channel, Direction, FrameCount,
-    FrameIndex, FrameSpan, Magnification, Motion, Numerator, Point, Ratio, Rgb8, Rotation, Scale,
-    Seed, Shape, Turns, Vector, Zoom,
+    Background, BlobCount, BlobRadii, BlobRadius, Channel, Direction, FrameCount, FrameIndex,
+    FrameSpan, Magnification, Motion, Numerator, Point, Ratio, Rgb8, Rotation, Scale, Seed, Shape,
+    Turns, Vector, View, Zoom,
 };
 use synthvid_video::json_names::JsonEntryNameError;
 
-/// Why a catalogue entry's scene could not be built.
+/// Why a catalog entry's scene could not be built.
 ///
 /// A variant that wraps another error shows it in its message.
+///
+/// Every payload is boxed, so the variants are of similar size, as the variants of `Shot` are.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum SceneBuildError {
     /// The entry's frame count is not a valid frame count.
-    FrameCount(synthvid_scene::FrameCountError),
+    FrameCount(Box<synthvid_scene::FrameCountError>),
     /// The oscillation period is not a valid frame count.
-    OscillationPeriod(synthvid_scene::FrameCountError),
+    OscillationPeriod(Box<synthvid_scene::FrameCountError>),
     /// The declared scale is not a valid scale.
-    Scale(synthvid_scene::ScaleError),
-    /// The camera magnification is not a valid magnification.
-    CameraMagnification(synthvid_scene::MagnificationError),
+    Scale(Box<synthvid_scene::ScaleError>),
+    /// The view magnification is not a valid magnification.
+    ViewMagnification(Box<synthvid_scene::MagnificationError>),
     /// An object's visibility span is not a valid span.
-    VisibilitySpan(synthvid_scene::FrameSpanError),
+    VisibilitySpan(Box<synthvid_scene::FrameSpanError>),
     /// A ratio could not be built without overflow.
     RatioConstruction,
     /// The frame rate is not a valid frame rate.
-    FrameRate(synthvid_scene::FrameRateError),
+    FrameRate(Box<synthvid_scene::FrameRateError>),
     /// The name built from the entry's axis values is not a valid entry name.
-    EntryName(JsonEntryNameError),
+    EntryName(Box<JsonEntryNameError>),
     /// The entry's defect cannot meet its coding and container.
-    VideoSpec(synthvid_video::VideoSpecError),
+    VideoSpec(Box<synthvid_video::VideoSpecError>),
+    /// The grain radius of a recording preset is not a positive radius.
+    GrainRadius(Box<synthvid_video::GrainRadiusError>),
+    /// A coordinate of a depth preset lies outside the world bound.
+    Coord(Box<synthvid_scene::CoordError>),
+    /// A layer extent of a depth preset is not a valid extent.
+    Extent(Box<synthvid_scene::ExtentError>),
+    /// The focus distance of a depth preset is not a valid distance.
+    FocusDistance(Box<synthvid_video::FocusDistanceError>),
+    /// The blade count of a depth preset's aperture is not a valid count.
+    BladeCount(Box<synthvid_video::BladeCountError>),
+    /// The deep shot of a depth preset could not be built from its stage, rig and sample grid.
+    DeepShot(Box<synthvid_video::DeepShotError>),
+    /// The grain density of a recording preset is above the largest density a grain can hold.
+    GrainDensity(Box<synthvid_video::GrainDensityError>),
+    /// The sensor noise of a recording preset has no nonzero term.
+    SensorNoise(Box<synthvid_video::SensorNoiseError>),
 }
 
 impl fmt::Display for SceneBuildError {
@@ -47,8 +65,8 @@ impl fmt::Display for SceneBuildError {
                 write!(formatter, "oscillation period invalid: {error}")
             }
             Self::Scale(error) => write!(formatter, "scale declaration failed: {error}"),
-            Self::CameraMagnification(error) => {
-                write!(formatter, "camera magnification failed: {error}")
+            Self::ViewMagnification(error) => {
+                write!(formatter, "view magnification failed: {error}")
             }
             Self::VisibilitySpan(error) => {
                 write!(formatter, "object visibility span invalid: {error}")
@@ -57,6 +75,14 @@ impl fmt::Display for SceneBuildError {
             Self::FrameRate(error) => write!(formatter, "frame rate invalid: {error}"),
             Self::EntryName(error) => write!(formatter, "entry name invalid: {error}"),
             Self::VideoSpec(error) => write!(formatter, "video specification invalid: {error}"),
+            Self::GrainRadius(error) => write!(formatter, "grain radius invalid: {error}"),
+            Self::Coord(error) => write!(formatter, "depth coordinate invalid: {error}"),
+            Self::Extent(error) => write!(formatter, "layer extent invalid: {error}"),
+            Self::FocusDistance(error) => write!(formatter, "focus distance invalid: {error}"),
+            Self::BladeCount(error) => write!(formatter, "blade count invalid: {error}"),
+            Self::DeepShot(error) => write!(formatter, "deep shot invalid: {error}"),
+            Self::GrainDensity(error) => write!(formatter, "grain density invalid: {error}"),
+            Self::SensorNoise(error) => write!(formatter, "sensor noise invalid: {error}"),
         }
     }
 }
@@ -109,22 +135,24 @@ const SCALED_UNITS_PER_WORLD_UNIT: RatioParts = RatioParts {
 pub(crate) fn declared_scale() -> Result<Scale, SceneBuildError> {
     let ratio = make_ratio(SCALED_UNITS_PER_WORLD_UNIT)?;
     // SCALED_UNITS_PER_WORLD_UNIT (5/2) is always positive.
-    Scale::new(ratio).map_err(SceneBuildError::Scale)
+    Scale::new(ratio).map_err(|error| SceneBuildError::Scale(Box::new(error)))
 }
 
-/// Builds a camera with fixed origin and identity rotation.
-pub(crate) fn build_camera() -> Result<Camera, SceneBuildError> {
-    let camera_origin = Point {
+/// Builds a view with fixed origin and identity rotation.
+pub(crate) fn build_view() -> Result<View, SceneBuildError> {
+    let view_origin = Point {
         across: Ratio::from_integer(Numerator(0)),
         down: Ratio::from_integer(Numerator(0)),
     };
-    let camera_motion = Motion::Fixed(camera_origin);
+    let view_motion = Motion::Fixed(view_origin);
     let zero_ratio = Ratio::from_integer(Numerator(0));
-    let camera_rotation = Rotation::Fixed(Turns::new(zero_ratio));
+    let view_rotation = Rotation::Fixed(Turns::new(zero_ratio));
     let one_ratio = Ratio::from_integer(Numerator(1));
-    let camera_zoom =
-        Zoom::Fixed(Magnification::new(one_ratio).map_err(SceneBuildError::CameraMagnification)?);
-    Ok(Camera::new(camera_motion, camera_rotation, camera_zoom))
+    let view_zoom = Zoom::Fixed(
+        Magnification::new(one_ratio)
+            .map_err(|error| SceneBuildError::ViewMagnification(Box::new(error)))?,
+    );
+    Ok(View::new(view_motion, view_rotation, view_zoom))
 }
 
 /// Checker cell size (16 pixels), always valid and nonzero.
@@ -141,9 +169,9 @@ const GRID_SPACING: NonZeroU16 = match NonZeroU16::new(32) {
     None => NonZeroU16::MIN,
 };
 
-/// Builds a background from the entry's background axis.
-pub(crate) const fn build_background(entry: &Entry) -> Background {
-    match entry.background() {
+/// Builds a background from the background axis of a flat scene.
+pub(crate) const fn build_background(background: BackgroundAxis) -> Background {
+    match background {
         BackgroundAxis::Solid => Background::Solid(Rgb8 {
             red: Channel(128),
             green: Channel(128),
@@ -196,11 +224,12 @@ pub(crate) const fn build_background(entry: &Entry) -> Background {
     }
 }
 
-/// Builds an object from the entry's shape and motion axes.
+/// Builds an object from the shape and motion axes of a flat scene.
 pub(crate) fn build_object_from_entry(
     entry: &Entry,
+    flat: FlatScene,
 ) -> Result<synthvid_scene::Object, SceneBuildError> {
-    let shape = match entry.shape() {
+    let shape = match flat.shape() {
         ShapeAxis::Disc => Shape::Disc {
             radius: Ratio::from_integer(Numerator(20)),
         },
@@ -235,10 +264,10 @@ pub(crate) fn build_object_from_entry(
         },
     };
 
-    let motion = build_motion_from_entry(entry)?;
+    let motion = build_motion_from_entry(entry, flat.motion())?;
 
     let visible = FrameSpan::new(FrameIndex::new(0)..FrameIndex::new(entry.frame_count().get()))
-        .map_err(SceneBuildError::VisibilitySpan)?;
+        .map_err(|error| SceneBuildError::VisibilitySpan(Box::new(error)))?;
 
     Ok(synthvid_scene::Object::new(
         shape,
@@ -399,7 +428,8 @@ fn build_oscillating_motion(entry: &Entry) -> Result<Motion, SceneBuildError> {
             across: Ratio::from_integer(Numerator(40)),
             down: Ratio::from_integer(Numerator(0)),
         },
-        period: FrameCount::new(120).map_err(SceneBuildError::OscillationPeriod)?,
+        period: FrameCount::new(120)
+            .map_err(|error| SceneBuildError::OscillationPeriod(Box::new(error)))?,
         phase: Ratio::from_integer(Numerator(0)),
     })
 }
@@ -426,9 +456,12 @@ fn build_walk_motion(entry: &Entry) -> Result<Motion, SceneBuildError> {
     })
 }
 
-/// Builds motion from the entry's motion axis.
-pub(crate) fn build_motion_from_entry(entry: &Entry) -> Result<Motion, SceneBuildError> {
-    match entry.motion() {
+/// Builds the motion of an object of the given motion axis value, over the entry's frames.
+pub(crate) fn build_motion_from_entry(
+    entry: &Entry,
+    motion: MotionAxis,
+) -> Result<Motion, SceneBuildError> {
+    match motion {
         MotionAxis::Fixed => build_fixed_motion(entry),
         MotionAxis::Linear => build_linear_motion(entry),
         MotionAxis::Ballistic => build_ballistic_motion(entry),
@@ -445,23 +478,31 @@ pub(crate) fn frame_rate_from_axis(
     use synthvid_scene::FrameRate;
 
     match fr {
-        FrameRateValue::Thirty => FrameRate::from_fps(30).map_err(SceneBuildError::FrameRate),
-        FrameRateValue::Sixty => FrameRate::from_fps(60).map_err(SceneBuildError::FrameRate),
-        FrameRateValue::OneTwenty => FrameRate::from_fps(120).map_err(SceneBuildError::FrameRate),
-        FrameRateValue::TwoForty => FrameRate::from_fps(240).map_err(SceneBuildError::FrameRate),
+        FrameRateValue::Thirty => {
+            FrameRate::from_fps(30).map_err(|error| SceneBuildError::FrameRate(Box::new(error)))
+        }
+        FrameRateValue::Sixty => {
+            FrameRate::from_fps(60).map_err(|error| SceneBuildError::FrameRate(Box::new(error)))
+        }
+        FrameRateValue::OneTwenty => {
+            FrameRate::from_fps(120).map_err(|error| SceneBuildError::FrameRate(Box::new(error)))
+        }
+        FrameRateValue::TwoForty => {
+            FrameRate::from_fps(240).map_err(|error| SceneBuildError::FrameRate(Box::new(error)))
+        }
         FrameRateValue::Ntsc => {
             let ntsc_fr = make_ratio(RatioParts {
                 numerator: Numerator(30000),
                 denominator: NTSC_DENOMINATOR,
             })?;
-            FrameRate::new(ntsc_fr).map_err(SceneBuildError::FrameRate)
+            FrameRate::new(ntsc_fr).map_err(|error| SceneBuildError::FrameRate(Box::new(error)))
         }
         FrameRateValue::Absurd => {
             let absurd_fr = make_ratio(RatioParts {
                 numerator: Numerator(8000),
                 denominator: ONE,
             })?;
-            FrameRate::new(absurd_fr).map_err(SceneBuildError::FrameRate)
+            FrameRate::new(absurd_fr).map_err(|error| SceneBuildError::FrameRate(Box::new(error)))
         }
     }
 }

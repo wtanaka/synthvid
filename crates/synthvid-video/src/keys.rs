@@ -1,6 +1,6 @@
 //! The closed set of keys a manifest document uses.
 //!
-//! Every key this crate writes is one of these 35. Modelling them as an
+//! Every key this crate writes is one of these 55. Modelling them as an
 //! enum rather than validating a string at the point of use removes the only
 //! runtime failure the serializer had: a hardcoded literal was checked against
 //! the key alphabet and the check was unwrapped, so a typo in a literal was a
@@ -14,12 +14,18 @@ use crate::json_names::JsonKey;
 pub enum ManifestKey {
     /// The `a` key.
     AffineA,
+    /// The `aperture` key.
+    Aperture,
     /// The `b` key.
     AffineB,
     /// The `background` key.
     Background,
     /// The `bbox` key.
     Bbox,
+    /// The `blades` key.
+    Blades,
+    /// The `blur` key.
+    Blur,
     /// The `c` key.
     AffineC,
     /// The `camera` key.
@@ -32,12 +38,20 @@ pub enum ManifestKey {
     CentreScreen,
     /// The `centre_world` key.
     CentreWorld,
+    /// The `column` key.
+    Column,
     /// The `d` key.
     AffineD,
+    /// The `density` key.
+    Density,
     /// The `dimensions` key.
     Dimensions,
     /// The `end` key.
     End,
+    /// The `focal_length` key.
+    FocalLength,
+    /// The `focus` key.
+    Focus,
     /// The `frame_count` key.
     FrameCount,
     /// The `frame_rate` key.
@@ -48,10 +62,14 @@ pub enum ManifestKey {
     Height,
     /// The `index` key.
     Index,
+    /// The `kind` key.
+    Kind,
     /// The `max_x` key.
     MaxX,
     /// The `max_y` key.
     MaxY,
+    /// The `medium` key.
+    Medium,
     /// The `min_x` key.
     MinX,
     /// The `min_y` key.
@@ -62,18 +80,40 @@ pub enum ManifestKey {
     Objects,
     /// The `on_screen` key.
     OnScreen,
+    /// The `optics` key.
+    Optics,
+    /// The `pattern_seed` key.
+    PatternSeed,
+    /// The `prnu` key.
+    Prnu,
+    /// The `radius` key.
+    Radius,
+    /// The `read` key.
+    Read,
     /// The `scale` key.
     Scale,
     /// The `schema_version` key.
     SchemaVersion,
+    /// The `seed` key.
+    Seed,
     /// The `shape` key.
     Shape,
+    /// The `shot` key.
+    Shot,
+    /// The `spread` key.
+    Spread,
     /// The `start` key.
     Start,
+    /// The `strength` key.
+    Strength,
+    /// The `temporal_seed` key.
+    TemporalSeed,
     /// The `tx` key.
     Tx,
     /// The `ty` key.
     Ty,
+    /// The `vignette` key.
+    Vignette,
     /// The `visible` key.
     Visible,
     /// The `width` key.
@@ -87,38 +127,58 @@ pub enum ManifestKey {
 impl ManifestKey {
     /// Every key, for the test that checks each one against the key alphabet.
     #[cfg(test)]
-    const ALL: [Self; 35] = [
+    const ALL: [Self; 55] = [
         Self::AffineA,
+        Self::Aperture,
         Self::AffineB,
         Self::Background,
         Self::Bbox,
+        Self::Blades,
+        Self::Blur,
         Self::AffineC,
         Self::Camera,
         Self::CaptureCarrier,
         Self::CaptureRate,
         Self::CentreScreen,
         Self::CentreWorld,
+        Self::Column,
         Self::AffineD,
+        Self::Density,
         Self::Dimensions,
         Self::End,
+        Self::FocalLength,
+        Self::Focus,
         Self::FrameCount,
         Self::FrameRate,
         Self::Frames,
         Self::Height,
         Self::Index,
+        Self::Kind,
         Self::MaxX,
         Self::MaxY,
+        Self::Medium,
         Self::MinX,
         Self::MinY,
         Self::Name,
         Self::Objects,
         Self::OnScreen,
+        Self::Optics,
+        Self::PatternSeed,
+        Self::Prnu,
+        Self::Radius,
+        Self::Read,
         Self::Scale,
         Self::SchemaVersion,
+        Self::Seed,
         Self::Shape,
+        Self::Shot,
+        Self::Spread,
         Self::Start,
+        Self::Strength,
+        Self::TemporalSeed,
         Self::Tx,
         Self::Ty,
+        Self::Vignette,
         Self::Visible,
         Self::Width,
         Self::PointX,
@@ -134,36 +194,56 @@ impl From<ManifestKey> for JsonKey {
     fn from(key: ManifestKey) -> Self {
         Self::from_known(match key {
             ManifestKey::AffineA => "a",
+            ManifestKey::Aperture => "aperture",
             ManifestKey::AffineB => "b",
             ManifestKey::Background => "background",
             ManifestKey::Bbox => "bbox",
+            ManifestKey::Blades => "blades",
+            ManifestKey::Blur => "blur",
             ManifestKey::AffineC => "c",
             ManifestKey::Camera => "camera",
             ManifestKey::CaptureCarrier => "capture_carrier",
             ManifestKey::CaptureRate => "capture_rate",
             ManifestKey::CentreScreen => "centre_screen",
             ManifestKey::CentreWorld => "centre_world",
+            ManifestKey::Column => "column",
             ManifestKey::AffineD => "d",
+            ManifestKey::Density => "density",
             ManifestKey::Dimensions => "dimensions",
             ManifestKey::End => "end",
+            ManifestKey::FocalLength => "focal_length",
+            ManifestKey::Focus => "focus",
             ManifestKey::FrameCount => "frame_count",
             ManifestKey::FrameRate => "frame_rate",
             ManifestKey::Frames => "frames",
             ManifestKey::Height => "height",
             ManifestKey::Index => "index",
+            ManifestKey::Kind => "kind",
             ManifestKey::MaxX => "max_x",
             ManifestKey::MaxY => "max_y",
+            ManifestKey::Medium => "medium",
             ManifestKey::MinX => "min_x",
             ManifestKey::MinY => "min_y",
             ManifestKey::Name => "name",
             ManifestKey::Objects => "objects",
             ManifestKey::OnScreen => "on_screen",
+            ManifestKey::Optics => "optics",
+            ManifestKey::PatternSeed => "pattern_seed",
+            ManifestKey::Prnu => "prnu",
+            ManifestKey::Radius => "radius",
+            ManifestKey::Read => "read",
             ManifestKey::Scale => "scale",
             ManifestKey::SchemaVersion => "schema_version",
+            ManifestKey::Seed => "seed",
             ManifestKey::Shape => "shape",
+            ManifestKey::Shot => "shot",
+            ManifestKey::Spread => "spread",
             ManifestKey::Start => "start",
+            ManifestKey::Strength => "strength",
+            ManifestKey::TemporalSeed => "temporal_seed",
             ManifestKey::Tx => "tx",
             ManifestKey::Ty => "ty",
+            ManifestKey::Vignette => "vignette",
             ManifestKey::Visible => "visible",
             ManifestKey::Width => "width",
             ManifestKey::PointX => "x",

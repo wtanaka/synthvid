@@ -28,12 +28,26 @@ mod cover_error;
 #[path = "cover_container.rs"]
 mod cover_container;
 
+#[path = "cover_recording.rs"]
+mod cover_recording;
+
+#[path = "cover_depth.rs"]
+mod cover_depth;
+
+#[path = "cover_scene.rs"]
+mod cover_scene;
+
 use cover_capture_pairs::{CapturePair, CAPTURE_PAIRS};
 pub use cover_error::CatalogError;
+use cover_recording::RECORDED_PRESETS;
 
 #[cfg(test)]
 #[path = "cover_tests.rs"]
 mod cover_tests;
+
+#[cfg(test)]
+#[path = "depth_const_tests.rs"]
+mod depth_const_tests;
 
 #[cfg(test)]
 #[path = "cover_test_entries.rs"]
@@ -44,19 +58,20 @@ pub(crate) use cover_test_entries::{avi_truncated_entry, entry_like, AxisValues,
 
 use crate::scene_builder::{frame_rate_from_axis, SceneBuildError};
 use core::num::{NonZeroU16, NonZeroU32};
-use cover_container::EntryContainer;
-use cover_names::{CaptureName, DefectName};
+use cover_container::{entry_container, EntryContainer};
+use cover_names::{CaptureName, DefectName, DepthName, RecordingName, SceneName};
 use synthvid_encode::defects::Defect;
 use synthvid_scene::{Dimensions, DistinctCapture, FrameRatesError, RatePair};
 use synthvid_video::json_names::JsonEntryName;
-use synthvid_video::{CaptureRate, Container, DisplayRotation, Encoding, VideoSpec};
+use synthvid_video::{CaptureRate, Container, Format, VideoSpec};
 
 // Re-export axis types from the submodule
 pub use cover_axes::{
     BackgroundAxis, CodingAxis, ContainerAxis, FrameCountValue, FrameRateValue, MotionAxis,
-    ScaleAxis, ShapeAxis, TrackMatrixAxis,
+    RecordingAxis, ScaleAxis, ShapeAxis, TrackMatrixAxis,
 };
 pub use cover_names::{ManifestName, MediaName};
+pub use cover_scene::{DeepAxis, EntryScene, FlatScene};
 
 /// A catalog entry: a scene description with all parameters specified.
 ///
@@ -71,12 +86,8 @@ pub struct Entry {
     frame_count: FrameCountValue,
     /// Frame rate.
     frame_rate: FrameRateValue,
-    /// Background type.
-    background: BackgroundAxis,
-    /// Shape type.
-    shape: ShapeAxis,
-    /// Motion type.
-    motion: MotionAxis,
+    /// The scene: a flat scene's background, shape and motion, or a deep shot.
+    scene: EntryScene,
     /// Pixel encoding.
     coding: CodingAxis,
     /// Container format, with the capture rate only an ISO container can record.
@@ -85,6 +96,8 @@ pub struct Entry {
     track_matrix: TrackMatrixAxis,
     /// Physical scale declaration.
     scale: ScaleAxis,
+    /// Recording medium the camera records through.
+    recording: RecordingAxis,
     /// Optional defect.
     defect: Option<Defect>,
 }
@@ -108,22 +121,10 @@ impl Entry {
         self.frame_rate
     }
 
-    /// Background type.
+    /// The scene: a flat scene, or a deep shot, which has no flat axes.
     #[must_use]
-    pub const fn background(&self) -> BackgroundAxis {
-        self.background
-    }
-
-    /// Shape type.
-    #[must_use]
-    pub const fn shape(&self) -> ShapeAxis {
-        self.shape
-    }
-
-    /// Motion type.
-    #[must_use]
-    pub const fn motion(&self) -> MotionAxis {
-        self.motion
+    pub const fn scene(&self) -> EntryScene {
+        self.scene
     }
 
     /// Pixel encoding.
@@ -150,6 +151,18 @@ impl Entry {
         self.scale
     }
 
+    /// Recording medium the camera records through.
+    #[must_use]
+    pub const fn recording(&self) -> RecordingAxis {
+        self.recording
+    }
+
+    /// Depth effect of the scene: `None` for a flat entry, and the effect of a deep shot.
+    #[must_use]
+    pub const fn depth(&self) -> Option<DeepAxis> {
+        self.scene.depth()
+    }
+
     /// Capture rate declared in the metadata.
     #[must_use]
     pub const fn capture(&self) -> CaptureRate {
@@ -170,20 +183,20 @@ impl Entry {
     #[must_use]
     pub fn manifest_name(&self) -> ManifestName {
         ManifestName(format!(
-            "{:04}x{:04}-{}-{}-{}-{}-{}-{}-{}-{}-{}{}-{}",
+            "{:04}x{:04}-{}-{}{}-{}-{}-{}-{}{}-{}{}{}",
             self.dimensions.width.get().get(),
             self.dimensions.height.get().get(),
             self.frame_count,
             self.frame_rate,
-            self.background,
-            self.shape,
-            self.motion,
+            SceneName(self.scene),
             self.coding,
             self.container.axis(),
             self.track_matrix,
             self.scale,
             CaptureName(self.container.capture()),
             DefectName(self.defect.as_ref()),
+            RecordingName(self.recording),
+            DepthName(self.depth()),
         ))
     }
 
@@ -201,26 +214,12 @@ impl Entry {
     ///
     /// # Errors
     ///
-    /// Returns a `SceneBuildError` if scene construction fails.
+    /// Returns a `SceneBuildError` if scene, camera or deep shot construction fails.
     pub fn to_video_spec(&self) -> Result<VideoSpec, SceneBuildError> {
-        use crate::generator::build_scene;
+        use crate::generator::{build_camera, build_recorder, build_scene};
 
-        let scene = build_scene(self)?;
-
-        let encoding = match self.coding {
-            CodingAxis::Raw => Encoding::Raw,
-            CodingAxis::MotionJpeg => Encoding::Mjpeg {
-                quality: synthvid_encode::Quality::Q75,
-                chroma: synthvid_encode::ChromaSampling::Yuv420,
-            },
-        };
-
-        let rotation = match self.track_matrix {
-            TrackMatrixAxis::Identity => DisplayRotation::Identity,
-            TrackMatrixAxis::Rotate90 => DisplayRotation::Rot90,
-            TrackMatrixAxis::Rotate180 => DisplayRotation::Rot180,
-            TrackMatrixAxis::Rotate270 => DisplayRotation::Rot270,
-        };
+        let encoding = self.coding.encoding();
+        let rotation = self.track_matrix.rotation();
 
         // The catalogue crosses every container with every rotation, but only
         // ISO can record one; the AVI entries keep the axis in their name alone.
@@ -230,121 +229,35 @@ impl Entry {
         };
 
         let name = JsonEntryName::new(self.manifest_name().as_str())
-            .map_err(SceneBuildError::EntryName)?;
+            .map_err(|error| SceneBuildError::EntryName(Box::new(error)))?;
 
-        VideoSpec::new(name, scene, encoding, container, self.defect.clone())
-            .map_err(SceneBuildError::VideoSpec)
+        let format = Format::new(encoding, container, self.defect.clone());
+
+        let spec = match self.scene {
+            EntryScene::Flat(flat) => {
+                let scene = build_scene(self, flat)?;
+                let camera = build_camera(self)?;
+                VideoSpec::new(name, scene, camera, format)
+            }
+            EntryScene::Deep(DeepAxis::Parallax) => {
+                let shot = cover_depth::parallax(&build_recorder(self)?)?;
+                VideoSpec::deep(name, shot, format)
+            }
+            EntryScene::Deep(DeepAxis::Roll) => {
+                let shot = cover_depth::roll(&build_recorder(self)?)?;
+                VideoSpec::deep(name, shot, format)
+            }
+            EntryScene::Deep(DeepAxis::DiscBokeh) => {
+                let shot = cover_depth::disc_bokeh(&build_recorder(self)?)?;
+                VideoSpec::deep(name, shot, format)
+            }
+            EntryScene::Deep(DeepAxis::HexBokeh) => {
+                let shot = cover_depth::hex_bokeh(&build_recorder(self)?)?;
+                VideoSpec::deep(name, shot, format)
+            }
+        };
+        spec.map_err(|error| SceneBuildError::VideoSpec(Box::new(error)))
     }
-}
-
-/// The dimensions axis values, in declared order.
-fn axis_dimensions() -> Result<[Dimensions; 5], CatalogError> {
-    use cover_axes::{make_dimensions, RawSize};
-
-    Ok([
-        make_dimensions(RawSize {
-            width: NonZeroU16::new(16),
-            height: NonZeroU16::new(16),
-        })?,
-        make_dimensions(RawSize {
-            width: NonZeroU16::new(320),
-            height: NonZeroU16::new(240),
-        })?,
-        make_dimensions(RawSize {
-            width: NonZeroU16::new(640),
-            height: NonZeroU16::new(480),
-        })?,
-        make_dimensions(RawSize {
-            width: NonZeroU16::new(1280),
-            height: NonZeroU16::new(720),
-        })?,
-        make_dimensions(RawSize {
-            width: NonZeroU16::new(1920),
-            height: NonZeroU16::new(1080),
-        })?,
-    ])
-}
-
-/// The frame count axis values, in declared order.
-fn axis_frame_counts() -> Result<[FrameCountValue; 5], CatalogError> {
-    Ok([
-        FrameCountValue::new(1)?,
-        FrameCountValue::new(10)?,
-        FrameCountValue::new(100)?,
-        FrameCountValue::new(1000)?,
-        FrameCountValue::new(20000)?,
-    ])
-}
-
-/// Defines all axis values for the catalog.
-fn define_axes() -> Result<cover_axes::AxisArrays, CatalogError> {
-    use cover_axes::{all_defects, AxisArrays};
-
-    // Define all axis values in declared order
-    let dimensions = axis_dimensions()?;
-    let frame_counts = axis_frame_counts()?;
-
-    let frame_rates = [
-        FrameRateValue::Thirty,
-        FrameRateValue::Sixty,
-        FrameRateValue::OneTwenty,
-        FrameRateValue::TwoForty,
-        FrameRateValue::Ntsc,
-        FrameRateValue::Absurd,
-    ];
-
-    let backgrounds = [
-        BackgroundAxis::Solid,
-        BackgroundAxis::Checker,
-        BackgroundAxis::Gradient,
-        BackgroundAxis::Blobs,
-        BackgroundAxis::Grid,
-    ];
-
-    let shapes = [
-        ShapeAxis::Disc,
-        ShapeAxis::Rect,
-        ShapeAxis::Polygon,
-        ShapeAxis::Cross,
-    ];
-
-    let motions = [
-        MotionAxis::Fixed,
-        MotionAxis::Linear,
-        MotionAxis::Ballistic,
-        MotionAxis::Circular,
-        MotionAxis::Oscillating,
-        MotionAxis::Walk,
-    ];
-
-    let codings = [CodingAxis::Raw, CodingAxis::MotionJpeg];
-
-    let containers = [ContainerAxis::Iso, ContainerAxis::Avi];
-
-    let track_matrices = [
-        TrackMatrixAxis::Identity,
-        TrackMatrixAxis::Rotate90,
-        TrackMatrixAxis::Rotate180,
-        TrackMatrixAxis::Rotate270,
-    ];
-
-    let scales = [ScaleAxis::Declared, ScaleAxis::Undeclared];
-
-    let defects = all_defects()?;
-
-    Ok(AxisArrays {
-        dimensions,
-        frame_counts,
-        frame_rates,
-        backgrounds,
-        shapes,
-        motions,
-        codings,
-        containers,
-        track_matrices,
-        scales,
-        defects,
-    })
 }
 
 /// Generates the catalog as a pairwise covering array over declared axes.
@@ -374,7 +287,71 @@ fn define_axes() -> Result<cover_axes::AxisArrays, CatalogError> {
 pub fn generate_catalogue() -> Result<Vec<Entry>, CatalogError> {
     use cover_axes::{make_dimensions, RawSize};
 
-    let axes = define_axes()?;
+    let mut result = covering_array()?;
+
+    // Add singleton entry encoding frame numbers
+    result.push(Entry {
+        dimensions: make_dimensions(RawSize {
+            width: NonZeroU16::new(256),
+            height: NonZeroU16::new(256),
+        })?,
+        frame_count: FrameCountValue::new(100)?,
+        frame_rate: FrameRateValue::Thirty,
+        scene: EntryScene::Flat(FlatScene::new(
+            BackgroundAxis::Solid,
+            ShapeAxis::Disc,
+            MotionAxis::Fixed,
+        )),
+        coding: CodingAxis::Raw,
+        container: EntryContainer::Iso {
+            capture: CaptureRate::PlaybackOnly,
+        },
+        track_matrix: TrackMatrixAxis::Identity,
+        scale: ScaleAxis::Undeclared,
+        recording: RecordingAxis::Ideal,
+        defect: None,
+    });
+
+    // Singleton entry whose container records no size: a reader without a
+    // motion-JPEG decoder finds none, and one with it reads the frames'.
+    result.push(Entry {
+        dimensions: make_dimensions(RawSize {
+            width: NonZeroU16::new(16),
+            height: NonZeroU16::new(16),
+        })?,
+        frame_count: FrameCountValue::new(10)?,
+        frame_rate: FrameRateValue::Thirty,
+        scene: EntryScene::Flat(FlatScene::new(
+            BackgroundAxis::Solid,
+            ShapeAxis::Disc,
+            MotionAxis::Fixed,
+        )),
+        coding: CodingAxis::MotionJpeg,
+        container: EntryContainer::Iso {
+            capture: CaptureRate::PlaybackOnly,
+        },
+        track_matrix: TrackMatrixAxis::Identity,
+        scale: ScaleAxis::Undeclared,
+        recording: RecordingAxis::Ideal,
+        defect: Some(Defect::NoContainerSize),
+    });
+
+    result.extend(capture_singletons()?);
+    result.extend(recording_singletons()?);
+    result.extend(depth_singletons()?);
+
+    Ok(result)
+}
+
+/// The entries of the pairwise covering array over the declared axes, in the order the greedy
+/// construction picks them.
+///
+/// # Errors
+///
+/// Returns `CatalogError::UnsatisfiableObligation` if a required pair of values cannot be
+/// combined in any entry, and every error the axis definitions and entry selection return.
+fn covering_array() -> Result<Vec<Entry>, CatalogError> {
+    let axes = cover_axes::define_axes()?;
 
     // Build initial obligation set
     let mut obligations = cover_greedy::build_axis_obligations(&axes);
@@ -403,49 +380,6 @@ pub fn generate_catalogue() -> Result<Vec<Entry>, CatalogError> {
 
         result.push(entry);
     }
-
-    // Add singleton entry encoding frame numbers
-    result.push(Entry {
-        dimensions: make_dimensions(RawSize {
-            width: NonZeroU16::new(256),
-            height: NonZeroU16::new(256),
-        })?,
-        frame_count: FrameCountValue::new(100)?,
-        frame_rate: FrameRateValue::Thirty,
-        background: BackgroundAxis::Solid,
-        shape: ShapeAxis::Disc,
-        motion: MotionAxis::Fixed,
-        coding: CodingAxis::Raw,
-        container: EntryContainer::Iso {
-            capture: CaptureRate::PlaybackOnly,
-        },
-        track_matrix: TrackMatrixAxis::Identity,
-        scale: ScaleAxis::Undeclared,
-        defect: None,
-    });
-
-    // Singleton entry whose container records no size: a reader without a
-    // motion-JPEG decoder finds none, and one with it reads the frames'.
-    result.push(Entry {
-        dimensions: make_dimensions(RawSize {
-            width: NonZeroU16::new(16),
-            height: NonZeroU16::new(16),
-        })?,
-        frame_count: FrameCountValue::new(10)?,
-        frame_rate: FrameRateValue::Thirty,
-        background: BackgroundAxis::Solid,
-        shape: ShapeAxis::Disc,
-        motion: MotionAxis::Fixed,
-        coding: CodingAxis::MotionJpeg,
-        container: EntryContainer::Iso {
-            capture: CaptureRate::PlaybackOnly,
-        },
-        track_matrix: TrackMatrixAxis::Identity,
-        scale: ScaleAxis::Undeclared,
-        defect: Some(Defect::NoContainerSize),
-    });
-
-    result.extend(capture_singletons()?);
 
     Ok(result)
 }
@@ -489,35 +423,134 @@ fn capture_singleton(pair: &CapturePair) -> Result<Entry, CatalogError> {
         })?,
         frame_count: FrameCountValue::new(10)?,
         frame_rate: pair.playback,
-        background: BackgroundAxis::Solid,
-        shape: ShapeAxis::Disc,
-        motion: MotionAxis::Fixed,
+        scene: EntryScene::Flat(FlatScene::new(
+            BackgroundAxis::Solid,
+            ShapeAxis::Disc,
+            MotionAxis::Fixed,
+        )),
         coding: CodingAxis::Raw,
         container: EntryContainer::Iso {
             capture: CaptureRate::Distinct(distinct),
         },
         track_matrix: TrackMatrixAxis::Identity,
         scale: ScaleAxis::Undeclared,
+        recording: RecordingAxis::Ideal,
         defect: None,
     })
 }
 
-/// The container an entry takes from its selected axis value. A selected ISO container
-/// starts with no capture rate beyond the playback rate.
-fn entry_container(
-    axes: &cover_axes::AxisArrays,
-    sel: &cover_greedy::AxisSelection,
-) -> Result<EntryContainer, CatalogError> {
-    let value = axes
-        .containers
-        .get(sel.container.0)
-        .copied()
-        .ok_or(CatalogError::AxisIndexOutOfRange)?;
-    Ok(match value {
-        ContainerAxis::Iso => EntryContainer::Iso {
+/// The ten ISO singletons that record through a sensor or film medium: each non-ideal preset in
+/// [`RECORDED_PRESETS`], once with raw pixels and once with motion-JPEG.
+///
+/// The covering array keeps every entry ideal, so these carry the recording alone. Each preset
+/// is a noise or grain property a reader meets in practice: a sensor's shot and read noise at
+/// two sensitivities, a sensor's fixed pattern, and film grain fine and coarse. A raw entry
+/// shows the noise exactly as the medium wrote it. A motion-JPEG entry shows how lossy coding
+/// treats that noise.
+///
+/// # Errors
+///
+/// Returns every error [`recording_singleton`] returns.
+fn recording_singletons() -> Result<Vec<Entry>, CatalogError> {
+    let mut entries = Vec::new();
+    for recording in RECORDED_PRESETS {
+        for coding in [CodingAxis::Raw, CodingAxis::MotionJpeg] {
+            entries.push(recording_singleton(recording, coding)?);
+        }
+    }
+    Ok(entries)
+}
+
+/// A 64 by 48 ten-frame ISO singleton with a gradient background, a disc moving in a fixed
+/// position, and the given recording and coding.
+///
+/// The gradient varies the tone across the frame, so the noise of the recording varies with
+/// the tone it sits on.
+///
+/// # Errors
+///
+/// Returns `CatalogError::ZeroDimension` if the dimensions cannot be made, and
+/// `CatalogError::ZeroFrameCount` if the frame count is zero.
+fn recording_singleton(
+    recording: RecordingAxis,
+    coding: CodingAxis,
+) -> Result<Entry, CatalogError> {
+    use cover_axes::{make_dimensions, RawSize};
+
+    Ok(Entry {
+        dimensions: make_dimensions(RawSize {
+            width: NonZeroU16::new(64),
+            height: NonZeroU16::new(48),
+        })?,
+        frame_count: FrameCountValue::new(10)?,
+        frame_rate: FrameRateValue::Thirty,
+        scene: EntryScene::Flat(FlatScene::new(
+            BackgroundAxis::Gradient,
+            ShapeAxis::Disc,
+            MotionAxis::Fixed,
+        )),
+        coding,
+        container: EntryContainer::Iso {
             capture: CaptureRate::PlaybackOnly,
         },
-        ContainerAxis::Avi => EntryContainer::Avi,
+        track_matrix: TrackMatrixAxis::Identity,
+        scale: ScaleAxis::Undeclared,
+        recording,
+        defect: None,
+    })
+}
+
+/// The four deep shots, one per depth effect, after the recording singletons. The covering array
+/// does not hold them, so each is built here rather than generated.
+///
+/// # Errors
+///
+/// Returns every error [`depth_singleton`] returns.
+fn depth_singletons() -> Result<Vec<Entry>, CatalogError> {
+    // Parallax: layers at different depths cross the frame at different speeds as the camera
+    // moves. Roll: a camera turning about its optical axis rotates layers at their own depths.
+    // Disc bokeh: out-of-focus highlights blur to the outline of a round iris, and the highlight
+    // at the focus distance stays a point. Hexagonal bokeh: the same highlights blur to the
+    // outline of a six-bladed iris.
+    [
+        DeepAxis::Parallax,
+        DeepAxis::Roll,
+        DeepAxis::DiscBokeh,
+        DeepAxis::HexBokeh,
+    ]
+    .into_iter()
+    .map(depth_singleton)
+    .collect()
+}
+
+/// A 32 by 24 eight-frame ISO singleton that is a deep shot of the given depth effect.
+///
+/// The shot's stage and rig come from `cover_depth`, which takes this entry's recorder. The
+/// entry holds no background, shape or motion, since a deep shot has none of them.
+///
+/// # Errors
+///
+/// Returns `CatalogError::ZeroDimension` or `CatalogError::ZeroFrameCount` if the entry's
+/// dimensions or frame count cannot be made.
+fn depth_singleton(deep: DeepAxis) -> Result<Entry, CatalogError> {
+    use cover_axes::{make_dimensions, RawSize};
+
+    Ok(Entry {
+        dimensions: make_dimensions(RawSize {
+            width: NonZeroU16::new(32),
+            height: NonZeroU16::new(24),
+        })?,
+        frame_count: FrameCountValue::new(8)?,
+        frame_rate: FrameRateValue::Thirty,
+        scene: EntryScene::Deep(deep),
+        coding: CodingAxis::Raw,
+        container: EntryContainer::Iso {
+            capture: CaptureRate::PlaybackOnly,
+        },
+        track_matrix: TrackMatrixAxis::Identity,
+        scale: ScaleAxis::Undeclared,
+        recording: RecordingAxis::Ideal,
+        defect: None,
     })
 }
 
@@ -542,21 +575,20 @@ fn entry_from_selection(
             .get(sel.frame_rate.0)
             .copied()
             .ok_or(CatalogError::AxisIndexOutOfRange)?,
-        background: axes
-            .backgrounds
-            .get(sel.background.0)
-            .copied()
-            .ok_or(CatalogError::AxisIndexOutOfRange)?,
-        shape: axes
-            .shapes
-            .get(sel.shape.0)
-            .copied()
-            .ok_or(CatalogError::AxisIndexOutOfRange)?,
-        motion: axes
-            .motions
-            .get(sel.motion.0)
-            .copied()
-            .ok_or(CatalogError::AxisIndexOutOfRange)?,
+        scene: EntryScene::Flat(FlatScene::new(
+            axes.backgrounds
+                .get(sel.background.0)
+                .copied()
+                .ok_or(CatalogError::AxisIndexOutOfRange)?,
+            axes.shapes
+                .get(sel.shape.0)
+                .copied()
+                .ok_or(CatalogError::AxisIndexOutOfRange)?,
+            axes.motions
+                .get(sel.motion.0)
+                .copied()
+                .ok_or(CatalogError::AxisIndexOutOfRange)?,
+        )),
         coding: axes
             .codings
             .get(sel.coding.0)
@@ -573,6 +605,7 @@ fn entry_from_selection(
             .get(sel.scale.0)
             .copied()
             .ok_or(CatalogError::AxisIndexOutOfRange)?,
+        recording: RecordingAxis::Ideal,
         defect: axes
             .defects
             .get(sel.defect.0)
@@ -592,29 +625,30 @@ pub(super) fn sample_entry_for_test() -> Result<Entry, synthvid_testkit::Fail> {
         .or_fail()?,
         frame_count: FrameCountValue::new(100).or_fail()?,
         frame_rate: FrameRateValue::Thirty,
-        background: BackgroundAxis::Solid,
-        shape: ShapeAxis::Disc,
-        motion: MotionAxis::Fixed,
+        scene: EntryScene::Flat(FlatScene::new(
+            BackgroundAxis::Solid,
+            ShapeAxis::Disc,
+            MotionAxis::Fixed,
+        )),
         coding: CodingAxis::Raw,
         container: EntryContainer::Iso {
             capture: CaptureRate::PlaybackOnly,
         },
         track_matrix: TrackMatrixAxis::Identity,
         scale: ScaleAxis::Undeclared,
+        recording: RecordingAxis::Ideal,
         defect: None,
     })
 }
 
 #[cfg(test)]
 impl Entry {
-    /// Replaces every axis value of this entry, including its defect. The container axis
-    /// goes through [`Entry::set_container_axis`], so an existing ISO capture rate is kept
-    /// (through `with_axis`).
+    /// Replaces every axis value of this entry, including its defect, and makes the entry a flat
+    /// scene with the given background, shape and motion. The container axis goes through
+    /// [`Entry::set_container_axis`], so an existing ISO capture rate is kept (through `with_axis`).
     pub(crate) fn set_axes(&mut self, axes: AxisValues) {
         self.frame_rate = axes.frame_rate;
-        self.background = axes.background;
-        self.shape = axes.shape;
-        self.motion = axes.motion;
+        self.scene = EntryScene::Flat(FlatScene::new(axes.background, axes.shape, axes.motion));
         self.coding = axes.coding;
         self.set_container_axis(axes.container);
         self.track_matrix = axes.track_matrix;
@@ -630,5 +664,10 @@ impl Entry {
     /// Replaces the defect of this entry.
     pub(crate) fn set_defect(&mut self, defect: Option<Defect>) {
         self.defect = defect;
+    }
+
+    /// Replaces the recording medium of this entry.
+    pub(crate) fn set_recording(&mut self, recording: RecordingAxis) {
+        self.recording = recording;
     }
 }

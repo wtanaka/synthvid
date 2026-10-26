@@ -1,41 +1,41 @@
 use core::cmp::Ordering;
-use core::num::{NonZeroI128, NonZeroI64};
+use core::num::{NonZeroI128, NonZeroI64, NonZeroU16, NonZeroU32, NonZeroU8};
 
 use synthvid_testkit::{ensure, ensure_eq, Fail, OrFail as _};
 
-use super::helpers::AxisPixel;
-use super::{half_ratio, pixel_centre_ratio, quarter_ratio, Numerator, Overflow, Ratio};
+use super::helpers::{compare_doubled_with_product, AxisPixel, DoubledOrder};
+use super::{half_ratio, pixel_center_ratio, quarter_ratio, Numerator, Overflow, Ratio};
 use crate::rng::Rng;
 use crate::units::Seed;
 
-/// `pixel_centre_ratio` skips the reducing path, so pin it to the checked
+/// `pixel_center_ratio` skips the reducing path, so pin it to the checked
 /// construction: if the two ever disagree, derived `Eq` and `Hash` on
 /// `Ratio` stop matching the arithmetic.
 #[test]
-fn pixel_centre_ratio_is_the_odd_numerator_over_two() {
+fn pixel_center_ratio_is_the_odd_numerator_over_two() {
     assert_eq!(
-        check_pixel_centre_ratio_is_the_odd_numerator_over_two(),
+        check_pixel_center_ratio_is_the_odd_numerator_over_two(),
         Ok(())
     );
 }
 
-fn check_pixel_centre_ratio_is_the_odd_numerator_over_two() -> Result<(), Fail> {
+fn check_pixel_center_ratio_is_the_odd_numerator_over_two() -> Result<(), Fail> {
     let two = NonZeroI64::new(2).or_fail()?;
     for index in [0_u16, 1, 2, 7, 1000, u16::MAX] {
-        let centre_ratio = pixel_centre_ratio(AxisPixel(index));
+        let center_ratio = pixel_center_ratio(AxisPixel(index));
         let expected_numer = i64::from(index)
             .checked_mul(2)
             .and_then(|doubled| doubled.checked_add(1))
             .or_fail()?;
         ensure_eq!(
-            centre_ratio.numer().0,
+            center_ratio.numer().0,
             expected_numer,
             "numerator for {index}"
         );
-        ensure_eq!(centre_ratio.denom().get(), 2, "denominator for {index}");
+        ensure_eq!(center_ratio.denom().get(), 2, "denominator for {index}");
 
         let checked = Ratio::new(Numerator(expected_numer), two).or_fail()?;
-        ensure_eq!(centre_ratio, checked, "centre of {index}");
+        ensure_eq!(center_ratio, checked, "center of {index}");
     }
     Ok(())
 }
@@ -322,4 +322,44 @@ fn quarter_ratio_exact_value() {
     // Test that quarter_ratio produces exactly 1 / 4.
     assert_eq!(quarter_ratio().numer().0, 1);
     assert_eq!(quarter_ratio().denom().get(), 4);
+}
+
+#[test]
+fn doubled_distance_is_compared_with_the_focal_product_exactly() {
+    assert_eq!(
+        check_doubled_distance_is_compared_with_the_focal_product_exactly(),
+        Ok(())
+    );
+}
+
+fn check_doubled_distance_is_compared_with_the_focal_product_exactly() -> Result<(), Fail> {
+    // The product of the factor 5 and the length 1080 is 5400. Twice 2699 is 5398, below it, and
+    // twice 2700 is 5400, which is not below it.
+    let factor = NonZeroU8::new(5).or_fail()?;
+    let length = NonZeroU16::new(1080).or_fail()?;
+    ensure_eq!(
+        compare_doubled_with_product(NonZeroU32::new(2699).or_fail()?, factor, length),
+        DoubledOrder::Below
+    );
+    ensure_eq!(
+        compare_doubled_with_product(NonZeroU32::new(2700).or_fail()?, factor, length),
+        DoubledOrder::AtOrAbove
+    );
+    // The product of the factor 5 and the odd length 1081 is 5405. Twice 2702 is 5404, below it,
+    // and twice 2703 is 5406, which is not below it.
+    let odd_length = NonZeroU16::new(1081).or_fail()?;
+    ensure_eq!(
+        compare_doubled_with_product(NonZeroU32::new(2702).or_fail()?, factor, odd_length),
+        DoubledOrder::Below
+    );
+    ensure_eq!(
+        compare_doubled_with_product(NonZeroU32::new(2703).or_fail()?, factor, odd_length),
+        DoubledOrder::AtOrAbove
+    );
+    // Twice the largest distance, 2^33 - 2, is above the largest product, 255 * 65535.
+    ensure_eq!(
+        compare_doubled_with_product(NonZeroU32::MAX, NonZeroU8::MAX, NonZeroU16::MAX),
+        DoubledOrder::AtOrAbove
+    );
+    Ok(())
 }

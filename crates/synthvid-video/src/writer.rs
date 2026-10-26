@@ -16,6 +16,8 @@ use core::fmt;
 
 use synthvid_scene::Ratio;
 
+use crate::names::ClosedText;
+
 // Re-export JSON name validation types for public API compatibility
 pub use crate::json_names::{JsonEntryName, JsonKey};
 
@@ -26,6 +28,17 @@ pub use crate::json_names::{JsonEntryName, JsonKey};
 /// for at the point it enters a document.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct JsonInt(pub i64);
+
+/// A closed name a manifest writes as a JSON string.
+///
+/// Implemented by the closed name enums of [`crate::names`], each of which returns its text from
+/// [`ClosedName::as_str`]. A test checks that every variant's text is non-empty and made of
+/// lowercase letters, digits, and underscores only, so it needs no escape sequence. A `String` does
+/// not implement this trait, so it cannot be written this way.
+pub(crate) trait ClosedName: Copy {
+    /// The text the manifest writes for this name, without quotes.
+    fn as_str(self) -> ClosedText;
+}
 
 /// A fragment of JSON text already in canonical form.
 ///
@@ -102,6 +115,17 @@ impl JsonObject {
     /// interior, so a value containing a quote produced invalid JSON.
     pub fn insert_string(&mut self, key: JsonKey, value: &JsonEntryName) {
         self.insert_encoded(key, RawJson(format!("\"{}\"", value.as_str())));
+    }
+
+    /// Inserts a closed name as a JSON string.
+    ///
+    /// Crate-private, and bounded by [`ClosedName`], so only the closed name types of this crate
+    /// may be written this way. Such text needs no escaping, and a `String` cannot be passed.
+    pub(crate) fn insert_name<Name>(&mut self, key: JsonKey, name: Name)
+    where
+        Name: ClosedName,
+    {
+        self.insert_encoded(key, RawJson(format!("\"{}\"", name.as_str())));
     }
 
     /// Inserts an already-serialized JSON fragment.

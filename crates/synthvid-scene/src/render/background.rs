@@ -1,7 +1,7 @@
 //! Backdrop painting for frame rendering.
 //!
 //! [`paint_background`] fills the whole frame from a [`Background`], in frame
-//! space and without touching the camera transform. Every pixel is written,
+//! space and without touching the view transform. Every pixel is written,
 //! so no previous buffer contents can survive. All arithmetic is exact; no
 //! floating-point operation appears here.
 
@@ -194,7 +194,7 @@ fn paint_blobs(
 /// Paints the [`Background`] over the whole frame.
 ///
 /// Every pixel is written, so no previous buffer contents can survive. The
-/// background is drawn in frame space and never passes through the camera
+/// background is drawn in frame space and never passes through the view
 /// transform.
 ///
 /// A blob backdrop first paints black ground, then `count` discs in generator

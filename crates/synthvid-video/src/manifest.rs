@@ -1,6 +1,6 @@
 //! Manifest types for serializing rendered scenes.
 //!
-//! A manifest describes the objects rendered, their bounding boxes, and camera
+//! A manifest describes the objects rendered, their bounding boxes, and view
 //! placement for each frame. It is serialized to canonical JSON and its digest
 //! is recorded for reproducibility checking across architectures.
 //!
@@ -15,7 +15,9 @@ use core::num::NonZeroI64;
 use crate::json_names::{JsonEntryName, JsonKey};
 use crate::keys::ManifestKey;
 use crate::manifest_error::ManifestError;
+use crate::medium::Medium;
 use crate::names::{BackgroundName, ShapeName};
+use crate::optics::Optics;
 use crate::render_output::ManifestJson;
 use crate::writer::{JsonArray, JsonInt, JsonObject, RawJson};
 use synthvid_scene::{
@@ -100,7 +102,7 @@ impl FrameObjectState {
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct ManifestFrame {
     /// Scene-to-screen transform for this frame.
-    camera: ManifestAffine,
+    view: ManifestAffine,
     /// Objects on screen this frame, in scene declaration order.
     objects: Vec<FrameObjectState>,
 }
@@ -108,9 +110,9 @@ pub struct ManifestFrame {
 impl ManifestFrame {
     /// Records one frame.
     #[must_use]
-    pub const fn new(camera: &ManifestAffine, objects: Vec<FrameObjectState>) -> Self {
+    pub const fn new(view: &ManifestAffine, objects: Vec<FrameObjectState>) -> Self {
         Self {
-            camera: *camera,
+            view: *view,
             objects,
         }
     }
@@ -118,7 +120,7 @@ impl ManifestFrame {
     /// Serializes this frame as a JSON object with the given frame index for inclusion in a manifest.
     pub(crate) fn to_json_object(&self, frame_index: FrameIndex) -> JsonObject {
         let mut obj = JsonObject::new();
-        obj.insert_object(key(ManifestKey::Camera), self.camera.to_json_object());
+        obj.insert_object(key(ManifestKey::Camera), self.view.to_json_object());
         obj.insert_int(
             key(ManifestKey::Index),
             JsonInt(i64::from(frame_index.get())),
@@ -184,6 +186,33 @@ impl ManifestObjectDecl {
     }
 }
 
+/// The camera facts a manifest records: its frame dimensions, its medium, and its optics.
+///
+/// Grouped into one value so that the header's constructor takes a single argument for the camera
+/// rather than three positional ones of which only the order distinguishes them. The medium and
+/// the optics are written only when they are not ideal.
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub struct ManifestCamera {
+    /// Frame dimensions in pixels.
+    dimensions: Dimensions,
+    /// What records the light on the image plane.
+    medium: Medium,
+    /// How the lens focuses light.
+    optics: Optics,
+}
+
+impl ManifestCamera {
+    /// Records the camera's frame dimensions, medium, and optics.
+    #[must_use]
+    pub const fn new(dimensions: Dimensions, medium: Medium, optics: Optics) -> Self {
+        Self {
+            dimensions,
+            medium,
+            optics,
+        }
+    }
+}
+
 /// The scene-level facts a manifest records, independent of any frame.
 ///
 /// Grouped into their own type because positional parameters are a hazard:
@@ -194,8 +223,8 @@ impl ManifestObjectDecl {
 pub struct ManifestHeader {
     /// Which backdrop the scene declared.
     background: BackgroundName,
-    /// Frame dimensions in pixels.
-    dimensions: Dimensions,
+    /// The camera that recorded the scene.
+    camera: ManifestCamera,
     /// Playback frame rate, and the distinct capture rate when one is present.
     frame_rates: FrameRates,
     /// Catalog entry name.
@@ -215,14 +244,14 @@ impl ManifestHeader {
     #[must_use]
     pub const fn new(
         name: JsonEntryName,
-        dimensions: Dimensions,
+        camera: &ManifestCamera,
         frame_rates: FrameRates,
         background: BackgroundName,
         scale: Option<Ratio>,
     ) -> Self {
         Self {
             background,
-            dimensions,
+            camera: *camera,
             frame_rates,
             name,
             scale: match scale {
@@ -288,11 +317,11 @@ impl Manifest {
         let mut dimensions = JsonObject::new();
         dimensions.insert_int(
             key(ManifestKey::Height),
-            JsonInt(NonZeroI64::from(self.header.dimensions.height.get()).get()),
+            JsonInt(NonZeroI64::from(self.header.camera.dimensions.height.get()).get()),
         );
         dimensions.insert_int(
             key(ManifestKey::Width),
-            JsonInt(NonZeroI64::from(self.header.dimensions.width.get()).get()),
+            JsonInt(NonZeroI64::from(self.header.camera.dimensions.width.get()).get()),
         );
         root.insert_object(key(ManifestKey::Dimensions), dimensions);
 
@@ -331,11 +360,22 @@ impl Manifest {
             root.insert_ratio(key(ManifestKey::Scale), scale.ratio());
         }
 
+        if let Some(medium) = camera_json::medium_object(self.header.camera.medium) {
+            root.insert_object(key(ManifestKey::Medium), medium);
+        }
+        if let Some(optics) = camera_json::optics_object(self.header.camera.optics) {
+            root.insert_object(key(ManifestKey::Optics), optics);
+        }
+
         root.insert_int(key(ManifestKey::SchemaVersion), JsonInt(1));
 
         ManifestJson(root.to_string())
     }
 }
 
+mod camera_json;
+
+#[cfg(test)]
+mod camera_tests;
 #[cfg(test)]
 mod tests;

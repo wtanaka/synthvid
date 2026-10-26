@@ -32,5 +32,5 @@ fn keys_are_distinct() {
             known.as_str()
         );
     }
-    assert_eq!(seen.len(), 35, "ALL must list every key exactly once");
+    assert_eq!(seen.len(), 55, "ALL must list every key exactly once");
 }

@@ -6,8 +6,9 @@
 
 use super::cover_axes::{
     BackgroundAxis, CodingAxis, ContainerAxis, FrameCountValue, FrameRateValue, MotionAxis,
-    ScaleAxis, ShapeAxis, TrackMatrixAxis,
+    RecordingAxis, ScaleAxis, ShapeAxis, TrackMatrixAxis,
 };
+use super::cover_scene::{DeepAxis, EntryScene};
 use core::fmt;
 use synthvid_encode::defects::Defect;
 use synthvid_scene::CaptureCarrier;
@@ -173,6 +174,67 @@ impl fmt::Display for DefectName<'_> {
                 declared: _declared,
             } => "count-mis",
             Defect::ReorderedBoxes(_, _) => "reorder",
+        })
+    }
+}
+
+/// The name segment of an entry's recording medium.
+///
+/// Empty for [`RecordingAxis::Ideal`]. Otherwise `-rec` and the preset's lowercase name, so an
+/// entry recorded through a sensor or film carries the segment after its defect and an ideal
+/// entry's name is unchanged.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct RecordingName(pub(super) RecordingAxis);
+
+impl fmt::Display for RecordingName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self.0 {
+            RecordingAxis::Ideal => "",
+            RecordingAxis::LowIso => "-reclowiso",
+            RecordingAxis::HighIso => "-rechighiso",
+            RecordingAxis::Banded => "-recbanded",
+            RecordingAxis::FineGrain => "-recfinegrain",
+            RecordingAxis::CoarseGrain => "-reccoarsegrain",
+        })
+    }
+}
+
+/// The name segments of an entry's flat scene: the background, shape and motion, each after a
+/// dash. A deep shot has none of them, so its name carries none.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct SceneName(pub(super) EntryScene);
+
+impl fmt::Display for SceneName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.0 {
+            EntryScene::Flat(flat) => write!(
+                f,
+                "-{}-{}-{}",
+                flat.background(),
+                flat.shape(),
+                flat.motion()
+            ),
+            EntryScene::Deep(_) => Ok(()),
+        }
+    }
+}
+
+/// The name segment of an entry's depth.
+///
+/// Empty for a flat entry, which holds no depth effect. Otherwise `-dep` and the effect's
+/// lowercase name, appended after the recording segment, so an ordinary flat entry's name is
+/// unchanged.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct DepthName(pub(super) Option<DeepAxis>);
+
+impl fmt::Display for DepthName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self.0 {
+            None => "",
+            Some(DeepAxis::Parallax) => "-depparallax",
+            Some(DeepAxis::Roll) => "-deproll",
+            Some(DeepAxis::DiscBokeh) => "-depdisc",
+            Some(DeepAxis::HexBokeh) => "-dephex",
         })
     }
 }

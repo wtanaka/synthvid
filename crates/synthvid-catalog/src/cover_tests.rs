@@ -358,9 +358,12 @@ mod tests {
         // Every background should pair with every shape
         for bg in &backgrounds {
             for sh in &shapes {
-                let found = catalogue
-                    .iter()
-                    .any(|entry| entry.background == *bg && entry.shape == *sh);
+                let found = catalogue.iter().any(|entry| {
+                    entry
+                        .scene()
+                        .flat()
+                        .is_some_and(|flat| flat.background() == *bg && flat.shape() == *sh)
+                });
                 ensure!(found, "catalog must have pair ({bg:?}, {sh:?})");
             }
         }
@@ -554,9 +557,9 @@ mod tests {
     }
 
     fn check_size_omission_needs_mjpeg_in_iso() -> Result<(), Fail> {
-        let refused = Err(SceneBuildError::VideoSpec(
+        let refused = Err(SceneBuildError::VideoSpec(Box::new(
             synthvid_video::VideoSpecError::SizeOmissionNeedsMjpegInIso,
-        ));
+        )));
         for (coding, container) in [
             (CodingAxis::Raw, ContainerAxis::Iso),
             (CodingAxis::Raw, ContainerAxis::Avi),
@@ -628,9 +631,9 @@ mod tests {
         assert_eq!(check_capture_names_are_derived_from_the_rate(), Ok(()));
     }
 
-    fn check_catalogue_has_138_entries_nine_captured() -> Result<(), Fail> {
+    fn check_catalogue_has_152_entries_nine_captured() -> Result<(), Fail> {
         let catalogue = generate_catalogue().or_fail()?;
-        ensure_eq!(catalogue.len(), 138);
+        ensure_eq!(catalogue.len(), 152);
         let captured = catalogue
             .iter()
             .filter(|entry| entry.capture() != CaptureRate::PlaybackOnly)
@@ -640,8 +643,8 @@ mod tests {
     }
 
     #[test]
-    fn catalogue_has_138_entries_nine_captured() {
-        assert_eq!(check_catalogue_has_138_entries_nine_captured(), Ok(()));
+    fn catalogue_has_152_entries_nine_captured() {
+        assert_eq!(check_catalogue_has_152_entries_nine_captured(), Ok(()));
     }
 
     /// A capture pair whose capture equals its playback is refused when its singleton is
